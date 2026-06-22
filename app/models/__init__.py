@@ -1,0 +1,39 @@
+"""Database model package."""
+
+from app.models.kb import (
+    AnswerFeedback,
+    ChatMessage,
+    ChatMessageRole,
+    ChatSession,
+    DocChunk,
+    DocumentStatus,
+    EvalDataset,
+    EvalResult,
+    IndexTask,
+    IndexTaskStatus,
+    IndexTaskType,
+    KbDocument,
+    KbPermission,
+    KbPermissionLevel,
+    KnowledgeBase,
+    PermissionSubjectType,
+)
+
+__all__ = [
+    "AnswerFeedback",
+    "ChatMessage",
+    "ChatMessageRole",
+    "ChatSession",
+    "DocChunk",
+    "DocumentStatus",
+    "EvalDataset",
+    "EvalResult",
+    "IndexTask",
+    "IndexTaskStatus",
+    "IndexTaskType",
+    "KbDocument",
+    "KbPermission",
+    "KbPermissionLevel",
+    "KnowledgeBase",
+    "PermissionSubjectType",
+]
