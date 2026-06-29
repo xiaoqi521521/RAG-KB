@@ -1,13 +1,12 @@
 import pytest
 from langchain_core.documents import Document
+from pydantic import ValidationError
 
 from app.services.chunking import (
     ChunkConfig,
-    ChunkConfigError,
     ChunkService,
     ChunkSplitter,
 )
-from app.core.config import Settings
 
 
 def test_txt_document_uses_recursive_character_splitter_without_source_metadata():
@@ -103,7 +102,7 @@ def test_short_chunks_are_filtered_and_global_chunk_index_is_reassigned():
 
 
 def test_invalid_chunk_config_raises_clear_error():
-    with pytest.raises(ChunkConfigError, match="chunk_overlap must be less than chunk_size"):
+    with pytest.raises(ValidationError, match="chunk_overlap must be less than chunk_size"):
         ChunkConfig(chunk_size=100, chunk_overlap=100)
 
 
@@ -144,39 +143,11 @@ def test_chunk_service_can_use_chunk_splitter_interface_for_extension():
     }
 
 
-def test_chunk_config_reads_chunk_size_and_overlap_from_settings():
-    settings = Settings(
-        _env_file=None,
-        secret_key="test-secret",
-        database_url="postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
-        sync_database_url="postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
-        reranker_endpoint="https://example.test/rerank",
-        rag_chunk_size=30,
-        rag_chunk_overlap=5,
-    )
-    config = ChunkConfig.from_settings(settings)
-    service = ChunkService()
-    doc = Document(page_content="abcdefghijklmnopqrstuvwxyz" * 4, metadata={"page_num": 1})
+def test_chunk_config_reads_chunk_size_and_overlap_from_env(monkeypatch):
+    monkeypatch.setenv("RAG_CHUNK_SIZE", "30")
+    monkeypatch.setenv("RAG_CHUNK_OVERLAP", "5")
 
-    chunks = service.split_documents([doc], config)
-
-    assert len(chunks) > 1
-    assert chunks[0].page_content[-5:] == chunks[1].page_content[:5]
-    assert all(len(chunk.page_content) <= 30 for chunk in chunks)
-
-
-def test_chunk_config_reads_default_project_settings(monkeypatch):
-    settings = Settings(
-        _env_file=None,
-        secret_key="test-secret",
-        database_url="postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
-        sync_database_url="postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
-        reranker_endpoint="https://example.test/rerank",
-        rag_chunk_size=30,
-        rag_chunk_overlap=5,
-    )
-    monkeypatch.setattr("app.services.chunking.get_settings", lambda: settings)
-    config = ChunkConfig.from_settings()
+    config = ChunkConfig(_env_file=None)
     service = ChunkService()
     doc = Document(page_content="abcdefghijklmnopqrstuvwxyz" * 4, metadata={"page_num": 1})
 

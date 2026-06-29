@@ -1,57 +1,54 @@
 import math
 import re
-from dataclasses import dataclass
 from typing import Protocol
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from app.core.config import Settings, get_settings
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ChunkError(Exception):
-    """Base exception for document chunking failures."""
+    """文档分块模块的基础异常，供上层统一识别分块链路失败。"""
 
 
-class ChunkConfigError(ChunkError):
-    """Raised when chunking configuration is invalid."""
+class ChunkConfig(BaseSettings):
+    """文档分块配置，直接从环境变量或 .env 文件读取并由 Pydantic 校验。
 
-
-@dataclass(frozen=True)
-class ChunkConfig:
-    """文档分块配置，统一约束 chunk 大小、重叠量和最小保留长度。
-
-    使用不可变 dataclass，避免分块过程中配置被意外修改。
+    Args:
+        chunk_size: 单个 chunk 的最大字符数。
+        chunk_overlap: 相邻 chunk 之间保留的重叠字符数。
+        min_chunk_chars: 过滤低信息量短 chunk 的最小字符数。
+        structure_aware: 是否优先保留已解析出的章节边界。
     """
 
-    chunk_size: int = 512
-    chunk_overlap: int = 64
-    min_chunk_chars: int = 20
-    structure_aware: bool = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="RAG_",
+        env_ignore_empty=True,
+        case_sensitive=False,
+        extra="ignore",
+        frozen=True,
+        populate_by_name=True,
+    )
 
-    def __post_init__(self) -> None:
-        """在配置对象创建后立即校验边界，尽早阻断非法参数。"""
-        if self.chunk_size <= 0:
-            raise ChunkConfigError("chunk_size must be greater than 0")
-        if self.chunk_overlap < 0:
-            raise ChunkConfigError("chunk_overlap must be greater than or equal to 0")
-        # overlap 不能覆盖整个 chunk，否则切分边界会失去意义。
+    chunk_size: int = Field(default=512, gt=0, validation_alias="RAG_CHUNK_SIZE")
+    chunk_overlap: int = Field(default=64, ge=0, validation_alias="RAG_CHUNK_OVERLAP")
+    min_chunk_chars: int = Field(default=20, ge=0, validation_alias="RAG_MIN_CHUNK_CHARS")
+    structure_aware: bool = Field(default=True, validation_alias="RAG_STRUCTURE_AWARE")
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "ChunkConfig":
+        """校验跨字段约束，返回可用于分块服务的合法配置。"""
         if self.chunk_overlap >= self.chunk_size:
-            raise ChunkConfigError("chunk_overlap must be less than chunk_size")
-        if self.min_chunk_chars < 0:
-            raise ChunkConfigError("min_chunk_chars must be greater than or equal to 0")
-
-    @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> "ChunkConfig":
-        project_settings = settings or get_settings()
-        return cls(
-            chunk_size=project_settings.rag_chunk_size,
-            chunk_overlap=project_settings.rag_chunk_overlap,
-        )
+            # overlap 覆盖整个 chunk 时，滑动窗口无法向前推进，必须交给 Pydantic 统一报参。
+            raise ValueError("chunk_overlap must be less than chunk_size")
+        return self
 
 
 class ChunkSplitter(Protocol):
-    """分块策略协议，约束不同切分器的统一调用接口。"""
+    """分块策略协议，约束所有 splitter 必须暴露策略名和统一 split 接口。"""
 
     @property
     def strategy_name(self) -> str:
@@ -62,7 +59,14 @@ class ChunkSplitter(Protocol):
 
 
 class RecursiveCharacterChunkSplitter:
-    """通用递归字符切分器，按分隔符优先级逐步拆分长文本。"""
+    """通用递归字符分块器，适合没有章节结构的普通文本。
+
+    Args:
+        doc: LangChain Document，包含正文和来源 metadata。
+        config: 分块大小、重叠量等运行配置。
+    Returns:
+        带标准化 metadata 的 Document chunk 列表。
+    """
 
     @property
     def strategy_name(self) -> str:
@@ -73,15 +77,16 @@ class RecursiveCharacterChunkSplitter:
 
 
 class StructureAwareChunkSplitter:
-    """结构感知切分器，优先保留已有章节结构，再对超长内容递归拆分。"""
+    """结构感知分块器，优先保留 document loader 解析出的章节边界。"""
 
     @property
     def strategy_name(self) -> str:
         return "structure_aware"
 
     def split(self, doc: Document, config: ChunkConfig) -> list[Document]:
-        # 已经是短小的结构化章节时，不再二次切碎，直接作为一个 chunk 返回。
+        """按章节结构切分文档，短章节直接作为一个 chunk 返回。"""
         if len(doc.page_content) <= config.chunk_size:
+            # 已经小于 chunk 上限的章节不再二次切碎，方便后续引用溯源保留章节语义。
             return [
                 Document(
                     page_content=doc.page_content,
@@ -93,7 +98,7 @@ class StructureAwareChunkSplitter:
 
 
 class ChunkService:
-    """分块服务，根据文档结构选择策略并输出标准化 chunk。"""
+    """批量分块服务，根据文档结构选择策略并输出统一 chunk metadata。"""
 
     def __init__(
         self,
@@ -108,31 +113,32 @@ class ChunkService:
         docs: list[Document],
         config: ChunkConfig | None = None,
     ) -> list[Document]:
-        """批量切分文档，并补齐统一的 chunk metadata。"""
-        chunk_config = config or ChunkConfig.from_settings()
+        """切分文档列表并返回全局顺序稳定的 chunk 列表。"""
+        chunk_config = config or ChunkConfig()
         chunks: list[Document] = []
 
-        # 第一步：逐篇文档选择切分策略，并过滤空文档。
+        # 第一步：过滤空文档，并根据章节信息选择普通分块或结构感知分块。
         for doc in docs:
             if not doc.page_content or not doc.page_content.strip():
                 continue
 
             splitter = self._select_splitter(doc, chunk_config)
-            # 第二步：执行切分并过滤过短 chunk，避免低信息密度内容进入检索链路。
+            # 第二步：过滤过短 chunk，避免低信息密度内容进入索引和检索链路。
             for chunk in splitter.split(doc, chunk_config):
                 if len(chunk.page_content.strip()) < chunk_config.min_chunk_chars:
                     continue
                 chunks.append(_normalize_service_chunk(chunk, splitter.strategy_name))
 
-        # 第三步：为最终输出统一补充顺序索引，便于后续入库和引用定位。
+        # 第三步：重新分配全局 chunk_index，保证过滤后仍能稳定追踪顺序。
         for index, chunk in enumerate(chunks):
             chunk.metadata["chunk_index"] = index
 
         return chunks
 
     def _select_splitter(self, doc: Document, config: ChunkConfig) -> ChunkSplitter:
-        # 只有显式开启结构感知，且文档已经带 section_title 时，才认为值得保留章节边界。
+        """根据配置和章节 metadata 选择分块策略。"""
         if config.structure_aware and doc.metadata.get("section_title"):
+            # 只有 loader 明确提供章节标题时才走结构感知，避免对普通文本误判结构。
             return self.structure_aware_splitter
         return self.recursive_splitter
 
@@ -142,12 +148,12 @@ def _split_text_with_recursive_splitter(
     config: ChunkConfig,
     strategy_name: str,
 ) -> list[Document]:
-    """使用 LangChain 递归切分器按中英文常见分隔符拆分文本。"""
+    """调用 LangChain 递归字符切分器，并补充分块阶段所需 metadata。"""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=config.chunk_size,
         chunk_overlap=config.chunk_overlap,
-        # 分隔符从段落到字符逐级退化，优先保持自然语义边界。
-        separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
+        # 分隔符从段落到标点逐级退化，尽量保留自然语义边界。
+        separators=["\n\n", "\n", "。", "；", "，", "：", " ", ""],
     )
     return [
         Document(
@@ -164,7 +170,7 @@ def _build_chunk_metadata(
     strategy_name: str,
     text: str | None = None,
 ) -> dict[str, object]:
-    """构造 chunk 基础 metadata，只保留分块阶段真正需要的字段。"""
+    """构造 chunk 基础 metadata，返回引用溯源和索引入库所需字段。"""
     metadata: dict[str, object] = {
         "split_strategy": strategy_name,
         "estimated_tokens": estimate_tokens(text if text is not None else doc.page_content),
@@ -176,10 +182,13 @@ def _build_chunk_metadata(
 
 
 def _normalize_service_chunk(chunk: Document, strategy_name: str) -> Document:
-    """标准化 chunk metadata，避免不同切分器输出字段不一致。"""
+    """统一不同 splitter 的输出字段，避免下游依赖各策略的内部 metadata 形态。"""
     metadata: dict[str, object] = {
         "split_strategy": chunk.metadata.get("split_strategy", strategy_name),
-        "estimated_tokens": chunk.metadata.get("estimated_tokens", estimate_tokens(chunk.page_content)),
+        "estimated_tokens": chunk.metadata.get(
+            "estimated_tokens",
+            estimate_tokens(chunk.page_content),
+        ),
         "page_num": chunk.metadata["page_num"],
     }
     if section_title := chunk.metadata.get("section_title"):
@@ -188,11 +197,8 @@ def _normalize_service_chunk(chunk: Document, strategy_name: str) -> Document:
 
 
 def estimate_tokens(text: str) -> int:
-    """粗略估算文本 token 数，用于上下文预算而非精确计费。
-
-    这里对中文和非中文字符使用不同权重，目的是在不调用 tokenizer 的前提下，
-    以较低成本得到稳定、可比较的长度估计。
-    """
+    """粗略估算文本 token 数，返回用于预算裁剪的稳定近似值。"""
+    # 中文字符和非中文字符采用不同权重，避免在没有 tokenizer 时明显低估中文内容。
     chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
     non_whitespace_non_chinese_chars = sum(
         1 for char in text if not char.isspace() and not "\u4e00" <= char <= "\u9fff"

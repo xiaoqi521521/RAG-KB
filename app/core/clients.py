@@ -18,19 +18,23 @@ async def init_clients(settings: Settings) -> None:
         secure=settings.minio_secure,
     )
 
-    api_key = settings.openai_api_key or settings.dashscope_api_key
-    if api_key:
+    chat_api_key = settings.openai_api_key or settings.dashscope_api_key
+    if chat_api_key:
         _clients["chat_model"] = ChatOpenAI(
             model=settings.chat_model,
-            api_key=api_key,
+            api_key=chat_api_key,
             base_url=settings.openai_base_url,
             temperature=settings.chat_temperature,
             max_tokens=settings.chat_max_tokens,
         )
+
+    embedding_api_key = settings.embedding_api_key or settings.dashscope_api_key
+    if embedding_api_key:
         _clients["embeddings"] = OpenAIEmbeddings(
             model=settings.embedding_model,
-            api_key=api_key,
-            base_url=settings.openai_base_url,
+            api_key=embedding_api_key,
+            base_url=settings.embedding_base_url,
+            timeout=settings.embedding_timeout_seconds,
         )
 
 

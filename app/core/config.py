@@ -33,7 +33,14 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", repr=False)
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     chat_model: str = "qwen-plus"
+    embedding_api_key: str = Field(default="", repr=False)
+    embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_model: str = "text-embedding-v3"
+    embedding_dimension: int = 1024
+    embedding_batch_size: int = 10
+    embedding_cache_version: str = "v1"
+    embedding_timeout_seconds: int = 30
+    embedding_max_retries: int = 3
     chat_temperature: float = 0.1
     chat_max_tokens: int = 2048
 
