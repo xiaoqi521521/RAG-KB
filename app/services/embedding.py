@@ -13,7 +13,7 @@ from langchain_openai import OpenAIEmbeddings
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +270,7 @@ class EmbeddingService:
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self.config.max_retries),
-                wait=wait_exponential_jitter(initial=1, max=8),
+                wait=wait_exponential(multiplier=1, min=1, max=8),
                 retry=retry_if_exception(_is_retryable_provider_error),
                 reraise=True,
             ):

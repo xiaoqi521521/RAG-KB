@@ -464,8 +464,8 @@ vectors = [
 
 ```plain
 最多尝试 embedding_max_retries 次
-指数退避
-开启 jitter
+固定指数退避
+不启用 jitter
 最终失败时 reraise 原始异常
 ```
 
@@ -473,7 +473,13 @@ vectors = [
 
 - 网络抖动可能短时间恢复。
 - 限流窗口需要等待。
-- jitter 可以降低多任务同时重试造成的集中冲击。
+- 固定指数增长更接近 Spring Retry 的默认使用习惯，便于排查和预测重试节奏。
+
+当前实现建议使用：
+
+```python
+wait_exponential(multiplier=1, min=1, max=8)
+```
 
 ### 失败策略
 
@@ -660,6 +666,7 @@ tests/services/test_embedding.py
 - provider 返回数量不一致。
 - provider 返回维度不一致。
 - 临时错误重试。
+- 重试等待策略使用固定指数退避，不启用 jitter。
 - 4xx 不重试。
 - 写缓存失败不影响本次成功结果。
 

@@ -198,6 +198,43 @@ def test_embed_documents_retries_transient_errors():
     assert embeddings.calls == [["retry me"], ["retry me"]]
 
 
+def test_embed_batch_uses_fixed_exponential_wait_strategy(monkeypatch):
+    from tenacity import wait_exponential
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeAttempt:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+            return False
+
+    class FakeAsyncRetrying:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.update(kwargs)
+            self._yielded = False
+
+        def __aiter__(self) -> "FakeAsyncRetrying":
+            return self
+
+        async def __anext__(self) -> FakeAttempt:
+            if self._yielded:
+                raise StopAsyncIteration
+            self._yielded = True
+            return FakeAttempt()
+
+    monkeypatch.setattr("app.services.embedding.AsyncRetrying", FakeAsyncRetrying)
+    service, _, _ = _build_service(
+        embedding_map={("retry wait",): [_vector(0.4)]}
+    )
+
+    result = asyncio_run(service._embed_batch_with_retry(["retry wait"]))
+
+    assert result == [_vector(0.4)]
+    assert isinstance(captured_kwargs["wait"], wait_exponential)
+
+
 def test_embed_documents_does_not_retry_non_transient_provider_error():
     from app.services.embedding import EmbeddingConfig, EmbeddingProviderError
 

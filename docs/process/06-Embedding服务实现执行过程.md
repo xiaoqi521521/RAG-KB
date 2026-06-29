@@ -231,11 +231,16 @@ await embeddings.aembed_documents(batch_texts)
 ```python
 AsyncRetrying(
     stop=stop_after_attempt(max_retries),
-    wait=wait_exponential_jitter(initial=1, max=8),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
     retry=retry_if_exception(_is_retryable_provider_error),
     reraise=True,
 )
 ```
+
+说明：
+
+- 当前等待策略为固定指数退避，不启用 jitter。
+- `multiplier=1, min=1, max=8` 保持 1 秒起步、8 秒封顶，更接近 Spring Retry 的固定指数级增长节奏。
 
 当前可重试：
 
@@ -282,6 +287,7 @@ tests/services/test_embedding.py
 - `embed_query(...)` 复用批量流程。
 - provider 返回数量不一致时抛出 `EmbeddingProviderError`。
 - 超时类临时错误会重试。
+- 重试等待策略使用固定指数退避，不使用 jitter。
 - 非临时 provider 错误不重试。
 - 写缓存失败不影响本次成功结果。
 - `EmbeddingConfig.from_settings(...)` 读取项目配置。
@@ -292,13 +298,13 @@ tests/services/test_embedding.py
 Embedding 服务测试：
 
 ```powershell
-uv run pytest tests/services/test_embedding.py -v
+uv run python -m pytest tests/services/test_embedding.py -v
 ```
 
 结果：
 
 ```plain
-12 passed
+14 passed
 ```
 
 初始化相关测试：
