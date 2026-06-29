@@ -9,7 +9,6 @@ LangChain 重构版不再新增项目内部 `ParseResult` 模型，而是直接�
 - `Document.page_content` 对齐原 `PageContent.text`。
 - `Document.metadata["page_num"]` 对齐原 `PageContent.pageNum`。
 - `Document.metadata["section_title"]` 对齐原 `PageContent.sectionTitle`。
-- `Document.metadata["title"]` 承载原 `ParseResult.title` 这类可选文档级信息。
 
 这样可以减少中间模型转换，同时保持与 LangChain splitter、embedding、vector store 的接口天然衔接。
 
@@ -18,7 +17,7 @@ LangChain 重构版不再新增项目内部 `ParseResult` 模型，而是直接�
 - 定义统一解析器协议：
   - `DocumentParser`
 - 实现三类解析器：
-  - `MinerUDocumentParser`：负责复杂文档。
+  - `PdfParser` / `WordParser`：负责复杂文档，复用 `MinerULoaderClient` 的 SDK 调用能力。
   - `TxtParser`：负责 TXT。
   - `MarkdownParser`：负责 Markdown / MD。
 - 实现统一入口：
@@ -62,12 +61,12 @@ TXT 和 Markdown 已经是文本或半结构化文本，不需要 OCR、版面�
 
 ### 为什么 TXT / Markdown 不使用 langchain_community loader
 
-TXT / Markdown 的项目需求很轻：读取文本、按固定规则清洗或切分，并直接产出带项目 metadata 的 `Document`。如果改用 `langchain_community.document_loaders`，仍然需要额外适配层补齐 `file_type`、`page_num`、`section_title`、`parser` 等字段，整体复杂度没有明显降低。
+TXT / Markdown 的项目需求很轻：读取文本、按固定规则清洗或切分，并直接产出带项目 metadata 的 `Document`。如果改用 `langchain_community.document_loaders`，仍然需要额外适配层补齐 `file_type`、`page_num`、`section_title` 等字段，整体复杂度没有明显降低。
 
 因此本阶段保留项目内轻量自定义解析器：
 
 - `TxtParser` 负责编码识别、换行规范化、空文本和疑似二进制文件判断。
-- `MarkdownParser` 负责按一级/二级标题切分逻辑章节、避开代码块标题误判，并清理基础 Markdown 标记。
+- `MarkdownParser` 负责按一级/二级标题切分逻辑章节、避开代码块标题误判，并按参考项目规则合并过短章节。
 - 两个解析器都直接返回符合项目 metadata 规范的 `Document`，不再引入额外 loader adapter。
 
 ---
@@ -86,8 +85,6 @@ Document(
         "file_type": "PDF",
         "page_num": 3,
         "section_title": "考勤制度",
-        "title": "员工手册",
-        "parser": "mineru",
     },
 )
 ```
@@ -99,7 +96,6 @@ Document(
 | `page_content` | `PageContent.text` | 当前页、章节或版面块的正文 |
 | `metadata["page_num"]` | `PageContent.pageNum` | 1-based 页码或逻辑页序号 |
 | `metadata["section_title"]` | `PageContent.sectionTitle` | 当前文本单元所属章节标题，可为空 |
-| `metadata["title"]` | `ParseResult.title` | 文档标题，可为空 |
 
 ### Metadata 字段
 
@@ -111,8 +107,6 @@ Document(
 | `file_type` | 是 | `DocumentLoaderService` 识别出的文件类型，例如 `PDF`、`TXT`、`MD` |
 | `page_num` | 是 | 1-based 页码或逻辑页序号 |
 | `section_title` | 否 | 章节标题，可为空 |
-| `title` | 否 | 文档标题，可为空 |
-| `parser` | 是 | 实际解析器标识，例如 `mineru`、`txt`、`markdown` |
 
 不放入 metadata 的字段：
 
@@ -128,7 +122,7 @@ Document(
 - MinerU 解析 PDF / 图片时，尽量保留真实页码。
 - MinerU 解析 Office 文档时，如果无法获得真实页码，可使用逻辑页序号。
 - TXT 默认作为 1 个逻辑页，`page_num=1`。
-- Markdown 可以按标题切分为多个逻辑章节，`page_num` 使用逻辑章节序号。
+- Markdown 可以按标题切分为多个逻辑章节，`page_num` 使用逻辑章节序号；短章节会继续累积到后续章节，避免产生过短 `Document`。
 - 空白页或空白章节不进入返回列表。
 - 返回的每个 `Document.page_content` 必须非空。
 
@@ -142,10 +136,6 @@ Document(
 class DocumentParser(Protocol):
     @property
     def supported_types(self) -> set[str]:
-        ...
-
-    @property
-    def parser_name(self) -> str:
         ...
 
     def parse(self, file: BinaryIO, file_name: str, file_type: str) -> list[Document]:
@@ -188,7 +178,7 @@ class DocumentParser(Protocol):
 
 ### 职责
 
-`MinerUDocumentParser` 负责调用 MinerU 官方 `langchain-mineru` SDK，把复杂文档转换为 LangChain `Document` 列表。
+`MinerULoaderClient` 负责调用 MinerU 官方 `langchain-mineru` SDK。`PdfParser` 负责 PDF 页级结果转换，`WordParser` 负责 Word 的 Markdown 逻辑章节转换。
 
 支持类型：
 
@@ -196,7 +186,7 @@ class DocumentParser(Protocol):
 - DOC
 - DOCX
 
-本阶段先实现 PDF 和 Word 加载。`MinerULoader` 返回的 `page_content` 为 Markdown，本项目会进一步收敛为项目内部统一 metadata。
+本阶段先实现 PDF 和 Word 加载。`MinerULoader` 返回的 `page_content` 为 Markdown，本项目会进一步收敛为项目内部统一 metadata。Word 返回内容会按参考项目的标题阈值规则再拆成逻辑章节。
 
 ### 集成方式
 
@@ -229,8 +219,7 @@ MinerU SDK 返回结果转换为项目 `Document` 时需要遵守：
 - 正文内容进入 `Document.page_content`。
 - 页码或逻辑顺序进入 `metadata["page_num"]`。
 - 标题层级中最接近当前段落的标题进入 `metadata["section_title"]`。
-- 文档标题进入 `metadata["title"]`。
-- 解析器标识进入 `metadata["parser"]="mineru"`。
+- Word 使用 MinerU 输出的 Markdown，再按一级/二级标题切分；遇到新标题时，当前累计章节超过 200 字才收束为一个 `Document`。
 - 没有可用正文时抛出 `EmptyDocumentError`。
 
 ---
@@ -252,7 +241,6 @@ TXT 解析结果通常只有一个 `Document`：
 
 - `page_content` 为全文。
 - `metadata["page_num"]=1`。
-- `metadata["parser"]="txt"`。
 
 ---
 
@@ -265,6 +253,8 @@ TXT 解析结果通常只有一个 `Document`：
 - 支持 `.md` 和 `.markdown`。
 - 按一级、二级标题拆分逻辑章节。
 - 代码块内的 `#` 不识别为标题。
+- 遇到新标题时，当前累计章节超过 100 字才收束为一个 `Document`；不足 100 字则继续累积到后续章节。
+- 如果短章节合并到后续章节，`section_title` 采用最后遇到的一级/二级标题，保持与参考项目简单规则一致。
 - 链接保留可见文字。
 - 图片替换为 `[图片]` 标记。
 - 代码块替换为 `[代码块]` 标记。
@@ -272,10 +262,9 @@ TXT 解析结果通常只有一个 `Document`：
 
 Markdown 解析结果：
 
-- 每个章节返回一个 `Document`。
+- 每个满足最小章节长度阈值的逻辑章节返回一个 `Document`。
 - `metadata["page_num"]` 为逻辑章节序号。
 - `metadata["section_title"]` 为当前章节标题，可为空。
-- `metadata["parser"]="markdown"`。
 
 ---
 
@@ -314,7 +303,9 @@ app/services/document_loader/
   __init__.py
   exceptions.py
   parsers.py
-  mineru_parser.py
+  mineru_client.py
+  pdf_parser.py
+  word_parser.py
   markdown_parser.py
   txt_parser.py
   service.py
@@ -342,7 +333,7 @@ GIVEN `tests/resources/test-docs/hr-handbook.txt`
 
 WHEN 调用 `DocumentLoaderService.load(...)`
 
-THEN 返回非空 `list[Document]`，第一个 `Document.page_content` 包含“员工手册”，metadata 包含 `source`、`file_type`、`page_num`、`parser`。
+THEN 返回非空 `list[Document]`，第一个 `Document.page_content` 包含“员工手册”，metadata 包含 `source`、`file_type`、`page_num`。
 
 ### 场景二：解析 Markdown
 
@@ -352,19 +343,27 @@ WHEN 调用 Markdown 解析器
 
 THEN 代码块内的 `#` 不被误判为标题，返回的章节标题来自真实 Markdown 标题。
 
+### 场景二补充：Markdown 短章节合并
+
+GIVEN 连续两个一级或二级标题，前一个标题下内容不足 100 字
+
+WHEN 调用 Markdown 解析器
+
+THEN 前一个短章节不会单独返回 `Document`，而是继续累积到后续章节；最终 `section_title` 使用最后遇到的标题。
+
 ### 场景三：复杂文档分发到 MinerU
 
 GIVEN 文件名 `policy.pdf`
 
 WHEN 调用 `DocumentLoaderService.load(...)`
 
-THEN 复杂文档类型被分发给 `MinerUDocumentParser`。
+THEN PDF 被分发给 `PdfParser`，DOC / DOCX 被分发给 `WordParser`。
 
 ### 场景四：MinerU 输出转换为 Document
 
 GIVEN MinerU 返回可识别的 Markdown 或 JSON 输出
 
-WHEN `MinerUDocumentParser` 转换结果
+WHEN `PdfParser` 或 `WordParser` 转换结果
 
 THEN 返回非空 `list[Document]`，每个 `Document` 都包含非空 `page_content` 和完整文档加载 metadata。
 
@@ -372,7 +371,7 @@ THEN 返回非空 `list[Document]`，每个 `Document` 都包含非空 `page_con
 
 GIVEN MinerU 超时、返回错误或输出为空
 
-WHEN 调用 `MinerUDocumentParser.parse(...)`
+WHEN 调用 `PdfParser.parse(...)` 或 `WordParser.parse(...)`
 
 THEN 抛出 `ExternalParserError` 或 `EmptyDocumentError`，错误信息包含可排查的失败原因。
 
@@ -390,7 +389,7 @@ GIVEN 一个包含标题、页码和章节标题的解析结果
 
 WHEN 转换为 LangChain `Document`
 
-THEN `page_content` 对齐原 `PageContent.text`，`page_num` 对齐原 `PageContent.pageNum`，`section_title` 对齐原 `PageContent.sectionTitle`，`title` 对齐原 `ParseResult.title`。
+THEN `page_content` 对齐原 `PageContent.text`，`page_num` 对齐原 `PageContent.pageNum`，`section_title` 对齐原 `PageContent.sectionTitle`。
 
 ---
 

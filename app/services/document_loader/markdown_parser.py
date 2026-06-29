@@ -7,18 +7,18 @@ from app.services.document_loader.exceptions import EmptyDocumentError
 from app.services.document_loader.parsers import build_metadata
 
 HEADING_PATTERN = re.compile(r"^(#{1,3})\s+(.+?)\s*$")
+DEFAULT_MIN_SECTION_CHARS = 100
 
 
 class MarkdownParser:
     """轻量 Markdown 解析器，按标题切分为可追溯的逻辑章节。"""
 
+    def __init__(self, min_section_chars: int = DEFAULT_MIN_SECTION_CHARS) -> None:
+        self.min_section_chars = min_section_chars
+
     @property
     def supported_types(self) -> set[str]:
         return {"MD", "MARKDOWN"}
-
-    @property
-    def parser_name(self) -> str:
-        return "markdown"
 
     def parse(self, file: BinaryIO, file_name: str, file_type: str) -> list[Document]:
         markdown = file.read().decode("utf-8", errors="replace").replace("\r\n", "\n")
@@ -36,10 +36,7 @@ class MarkdownParser:
                         file_name=file_name,
                         file_type=file_type,
                         page_num=index,
-                        parser=self.parser_name,
                         section_title=section_title,
-                        # 文档标题暂取第一个可识别章节标题，后续可按真实样本调整。
-                        title=sections[0][0],
                     ),
                 )
             )
@@ -69,7 +66,7 @@ class MarkdownParser:
                 and match.group(1) in {"#", "##"}
             )
             if is_section_heading:
-                if current_lines:
+                if self._section_length(current_lines) > self.min_section_chars:
                     # 遇到新标题时，先收束上一个章节。
                     sections.append((current_title, "\n".join(current_lines)))
                     current_lines = []
@@ -82,6 +79,9 @@ class MarkdownParser:
         if not sections and markdown.strip():
             sections.append((None, markdown))
         return sections
+
+    def _section_length(self, lines: list[str]) -> int:
+        return len("\n".join(lines).strip())
 
     def _strip_markdown(self, markdown: str) -> str:
         """去掉基础 Markdown 标记，保留对 RAG 有意义的可见文本。"""

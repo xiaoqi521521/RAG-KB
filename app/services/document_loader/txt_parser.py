@@ -13,10 +13,6 @@ class TxtParser:
     def supported_types(self) -> set[str]:
         return {"TXT"}
 
-    @property
-    def parser_name(self) -> str:
-        return "txt"
-
     def parse(self, file: BinaryIO, file_name: str, file_type: str) -> list[Document]:
         raw = file.read()
         text = self._decode(raw)
@@ -36,7 +32,6 @@ class TxtParser:
                     file_name=file_name,
                     file_type=file_type,
                     page_num=1,
-                    parser=self.parser_name,
                 ),
             )
         ]
