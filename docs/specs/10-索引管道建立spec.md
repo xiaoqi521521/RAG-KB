@@ -1,0 +1,615 @@
+# 索引管道建立 Spec
+
+## 背景与目标
+
+文档加载层、文档切分层和 Embedding 服务已经分别具备单点能力。索引管道负责把这些能力串成一条可追踪、可重试、可验证的离线链路，让一条已存在的 `kb_document` 记录最终变成可检索的 `kb_doc_chunk` 数据。
+
+本阶段参考 `docs/references/09-Embedding 服务——批量向量化与缓存.md` 中的 `IndexService` 设计，但按 Python / FastAPI / LangChain 项目结构重构。参考实现里没有单独的 `DocumentService`：外部流程先创建 `KbDocument`，`IndexService.submitIndexTask(docId)` 创建 `IndexTask` 并投递异步索引任务。本阶段保持这个边界。
+
+本阶段不实现 FastAPI 路由层，不实现完整 MinIO 服务，不重写已完成的 Embedding 服务。目标是打通服务层索引执行链路。
+
+## Context7 查询结论
+
+本 spec 编写前使用 Context7 查询了 FastAPI `BackgroundTasks`、Python `asyncio` 和 Tenacity 异步重试相关用法。
+
+查询命令：
+
+```powershell
+npx.cmd ctx7@latest library fastapi "BackgroundTasks run function after response dependency injection async task"
+npx.cmd ctx7@latest docs /fastapi/fastapi "BackgroundTasks add_task after response dependency injection caveat use Celery for heavy background computation"
+npx.cmd ctx7@latest library python "asyncio create_task sleep schedule coroutine background task"
+npx.cmd ctx7@latest docs /python/cpython "asyncio.create_task asyncio.sleep coroutine background task delay non blocking"
+npx.cmd ctx7@latest library tenacity "AsyncRetrying wait_exponential retry async coroutine before_sleep"
+npx.cmd ctx7@latest docs /jd/tenacity "AsyncRetrying wait_exponential retry_if_exception stop_after_attempt before_sleep async for attempt"
+```
+
+结论：
+
+- FastAPI `BackgroundTasks` 可以在 path operation 或 dependency 中注入，并通过 `add_task(...)` 在响应发送后执行后台任务。
+- `BackgroundTasks` 可以和依赖注入一起使用，任务可接收依赖提供的值。
+- FastAPI 官方文档提示：对较重的后台计算，尤其是不需要共享 FastAPI 进程内内存的场景，应考虑 Celery 等外部任务队列。
+- Python `asyncio.create_task(...)` 可把 coroutine 包装为 Task 并并发调度执行。
+- Python `asyncio.sleep(...)` 会挂起当前 coroutine，并允许其他任务继续运行，适合实现不阻塞事件循环的延迟等待。
+- Tenacity 支持 `AsyncRetrying`、`stop_after_attempt(...)` 和 `wait_exponential(...)`，适合 API 调用级重试，例如 Embedding / Reranker。
+
+本阶段因此采用以下取舍：
+
+- 不单独保留 `IndexTaskLauncher`。
+- 本阶段由 `IndexService` 内部私有方法负责本地后台投递。
+- 索引任务级重试不复用 Tenacity。原因是它需要落库状态和重新调度，不是单次函数调用重试。
+- 若后续接入 Celery / Dramatiq，再重新抽出 `TaskDispatcher` 或 `IndexTaskLauncher`。
+- 延迟重试等待不能占用索引执行线程。
+
+## In Scope
+
+- 定义索引管道服务层入口：`IndexService`。
+- 定义最小存储依赖签名：`MinioStorageService.download(object_key) -> bytes`。
+- 定义文档、任务、chunk 的 Repository 职责。
+- 支持基于已存在 `kb_document.id` 创建 `kb_index_task`。
+- 支持从 `kb_document.minio_path` 读取原始文件内容。
+- 支持调用已完成的文档加载、切分和 Embedding 服务。
+- 支持按 chunk 顺序组装 `DocChunk`，并写入 `kb_doc_chunk`。
+- 支持索引任务状态流：`PENDING -> RUNNING -> DONE / FAILED`。
+- 支持文档状态流：`PENDING -> PROCESSING -> DONE / FAILED`。
+- 支持失败阶段记录、指数退避重试和最大重试次数。
+- 手写任务级延迟调度，维护 `retry_count`、`status` 和 `error_msg` 等落库状态。
+- 支持重建索引时的新旧版本策略。
+- 支持测试使用 fake storage 提供文档 bytes。
+
+## Out of Scope
+
+- 不实现 FastAPI 路由层。
+- 不实现文档上传接口、文档详情接口、索引状态查询接口、手动重试 HTTP 接口。
+- 不新增 `DocumentService`；下一阶段上传与文档管理变复杂后再评估。
+- 不实现完整 `MinioStorageService`：上传、删除、bucket 管理、object key 生成、同步 SDK 线程池封装都放到下一阶段。
+- 不重写 `EmbeddingService`。
+- 不实现在线查询管道、混合检索、RRF、Reranker、上下文裁剪和回答生成。
+- 不实现完整 RBAC 权限系统。
+- 不实现生产级分布式任务队列。
+
+---
+
+## 目标流程
+
+```plain
+准备文档记录
+  -> 测试、脚本或下一阶段路由层创建 kb_document
+  -> kb_document 包含 id / kb_id / minio_path / file_name / file_type
+  -> 原始文件已存在于 MinIO 或测试 fake storage
+
+IndexService.submit_index_task(doc_id)
+  -> 查询 kb_document 是否存在
+  -> 创建 kb_index_task(status=PENDING)
+  -> IndexService 内部投递后台任务
+  -> 快速返回 task_id
+
+IndexService.run_task(task_id, doc_id)
+  -> task = RUNNING
+  -> document = PROCESSING
+  -> MinioStorageService.download(minio_path)
+  -> DocumentLoaderService 解析
+  -> ChunkService 分块
+  -> EmbeddingService.embed_documents(...)
+  -> 组装 DocChunk
+  -> 批量写入 kb_doc_chunk
+  -> 清理旧版本 chunk
+  -> document = DONE
+  -> task = DONE
+```
+
+失败路径：
+
+```plain
+任意阶段失败
+  -> 记录失败阶段和 error_msg
+  -> task = FAILED
+  -> document = FAILED
+  -> 如果可重试且 retry_count < max_retry
+       -> task.retry_count + 1
+       -> task.status = PENDING
+       -> 独立调度器延迟后重新调度
+     否则
+       -> 保持 FAILED，等待人工处理或下一阶段手动重试接口
+```
+
+## 模块设计
+
+建议文件：
+
+```plain
+app/services/indexing.py
+app/integrations/minio.py
+app/repositories/documents.py
+app/repositories/index_tasks.py
+app/repositories/chunks.py
+tests/services/test_indexing.py
+```
+
+### IndexService
+
+职责：
+
+- 创建索引任务。
+- 通过内部私有方法投递后台索引任务。
+- 执行完整索引流程。
+- 更新文档和任务状态。
+- 处理失败分类和延迟重试。
+- 维护重建索引版本策略。
+
+建议接口：
+
+```python
+class IndexService:
+    async def submit_index_task(self, doc_id: int) -> int:
+        ...
+
+    async def reindex_document(self, doc_id: int) -> int:
+        ...
+
+    def _launch_task(self, task_id: int, doc_id: int) -> None:
+        ...
+
+    async def run_task(self, task_id: int, doc_id: int) -> None:
+        ...
+
+    async def _run_task_once(self, task_id: int, doc_id: int) -> None:
+        ...
+
+    def _build_doc_chunks(self, document, chunks, vectors, doc_version):
+        ...
+
+    async def _mark_failed(self, task_id: int, doc_id: int, error_msg: str) -> None:
+        ...
+
+    async def _retry_if_possible(self, task_id: int, doc_id: int, error_msg: str) -> None:
+        ...
+
+    def _schedule_retry(self, task_id: int, doc_id: int, retry_count: int) -> None:
+        ...
+
+    async def _delayed_retry(self, task_id: int, doc_id: int, delay_seconds: int) -> None:
+        ...
+```
+
+`submit_index_task(...)` 只负责创建任务并投递，不执行解析、分块、向量化和写库。
+
+`run_task(...)` 才是真正执行索引的入口。
+
+### 后台投递
+
+本阶段不单独新增 `IndexTaskLauncher`。后台投递由 `IndexService` 内部私有方法完成：
+
+```python
+def _launch_task(self, task_id: int, doc_id: int) -> None:
+    asyncio.create_task(self.run_task(task_id, doc_id))
+```
+
+说明：
+
+- Python / FastAPI 没有 Spring AOP 的 `@Async` 自调用问题，不需要为了绕代理单独抽 Launcher。
+- `_launch_task(...)` 只是本阶段的本地投递实现，不承载业务逻辑。
+- 后续如果引入 Celery / Dramatiq，再把 `_launch_task(...)` 替换或抽出为独立 dispatcher。
+
+本阶段不需要实现参考文献中的内存文本任务入口。若为了测试保留文本入口，也必须明确：内存文本任务不参与自动重试。
+
+### MinioStorageService
+
+本阶段只定义最小签名：
+
+```python
+from typing import Protocol
+
+
+class MinioStorageService(Protocol):
+    async def download(self, object_key: str) -> bytes:
+        ...
+```
+
+约束：
+
+- `IndexService` 只依赖 `download(...)`。
+- 测试可以使用 fake storage 返回样本文档 bytes。
+- 完整 MinIO 上传、下载、删除、bucket 初始化和线程池封装下一阶段实现。
+
+### DocumentRepository
+
+职责：
+
+- 根据 `doc_id` 查询 `KbDocument`。
+- 更新文档状态。
+- 更新索引完成后的统计字段：`chunk_count`、`token_count`、`indexed_at`、`version`。
+- 记录失败原因。
+
+不负责：
+
+- 文档上传。
+- MinIO object key 生成。
+- 权限校验。
+
+### IndexTaskRepository
+
+职责：
+
+- 创建 `IndexTask`。
+- 更新任务状态。
+- 增加 `retry_count`。
+- 记录失败原因和时间。
+- 查询任务是否仍可重试。
+
+任务状态：
+
+```plain
+PENDING
+  -> RUNNING
+  -> DONE
+  -> FAILED
+```
+
+### ChunkRepository
+
+职责：
+
+- 批量插入 `DocChunk`。
+- 按 `doc_id` 和 `doc_version` 清理旧版本 chunk。
+- 为后续检索提供当前版本过滤所需的数据基础。
+
+本阶段不实现向量检索和全文检索。
+
+---
+
+## 输入输出模型
+
+### submit_index_task 输入
+
+```python
+doc_id: int
+```
+
+前置条件：
+
+- `kb_document` 中存在该文档。
+- 文档记录包含 `kb_id`、`file_name`、`file_type`、`minio_path`。
+- 原始文件已经存在于 MinIO 或测试 fake storage。
+
+输出：
+
+```python
+task_id: int
+```
+
+### run_task 输入
+
+```python
+task_id: int
+doc_id: int
+```
+
+执行结果：
+
+- 成功时更新文档和任务为 `DONE`。
+- 失败时更新文档和任务为 `FAILED`，并记录 `error_msg`。
+- 可重试失败按手写指数退避调度重新执行。
+
+### chunk 入库字段
+
+每个 chunk 至少写入：
+
+```plain
+doc_id
+kb_id
+chunk_index
+content
+embedding
+page_num
+section_title
+token_count
+doc_version
+```
+
+其中：
+
+- `content` 来自切分后的 `Document.page_content`。
+- `embedding` 来自 `EmbeddingService.embed_documents(...)`。
+- `page_num` 和 `section_title` 来自 chunk metadata。
+- `doc_version` 来自本次索引版本。
+
+## 与已有服务的衔接
+
+### 文档加载服务
+
+`IndexService` 把 `MinioStorageService.download(...)` 返回的 bytes 交给文档加载层。
+
+加载层失败时：
+
+- 记录失败阶段为文档解析。
+- 文档和任务进入 `FAILED`。
+- 文档记录已存在时，解析阶段失败按任务级重试处理；超过最大重试次数后保持 `FAILED`。
+
+### 文档切分服务
+
+`IndexService` 调用切分服务后必须检查结果：
+
+- chunk 列表为空时失败。
+- 失败原因应说明文档无有效文本或切分失败。
+- 不写入空 chunk。
+- 对齐参考实现，分块为空也先进入任务级重试；超过最大重试次数后保持 `FAILED`。
+
+### EmbeddingService
+
+调用方式：
+
+```python
+texts = [chunk.page_content for chunk in chunks]
+vectors = await embedding_service.embed_documents(texts)
+```
+
+约束：
+
+- `vectors` 数量必须等于 `chunks` 数量。
+- 第 `i` 个 vector 必须写入第 `i` 个 chunk。
+- Embedding 失败时索引任务失败，并进入任务级重试；超过最大重试次数后保持 `FAILED`。
+- `vectors` 数量与 `chunks` 数量不一致时失败，不写入部分数据，并进入任务级重试。
+- 不返回零向量，不写入部分成功数据。
+- Embedding 缓存、批处理和 provider 重试属于 `EmbeddingService` 内部职责，本 spec 不重复实现。
+
+## 状态流
+
+### 文档状态
+
+```plain
+PENDING
+  -> PROCESSING
+  -> DONE
+  -> FAILED
+```
+
+规则：
+
+- 提交索引前文档通常为 `PENDING`。
+- `run_task(...)` 开始后文档改为 `PROCESSING`。
+- chunk 入库和清理完成后文档改为 `DONE`。
+- 任何不可恢复失败后文档改为 `FAILED`。
+
+### 任务状态
+
+```plain
+PENDING
+  -> RUNNING
+  -> DONE
+  -> FAILED
+```
+
+规则：
+
+- `submit_index_task(...)` 创建任务时为 `PENDING`。
+- `run_task(...)` 开始执行时为 `RUNNING`。
+- 成功完成后为 `DONE`。
+- 失败后为 `FAILED`。
+- 如果自动重试，先记录失败，再将 `retry_count + 1`，并把任务改回 `PENDING`，由 `_schedule_retry(...)` 延迟后重新执行。
+
+## 版本策略
+
+重建索引必须遵守“先写新版本，再清理旧版本”。
+
+推荐流程：
+
+```plain
+读取 document.version
+  -> new_version = old_version + 1
+  -> 新 chunk 使用 doc_version = new_version
+  -> 批量写入新版本 chunk
+  -> 新版本写入成功
+  -> 更新 document.version = new_version
+  -> 更新 document.status = DONE
+  -> 清理 doc_version < new_version 的旧 chunk
+```
+
+要求：
+
+- 禁止先删除旧版本 chunk 再写新版本。
+- 重建失败时旧版本仍应可用。
+- 后续检索 SQL 必须只召回当前版本 chunk。
+- 若新版本部分写入后失败，查询层不得召回未完成版本。
+
+## 失败处理与重试
+
+### 失败分类
+
+| 失败类型 | 自动重试 | 说明 |
+| --- | --- | --- |
+| 文档记录不存在 | 否 | 重试也找不到数据 |
+| 索引任务记录不存在 | 否 | 任务不存在时无法恢复调度 |
+| MinIO 下载异常 | 是 | 当前阶段不细分对象不存在和临时网络错误，统一按任务级重试处理 |
+| 解析失败 | 是 | 对齐参考实现，解析与索引阶段失败先重试，超过上限后保持失败 |
+| 分块为空 | 是 | 对齐参考实现，分块为空不写入 chunk，但仍消耗任务级重试次数 |
+| Embedding 最终失败 | 是 | EmbeddingService 内部负责 API 调用级重试；异常冒泡到索引层后进入任务级重试 |
+| 向量数量与 chunk 数量不一致 | 是 | 不写入部分数据，但按索引阶段失败进入任务级重试 |
+| DB 写入或状态更新失败 | 是 | chunk 入库、文档状态更新、任务状态更新、旧版本清理失败都按任务级重试处理 |
+
+### 延迟重试
+
+延迟重试参考原 Spring 实现，Python 版本采用手写任务级调度，不复用 Tenacity。
+
+不复用 Tenacity 的原因：
+
+- 索引任务级重试需要维护 `task.status`、`task.retry_count`、`task.error_msg`、`document.status` 等落库状态。
+- 失败后要把任务重新标记为 `PENDING`，并在延迟后重新调度一次业务任务。
+- 这不是单次函数调用失败后的原地 retry，而是持久化业务任务的重新调度。
+- Tenacity 更适合 Embedding / Reranker / HTTP API 这类调用级重试。
+
+```plain
+索引任务失败
+  -> 判断是否可重试
+  -> task.retry_count + 1
+  -> task.status = PENDING
+  -> task.error_msg = 当前失败原因
+  -> delay_seconds = 2 ** (retry_count - 1)
+  -> 不在 run_task(...) 中直接等待
+  -> asyncio.create_task(_delayed_retry(...))
+  -> _delayed_retry 内部 await asyncio.sleep(delay_seconds)
+  -> 到期后调用 _launch_task(task_id, doc_id)
+```
+
+关键约束：
+
+- 等待重试不能占用索引执行路径。
+- `asyncio.sleep(...)` 只挂起当前 coroutine，不阻塞事件循环。
+- 只有持久化来源的 MinIO 任务支持自动重试。
+- 内存文本任务不自动重试，因为文本内容没有持久化，延迟后无法可靠恢复。
+
+建议实现：
+
+```python
+import asyncio
+
+
+async def run_task(self, task_id: int, doc_id: int) -> None:
+    try:
+        await self._run_task_once(task_id, doc_id)
+    except RetryableIndexError as exc:
+        await self._mark_failed(task_id, doc_id, str(exc))
+        await self._retry_if_possible(task_id, doc_id, str(exc))
+    except NonRetryableIndexError as exc:
+        await self._mark_failed(task_id, doc_id, str(exc))
+    except Exception as exc:
+        await self._mark_failed(task_id, doc_id, str(exc))
+        await self._retry_if_possible(task_id, doc_id, str(exc))
+
+
+async def _retry_if_possible(self, task_id: int, doc_id: int, error_msg: str) -> None:
+    task = await self.task_repository.get(task_id)
+    if task is None or not task.can_retry():
+        return
+
+    retry_count = task.retry_count + 1
+    await self.task_repository.mark_retry_pending(
+        task_id=task_id,
+        retry_count=retry_count,
+        error_msg=error_msg,
+    )
+    self._schedule_retry(task_id, doc_id, retry_count)
+
+
+def _schedule_retry(self, task_id: int, doc_id: int, retry_count: int) -> None:
+    delay_seconds = 2 ** (retry_count - 1)
+    task = asyncio.create_task(self._delayed_retry(task_id, doc_id, delay_seconds))
+    self._background_tasks.add(task)
+    task.add_done_callback(self._background_tasks.discard)
+
+
+async def _delayed_retry(self, task_id: int, doc_id: int, delay_seconds: int) -> None:
+    await asyncio.sleep(delay_seconds)
+    self._launch_task(task_id, doc_id)
+```
+
+说明：
+
+- `RetryableIndexError` 表示索引执行阶段应进入任务级重试的错误，例如 MinIO 下载异常、解析失败、分块为空、Embedding 失败、向量数量不一致、DB 写入失败。
+- `NonRetryableIndexError` 表示不应重试的错误，例如文档记录不存在、索引任务记录不存在。
+- 未分类普通异常如果发生在索引执行阶段，也应先标记失败并进入任务级重试，以对齐参考实现的宽重试策略。
+- `max_retry` 表示允许重试次数，不包含首次执行。
+- `delay_seconds = 2 ** (retry_count - 1)` 对应 1 秒、2 秒、4 秒的指数退避。
+- 本地 asyncio Task 在进程重启后不会恢复未执行任务；生产环境如果需要可靠任务恢复，应迁移到外部队列。
+
+## 测试建议
+
+建议新增：
+
+```plain
+tests/services/test_indexing.py
+```
+
+优先覆盖：
+
+- `submit_index_task(doc_id)` 创建 `IndexTask(PENDING)`。
+- `submit_index_task(doc_id)` 通过内部 `_launch_task(...)` 投递任务。
+- 文档不存在时任务失败或抛出明确错误。
+- `run_task(...)` 成功路径：download -> load -> chunk -> embed -> insert chunk -> DONE。
+- 解析失败时失败，不写入 chunk，并进入任务级重试。
+- 分块为空时失败，不写入 chunk，并进入任务级重试。
+- Embedding 失败时失败，不写入零向量，并进入任务级重试。
+- provider 返回向量数量与 chunk 数不一致时失败，不写入 chunk，并进入任务级重试。
+- chunk 写入失败时失败，不写入部分成功语义，并进入任务级重试。
+- 新版本写入成功后清理旧版本。
+- 新版本写入失败时旧版本不被删除。
+- 可重试失败增加 `retry_count` 并按手写指数退避调度重新执行。
+- 不可重试失败保持 `FAILED`。
+
+测试 fake：
+
+- FakeMinioStorageService：按 object key 返回 bytes 或抛异常。
+- 测试可 monkeypatch 或 fake `IndexService._launch_task(...)`，记录被投递的 `task_id` / `doc_id`。
+- FakeEmbeddingService：返回固定维度向量或抛异常。
+
+## 验收标准
+
+### 场景一：提交索引任务
+
+GIVEN 已存在 `kb_document`
+
+WHEN 调用 `submit_index_task(doc_id)`
+
+THEN 创建 `kb_index_task(status=PENDING)`，返回 `task_id`，并通过 `_launch_task(...)` 投递任务。
+
+### 场景二：成功索引
+
+GIVEN 文档可下载、可解析、可分块、可向量化
+
+WHEN 执行 `run_task(task_id, doc_id)`
+
+THEN 写入 chunk，文档状态为 `DONE`，任务状态为 `DONE`。
+
+### 场景三：分块为空
+
+GIVEN 文档解析成功但分块结果为空
+
+WHEN 执行索引
+
+THEN 文档和任务先进入 `FAILED`，随后 `retry_count + 1`，任务重新进入 `PENDING` 并调度重试；本次不写入 chunk。
+
+### 场景四：Embedding 失败
+
+GIVEN Embedding 服务抛出异常
+
+WHEN 执行索引
+
+THEN 文档和任务先进入 `FAILED`，随后 `retry_count + 1`，任务重新进入 `PENDING` 并调度重试；本次不写入零向量。
+
+### 场景五：可重试失败
+
+GIVEN MinIO 临时网络错误
+
+WHEN 执行索引失败
+
+THEN `retry_count + 1`，任务重新进入 `PENDING`，按手写指数退避调度重新执行。
+
+### 场景六：不可重试失败
+
+GIVEN 文档记录不存在或索引任务记录不存在
+
+WHEN 执行索引
+
+THEN 不进入自动重试；如果任务记录存在则保持 `FAILED`，如果任务记录不存在则直接终止本次执行。
+
+### 场景七：重建索引
+
+GIVEN 文档已有旧版本 chunk
+
+WHEN 重建索引成功
+
+THEN 新版本 chunk 写入成功，旧版本 chunk 被清理。
+
+### 场景八：重建失败
+
+GIVEN 文档已有旧版本 chunk
+
+WHEN 新版本索引失败
+
+THEN 旧版本 chunk 不被删除。
+
+## 参考资料
+
+- `docs/references/09-Embedding 服务——批量向量化与缓存.md`
+- `docs/plans/05-索引管道建立与流程打通.md`
+- FastAPI Context7 docs: `/fastapi/fastapi` BackgroundTasks
+- Python Context7 docs: `/python/cpython` asyncio `create_task` / `sleep`
