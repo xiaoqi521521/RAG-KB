@@ -2,6 +2,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def test_settings_env_file_uses_project_root_path():
+    from pathlib import Path
+
+    from app.core.config import Settings
+
+    env_file = Path(Settings.model_config["env_file"])
+
+    assert env_file.is_absolute()
+    assert env_file == Path(__file__).resolve().parents[1] / ".env"
+
+
 def test_settings_loads_required_rag_defaults():
     from app.core.config import Settings
 
@@ -22,6 +33,26 @@ def test_settings_loads_required_rag_defaults():
     assert settings.reranker_timeout_ms == 800
     assert settings.max_upload_file_size_mb == 50
     assert settings.max_upload_request_size_mb == 100
+
+
+def test_configure_logging_suppresses_verbose_http_client_logs():
+    import logging
+
+    from app.core.config import Settings
+    from app.core.logging import configure_logging
+
+    settings = Settings(
+        _env_file=None,
+        secret_key="test-secret",
+        database_url="postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
+        sync_database_url="postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
+        reranker_endpoint="https://example.test/rerank",
+    )
+
+    configure_logging(settings)
+
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
 
 
 async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monkeypatch):
@@ -67,14 +98,17 @@ async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monk
         openai_base_url="https://llm.example.test/v1",
         embedding_api_key="embedding-key",
         embedding_base_url="https://embedding.example.test/v1",
+        minio_endpoint="http://localhost:9000",
     )
 
     await clients.init_clients(settings)
 
+    assert clients._clients["minio"].kwargs["endpoint"] == "localhost:9000"
     assert chat_kwargs["api_key"] == "chat-key"
     assert chat_kwargs["base_url"] == "https://llm.example.test/v1"
     assert embedding_kwargs["api_key"] == "embedding-key"
     assert embedding_kwargs["base_url"] == "https://embedding.example.test/v1"
+    assert embedding_kwargs["check_embedding_ctx_length"] is False
 
     await clients.close_clients()
 
@@ -84,11 +118,8 @@ def test_current_user_contextvar_is_set_and_reset():
 
     user = CurrentUser(
         user_id=1,
-        username="alice",
-        tenant_id="tenant-a",
         department_id="engineering",
         role="ADMIN",
-        allowed_kb_ids=(1, 2),
     )
 
     with pytest.raises(RuntimeError, match="CurrentUser is not initialized"):
@@ -127,3 +158,39 @@ def test_fastapi_health_endpoint(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "UP"}
+
+
+def test_start_runs_uvicorn_with_application_entrypoint(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
+    )
+    monkeypatch.setenv(
+        "SYNC_DATABASE_URL",
+        "postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
+    )
+    monkeypatch.setenv("RERANKER_ENDPOINT", "https://example.test/rerank")
+    monkeypatch.setenv("APP_DEBUG", "true")
+
+    from app.core.config import get_settings
+    from app import main
+
+    run_kwargs = {}
+
+    def fake_run(app_path, **kwargs):
+        run_kwargs["app_path"] = app_path
+        run_kwargs.update(kwargs)
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(main.uvicorn, "run", fake_run)
+
+    main.start()
+
+    assert run_kwargs == {
+        "app_path": "app.main:app",
+        "host": "127.0.0.1",
+        "port": 8000,
+        "reload": True,
+        "log_level": "info",
+    }

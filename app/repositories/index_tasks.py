@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import IndexTask, IndexTaskStatus, IndexTaskType
@@ -23,6 +24,7 @@ class IndexTaskRepository:
         *,
         task_type: IndexTaskType = IndexTaskType.INDEX,
     ) -> IndexTask:
+        """为指定文档创建一条待执行的索引任务。"""
         task = IndexTask(
             doc_id=doc_id,
             task_type=task_type.value,
@@ -33,9 +35,21 @@ class IndexTaskRepository:
         return task
 
     async def get(self, task_id: int) -> IndexTask | None:
+        """按任务主键获取单条索引任务。"""
         return await self.session.get(IndexTask, task_id)
 
+    async def get_latest_by_doc_id(self, doc_id: int) -> IndexTask | None:
+        """获取指定文档最新创建的一条索引任务。"""
+        result = await self.session.execute(
+            select(IndexTask)
+            .where(IndexTask.doc_id == doc_id)
+            .order_by(IndexTask.created_at.desc(), IndexTask.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def mark_running(self, task_id: int) -> None:
+        """将索引任务状态更新为运行中并记录开始时间。"""
         task = await self.get(task_id)
         if task is None:
             return
@@ -45,6 +59,7 @@ class IndexTaskRepository:
         await self.session.flush()
 
     async def mark_done(self, task_id: int) -> None:
+        """将索引任务状态更新为完成并记录结束时间。"""
         task = await self.get(task_id)
         if task is None:
             return
@@ -54,6 +69,7 @@ class IndexTaskRepository:
         await self.session.flush()
 
     async def mark_failed(self, task_id: int, error_msg: str) -> None:
+        """将索引任务状态更新为失败，并保留错误信息。"""
         task = await self.get(task_id)
         if task is None:
             return
@@ -69,6 +85,7 @@ class IndexTaskRepository:
         retry_count: int,
         error_msg: str,
     ) -> None:
+        """将索引任务重置为待重试，并更新重试次数。"""
         task = await self.get(task_id)
         if task is None:
             return

@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import urlparse
 
 import redis.asyncio as redis
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -12,7 +13,7 @@ _clients: dict[str, Any] = {}
 async def init_clients(settings: Settings) -> None:
     _clients["redis"] = redis.from_url(settings.redis_url, decode_responses=True)
     _clients["minio"] = Minio(
-        endpoint=settings.minio_endpoint,
+        endpoint=_normalize_minio_endpoint(settings.minio_endpoint),
         access_key=settings.minio_access_key,
         secret_key=settings.minio_secret_key,
         secure=settings.minio_secure,
@@ -35,6 +36,9 @@ async def init_clients(settings: Settings) -> None:
             api_key=embedding_api_key,
             base_url=settings.embedding_base_url,
             timeout=settings.embedding_timeout_seconds,
+            # DashScope OpenAI-compatible Embedding 只接受 str/list[str]，
+            # 关闭 LangChain 默认的 token id 分片，避免发送 list[list[int]]。
+            check_embedding_ctx_length=False,
         )
 
 
@@ -65,3 +69,10 @@ def get_embeddings() -> OpenAIEmbeddings:
         return _clients["embeddings"]
     except KeyError as exc:
         raise RuntimeError("Embedding client is not configured") from exc
+
+
+def _normalize_minio_endpoint(endpoint: str) -> str:
+    parsed = urlparse(endpoint)
+    if parsed.scheme and parsed.netloc:
+        return parsed.netloc
+    return endpoint

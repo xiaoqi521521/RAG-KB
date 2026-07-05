@@ -45,6 +45,7 @@ def test_database_models_are_registered_on_base_metadata():
 
     chunk_columns = Base.metadata.tables["kb_doc_chunk"].columns
     assert chunk_columns["embedding"].type.compile() == "VECTOR(1024)"
+    assert chunk_columns["embedding"].type.bind_processor(None) is not None
     assert chunk_columns["content_tsv"].type.compile(dialect=None) == "TSVECTOR"
 
 

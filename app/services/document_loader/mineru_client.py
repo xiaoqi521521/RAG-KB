@@ -1,4 +1,5 @@
 import tempfile
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
@@ -9,6 +10,7 @@ from app.core.config import Settings, get_settings
 from app.services.document_loader.exceptions import EmptyDocumentError, ExternalParserError
 
 LoaderFactory = Callable[..., Any]
+logger = logging.getLogger(__name__)
 
 
 class MinerULoaderClient(ABC):
@@ -73,7 +75,10 @@ class MinerULoaderClient(ABC):
                 timeout=self.settings.mineru_timeout_seconds,
                 split_pages=self.split_pages,
             )
-            return loader.load()
+            logger.info("MinerU解析开始了...")
+            docs = loader.load()
+            logger.info("MinerU解析结束了...")
+            return docs
         except Exception as exc:
             # 外部 SDK 可能抛出多种实现细节异常，这里收敛为项目统一错误类型。
             raise ExternalParserError(f"MinerU SDK request failed: {exc}") from exc

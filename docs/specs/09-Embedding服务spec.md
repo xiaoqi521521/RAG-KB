@@ -177,6 +177,9 @@ class EmbeddingService:
 - 批量文档优先使用异步批量方法，例如 `aembed_documents(batch)`。
 - 查询文本使用 `aembed_query(text)` 或复用批量入口。
 - 如果当前 LangChain 版本没有可用异步方法，再由实现层评估是否使用同步方法并放入线程池；不要在事件循环里直接执行长耗时同步请求。
+- 使用 DashScope OpenAI-compatible Embedding API 时，`OpenAIEmbeddings` 必须设置 `check_embedding_ctx_length=False`。
+- 原因是 LangChain 默认会把文本转换为 token id 分片后发送 `list[list[int]]`，而 DashScope compatible embedding 只接受 `str` 或 `list[str]`。
+- 文本长度控制由本项目文档分块层负责；如果 chunk 仍超过 provider 限制，应调整分块配置，而不是让 Embedding 客户端改发 token id。
 
 ### Redis Cache
 

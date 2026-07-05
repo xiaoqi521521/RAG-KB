@@ -2,6 +2,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+import logging
 from langchain_core.documents import Document
 
 
@@ -114,6 +115,19 @@ def test_parse_pdf():
     assert docs[0].metadata["file_type"] == "PDF"
     assert docs[0].metadata["page_num"] == 1
     assert all("title" not in doc.metadata for doc in docs)
+
+
+def test_parse_pdf_logs_mineru_request_summary(caplog):
+    """MinerU 请求只保留开始和结束摘要，不依赖 httpx 明细日志。"""
+    FakeMinerULoader.calls = []
+    service = _build_loader_service(FakeMinerULoader)
+
+    with caplog.at_level(logging.INFO, logger="app.services.document_loader.mineru_client"):
+        service.load(BytesIO(b"pdf bytes"), "policy.pdf")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "MinerU解析开始了..." in messages
+    assert "MinerU解析结束了..." in messages
 
 
 def test_parse_docx():

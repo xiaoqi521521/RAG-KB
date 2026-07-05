@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from pgvector.sqlalchemy import Vector as PGVector  # type: ignore[import-untyped]
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -17,16 +18,6 @@ class TSVector(UserDefinedType):
 
     def get_col_spec(self, **kw: Any) -> str:
         return "TSVECTOR"
-
-
-class PGVector(UserDefinedType):
-    cache_ok = True
-
-    def __init__(self, dimensions: int) -> None:
-        self.dimensions = dimensions
-
-    def get_col_spec(self, **kw: Any) -> str:
-        return f"VECTOR({self.dimensions})"
 
 
 class PermissionSubjectType(StrEnum):

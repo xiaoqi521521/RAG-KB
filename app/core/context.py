@@ -5,11 +5,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class CurrentUser:
     user_id: int
-    username: str
-    tenant_id: str
     department_id: str
     role: str
-    allowed_kb_ids: tuple[int, ...]
 
     @property
     def is_admin(self) -> bool:

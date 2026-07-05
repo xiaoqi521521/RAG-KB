@@ -73,7 +73,7 @@ npx.cmd ctx7@latest docs /websites/langchain "OpenAIEmbeddings async aembed_docu
 - 官方示例支持初始化时传入 `model`、`base_url` 和 `api_key`。
 - 异步 Embedding 方法为 `aembed_documents(...)` 和 `aembed_query(...)`。
 
-本次实现据此使用 `OpenAIEmbeddings(..., model=..., api_key=..., base_url=..., timeout=...)` 初始化客户端，并在服务层调用 `aembed_documents(...)`。
+本次实现据此使用 `OpenAIEmbeddings(..., model=..., api_key=..., base_url=..., timeout=..., check_embedding_ctx_length=False)` 初始化客户端，并在服务层调用 `aembed_documents(...)`。
 
 ## 新增和修改文件
 
@@ -123,6 +123,7 @@ EMBEDDING_MAX_RETRIES=3
 - LLM 使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL`。
 - Embedding 使用 `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL`。
 - Embedding 客户端额外传入 `timeout=settings.embedding_timeout_seconds`。
+- Embedding 客户端设置 `check_embedding_ctx_length=False`，确保 DashScope OpenAI-compatible endpoint 收到的是 `str` / `list[str]`，而不是 LangChain 自动 token 化后的 `list[list[int]]`。
 
 ## 核心实现
 
@@ -330,3 +331,67 @@ warning 为 FastAPI / Starlette TestClient 对当前 `httpx` 适配的弃用提�
 - 当前 Token usage 记录为 unavailable；如果后续 provider 或 LangChain 暴露 usage，可在服务层扩展统计对象。
 - `EmbeddingVectorCodec._validate_vector(...)` 当前作为内部校验方法使用；后续如果需要更强封装，可拆成公共 `validate(...)`。
 - 测试文件为了避免 pytest 收集阶段路径问题，把 `app` 相关导入放在测试函数或 helper 内部。
+
+## DashScope compatible 入参修订
+
+后续重建索引联调时，Embedding 阶段出现 DashScope 400 错误：
+
+```plain
+InternalError.Algo.InvalidParameter: Value error, contents is neither str nor list of str.: input.contents
+```
+
+排查结论：
+
+- `EmbeddingService` 传入 provider 前已经把 chunk 内容规范化为 `list[str]`。
+- 当前 `langchain_openai.OpenAIEmbeddings` 默认 `check_embedding_ctx_length=True`。
+- 该默认行为会先用 tiktoken 把文本转换为 token id 分片，再向 OpenAI-compatible endpoint 发送 `list[list[int]]`。
+- OpenAI 原生 Embedding 接口可以接受 token id 输入，但 DashScope compatible embedding 只接受 `str` 或 `list[str]`，因此报 `input.contents` 类型非法。
+
+修订方式：
+
+```python
+OpenAIEmbeddings(
+    model=settings.embedding_model,
+    api_key=embedding_api_key,
+    base_url=settings.embedding_base_url,
+    timeout=settings.embedding_timeout_seconds,
+    check_embedding_ctx_length=False,
+)
+```
+
+边界说明：
+
+- 项目已经有文档分块层控制 chunk 长度，Embedding 客户端不再做 LangChain 内置 token id 分片。
+- 如果后续遇到单个 chunk 超过 provider 限制，应调整 `chunk_size` / `overlap` 配置或在分块层拆分，而不是恢复 token id payload。
+
+追加验证：
+
+```powershell
+$env:PYTHONPATH='.'; uv run pytest tests/test_initialization.py::test_init_clients_uses_separate_chat_and_embedding_openai_configs -v
+$env:PYTHONPATH='.'; uv run pytest tests/services/test_embedding.py tests/services/test_indexing.py -v
+```
+
+结果：
+
+```plain
+1 passed, 1 warning
+26 passed
+```
+
+最终验证：
+
+```powershell
+$env:PYTHONPATH='.'; uv run pytest -v
+uv run ruff check app tests
+$env:PYTHONPATH='.'; uv run mypy app/core/clients.py app/services/embedding.py
+```
+
+结果：
+
+```plain
+66 passed, 1 warning
+All checks passed!
+Found 3 errors in 1 file
+```
+
+mypy 未通过项集中在 `app/core/clients.py` 既有 LangChain 类型 stub 不匹配：`ChatOpenAI(max_tokens=...)`、`ChatOpenAI(api_key=str)`、`OpenAIEmbeddings(api_key=str)`。本次新增的 `check_embedding_ctx_length=False` 未引入新的 mypy 报错。

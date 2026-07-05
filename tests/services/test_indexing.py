@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -212,6 +216,7 @@ def _build_service(
     loader_exc: Exception | None = None,
     embedding_exc: Exception | None = None,
     chunk_insert_exc: Exception | None = None,
+    index_service_kwargs: dict[str, object] | None = None,
 ) -> ServiceBundle:
     document_repo = FakeDocumentRepository(docs or [_build_document()])
     task_repo = FakeIndexTaskRepository()
@@ -240,6 +245,7 @@ def _build_service(
         loader_service=loader,
         chunk_service=chunk_service,
         embedding_service=embedding,
+        **(index_service_kwargs or {}),
     )
     return ServiceBundle(service, document_repo, task_repo, chunk_repo, storage, embedding)
 
@@ -257,6 +263,64 @@ async def test_submit_index_task_creates_pending_task_and_launches_background_ru
 
 
 @pytest.mark.asyncio
+async def test_submit_index_task_commits_current_transaction_before_launch() -> None:
+    events: list[str] = []
+
+    async def commit_before_launch() -> None:
+        events.append("commit")
+
+    bundle = _build_service(
+        index_service_kwargs={"commit_before_launch": commit_before_launch},
+    )
+
+    task_id = await bundle.service.submit_index_task(1)
+
+    assert events == ["commit"]
+    assert bundle.service.launched == [(task_id, 1)]
+
+
+@pytest.mark.asyncio
+async def test_launch_task_uses_background_service_factory() -> None:
+    events: list[str] = []
+    document_repo = FakeDocumentRepository([_build_document()])
+    task_repo = FakeIndexTaskRepository()
+
+    class RequestScopedIndexService(IndexService):
+        async def run_task(self, task_id: int, doc_id: int) -> None:
+            events.append(f"request:{task_id}:{doc_id}")
+
+    class BackgroundIndexService:
+        async def run_task(self, task_id: int, doc_id: int) -> None:
+            events.append(f"background:{task_id}:{doc_id}")
+
+    @asynccontextmanager
+    async def background_service_factory() -> AsyncIterator[BackgroundIndexService]:
+        events.append("factory-enter")
+        yield BackgroundIndexService()
+        events.append("factory-exit")
+
+    service = RequestScopedIndexService(
+        document_repository=document_repo,
+        task_repository=task_repo,
+        chunk_repository=FakeChunkRepository(),
+        storage_service=FakeStorage(),
+        loader_service=FakeLoader([Document(page_content="正文")]),
+        chunk_service=FakeChunkService([Document(page_content="正文")]),
+        embedding_service=FakeEmbeddingService([[0.1] * 1024]),
+        background_service_factory=background_service_factory,
+    )
+
+    task_id = await service.submit_index_task(1)
+    await asyncio.gather(*list(service._background_tasks))
+
+    assert events == [
+        "factory-enter",
+        f"background:{task_id}:1",
+        "factory-exit",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_submit_index_task_rejects_missing_document_without_creating_task() -> None:
     bundle = _build_service(docs=[])
 
@@ -268,7 +332,7 @@ async def test_submit_index_task_rejects_missing_document_without_creating_task(
 
 
 @pytest.mark.asyncio
-async def test_run_task_success_indexes_chunks_and_marks_document_done() -> None:
+async def test_run_task_initial_index_keeps_document_initial_version() -> None:
     doc = _build_document(version=1)
     bundle = _build_service(
         docs=[doc],
@@ -292,7 +356,7 @@ async def test_run_task_success_indexes_chunks_and_marks_document_done() -> None
     task = bundle.tasks.tasks[task_id]
     assert task.status == IndexTaskStatus.DONE.value
     assert doc.status == DocumentStatus.DONE.value
-    assert doc.version == 2
+    assert doc.version == 1
     assert doc.chunk_count == 1
     assert doc.token_count == 12
     assert bundle.storage.download_calls == ["kb/10/handbook.txt"]
@@ -307,6 +371,77 @@ async def test_run_task_success_indexes_chunks_and_marks_document_done() -> None
     assert inserted.page_num == 2
     assert inserted.section_title == "总则"
     assert inserted.token_count == 12
+    assert inserted.doc_version == 1
+    assert bundle.chunks.deleted == [(1, 1)]
+
+
+@pytest.mark.asyncio
+async def test_run_task_logs_indexing_stage_start_and_finish(caplog: pytest.LogCaptureFixture) -> None:
+    bundle = _build_service()
+    task_id = await bundle.service.submit_index_task(1)
+
+    with caplog.at_level(logging.INFO, logger="app.services.indexing"):
+        await bundle.service.run_task(task_id, 1)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "文档加载阶段开始了..." in messages
+    assert "文档加载阶段结束了..." in messages
+    assert "文档分块阶段开始了..." in messages
+    assert "文档分块阶段结束了..." in messages
+    assert "Embedding阶段开始了..." in messages
+    assert "Embedding阶段结束了..." in messages
+
+
+@pytest.mark.asyncio
+async def test_run_task_commits_running_and_processing_status_before_loading() -> None:
+    events: list[str] = []
+    doc = _build_document(version=1)
+
+    async def commit_after_status_change() -> None:
+        task = bundle.tasks.tasks[task_id]
+        events.append(f"commit:{task.status}:{doc.status}")
+
+    class RecordingStorage(FakeStorage):
+        async def download(self, object_key: str) -> bytes:
+            events.append("download")
+            return await super().download(object_key)
+
+    bundle = _build_service(
+        docs=[doc],
+        index_service_kwargs={"commit_after_status_change": commit_after_status_change},
+    )
+    bundle.service.storage_service = RecordingStorage()
+    task_id = await bundle.service.submit_index_task(1)
+
+    await bundle.service.run_task(task_id, 1)
+
+    assert events[0] == "commit:RUNNING:PROCESSING"
+    assert events[1] == "download"
+
+
+@pytest.mark.asyncio
+async def test_run_task_reindex_increments_document_version() -> None:
+    doc = _build_document(version=1)
+    bundle = _build_service(
+        docs=[doc],
+        chunks=[
+            Document(
+                page_content="重建后的第一块内容",
+                metadata={"chunk_index": 0, "page_num": 2, "estimated_tokens": 10},
+            )
+        ],
+        vectors=[[0.4] * 1024],
+    )
+    task_id = await bundle.service.reindex_document(1)
+
+    await bundle.service.run_task(task_id, 1)
+
+    task = bundle.tasks.tasks[task_id]
+    assert task.task_type == IndexTaskType.REINDEX.value
+    assert task.status == IndexTaskStatus.DONE.value
+    assert doc.status == DocumentStatus.DONE.value
+    assert doc.version == 2
+    inserted = bundle.chunks.inserted[0]
     assert inserted.doc_version == 2
     assert bundle.chunks.deleted == [(1, 2)]
 

@@ -13,11 +13,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_v1_prefix}/auth/lo
 async def get_current_user() -> AsyncIterator[CurrentUser]:
     user = CurrentUser(
         user_id=1,
-        username="demo",
-        tenant_id="default",
         department_id="default",
         role="ADMIN",
-        allowed_kb_ids=(),
     )
     if user is None:
         raise HTTPException(

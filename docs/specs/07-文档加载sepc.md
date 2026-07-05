@@ -180,6 +180,15 @@ class DocumentParser(Protocol):
 
 `MinerULoaderClient` 负责调用 MinerU 官方 `langchain-mineru` SDK。`PdfParser` 负责 PDF 页级结果转换，`WordParser` 负责 Word 的 Markdown 逻辑章节转换。
 
+MinerU 调用日志只保留两条摘要：
+
+```plain
+MinerU解析开始了...
+MinerU解析结束了...
+```
+
+底层 `httpx/httpcore` 请求明细不应以 INFO 级别输出，避免泄漏签名 URL 或淹没索引阶段日志。
+
 支持类型：
 
 - PDF

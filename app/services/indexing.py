@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from io import BytesIO
+from typing import Protocol
 
 from langchain_core.documents import Document
 
@@ -13,6 +17,28 @@ from app.repositories.index_tasks import IndexTaskRepository
 from app.services.chunking import ChunkService
 from app.services.document_loader.service import DocumentLoaderService
 from app.services.embedding import EmbeddingService
+
+logger = logging.getLogger(__name__)
+
+
+class IndexTaskRunner(Protocol):
+    """后台索引执行器协议，用于隔离请求会话和后台会话。"""
+
+    async def run_task(self, task_id: int, doc_id: int) -> None:
+        """执行指定索引任务。
+
+        Args:
+            task_id: 索引任务 ID。
+            doc_id: 任务关联的文档 ID。
+
+        Returns:
+            无返回值，执行结果通过任务和文档状态落库。
+        """
+
+
+BackgroundServiceFactory = Callable[[], AbstractAsyncContextManager[IndexTaskRunner]]
+CommitBeforeLaunch = Callable[[], Awaitable[None]]
+CommitAfterStatusChange = Callable[[], Awaitable[None]]
 
 
 class IndexPipelineError(Exception):
@@ -44,6 +70,9 @@ class IndexService:
         loader_service: DocumentLoaderService,
         chunk_service: ChunkService,
         embedding_service: EmbeddingService,
+        background_service_factory: BackgroundServiceFactory | None = None,
+        commit_before_launch: CommitBeforeLaunch | None = None,
+        commit_after_status_change: CommitAfterStatusChange | None = None,
     ) -> None:
         """注入索引管道依赖，保持服务层只负责编排流程。
 
@@ -55,6 +84,9 @@ class IndexService:
             loader_service: 文档解析服务。
             chunk_service: 文档分块服务。
             embedding_service: 批量向量化服务。
+            background_service_factory: 后台任务使用的独立服务工厂，避免复用请求级数据库会话。
+            commit_before_launch: 后台任务启动前的提交钩子，确保新任务对独立会话可见。
+            commit_after_status_change: 进入执行态后的提交钩子，确保外部轮询可见处理中状态。
         """
         self.document_repository = document_repository
         self.task_repository = task_repository
@@ -63,6 +95,9 @@ class IndexService:
         self.loader_service = loader_service
         self.chunk_service = chunk_service
         self.embedding_service = embedding_service
+        self.background_service_factory = background_service_factory
+        self.commit_before_launch = commit_before_launch
+        self.commit_after_status_change = commit_after_status_change
         self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def submit_index_task(self, doc_id: int) -> int:
@@ -80,6 +115,7 @@ class IndexService:
             raise NonRetryableIndexError(f"document not found: {doc_id}")
 
         task = await self.task_repository.create(doc_id, task_type=IndexTaskType.INDEX)
+        await self._commit_before_launch()
         self._launch_task(task.id, doc_id)
         return task.id
 
@@ -98,8 +134,27 @@ class IndexService:
             raise NonRetryableIndexError(f"document not found: {doc_id}")
 
         task = await self.task_repository.create(doc_id, task_type=IndexTaskType.REINDEX)
+        await self._commit_before_launch()
         self._launch_task(task.id, doc_id)
         return task.id
+
+    async def _commit_before_launch(self) -> None:
+        """在后台任务启动前提交当前事务。
+
+        请求级服务创建任务后需要先提交事务，否则独立后台会话可能读不到任务记录；
+        单元测试或同步调用场景不传钩子时保持原有事务边界。
+        """
+        if self.commit_before_launch is not None:
+            await self.commit_before_launch()
+
+    async def _commit_after_status_change(self) -> None:
+        """提交任务开始状态，确保长耗时索引阶段对外可观测。
+
+        请求级同步调用场景不传钩子时仍保持原有事务边界；后台独立会话会在
+        `RUNNING/PROCESSING` 写入后立即提交，避免数据库里长时间停留在 PENDING。
+        """
+        if self.commit_after_status_change is not None:
+            await self.commit_after_status_change()
 
     def _launch_task(self, task_id: int, doc_id: int) -> None:
         """创建后台任务并维护任务引用，避免任务被提前回收。
@@ -108,9 +163,44 @@ class IndexService:
             task_id: 已落库的索引任务 ID。
             doc_id: 任务关联的文档 ID。
         """
-        task = asyncio.create_task(self.run_task(task_id, doc_id))
+        task = asyncio.create_task(self._run_launched_task(task_id, doc_id))
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._handle_background_task_done)
+
+    def _handle_background_task_done(self, task: asyncio.Task[None]) -> None:
+        """回收后台任务引用并记录未处理异常。
+
+        Args:
+            task: 已结束的 asyncio 任务。
+
+        Returns:
+            无返回值。
+        """
+        self._background_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("索引后台任务执行异常")
+
+    async def _run_launched_task(self, task_id: int, doc_id: int) -> None:
+        """使用独立后台服务执行索引任务。
+
+        Args:
+            task_id: 索引任务 ID。
+            doc_id: 任务关联的文档 ID。
+
+        Returns:
+            无返回值。
+        """
+        if self.background_service_factory is None:
+            await self.run_task(task_id, doc_id)
+            return
+
+        # 后台任务不能复用请求级 AsyncSession；每次执行都创建独立服务和事务。
+        async with self.background_service_factory() as service:
+            await service.run_task(task_id, doc_id)
 
     async def run_task(self, task_id: int, doc_id: int) -> None:
         """执行索引任务并根据异常类型更新失败或重试状态。
@@ -151,6 +241,7 @@ class IndexService:
 
         await self.task_repository.mark_running(task_id)
         await self.document_repository.mark_processing(doc_id)
+        await self._commit_after_status_change()
 
         # 第二步：下载持久化源文件。MinIO/网络/IO 异常通常是瞬时问题，允许任务级重试。
         try:
@@ -161,15 +252,21 @@ class IndexService:
             raise RetryableIndexError(f"storage download failed: {exc}") from exc
 
         # 第三步：解析并分块。空分块可能来自解析抖动或文件内容异常，交给重试上限兜底。
+        logger.info("文档加载阶段开始了...")
         parsed_docs = self.loader_service.load(BytesIO(raw_file), document.file_name)
+        logger.info("文档加载阶段结束了...")
+        logger.info("文档分块阶段开始了...")
         chunks = self.chunk_service.split_documents(parsed_docs)
+        logger.info("文档分块阶段结束了...")
         if not chunks:
             raise RetryableIndexError("no valid chunks generated from document")
 
         # 第四步：批量向量化。Embedding 服务异常和数量不一致都会破坏 chunk/vector 对齐。
         texts = [chunk.page_content for chunk in chunks]
         try:
+            logger.info("Embedding阶段开始了...")
             vectors = await self.embedding_service.embed_documents(texts)
+            logger.info("Embedding阶段结束了...")
         except IndexPipelineError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -180,8 +277,8 @@ class IndexService:
                 f"embedding result count mismatch: expected {len(chunks)}, got {len(vectors)}"
             )
 
-        # 第五步：构建新版本 chunk。先写新版本、再删旧版本，避免失败时查询结果被清空。
-        new_version = document.version + 1
+        # 第五步：按任务类型确定 chunk 版本。首次索引用初始版本，重建索引才递增版本。
+        new_version = self._resolve_doc_version(task.task_type, document.version)
         doc_chunks = self._build_doc_chunks(document, chunks, vectors, new_version)
         token_count = sum(chunk.token_count for chunk in doc_chunks)
 
@@ -195,6 +292,22 @@ class IndexService:
         # 新版本已完整写入后再清理旧版本；若清理失败，旧数据残留也不会影响最新版本查询。
         await self.chunk_repository.delete_older_versions(doc_id, new_version)
         await self.task_repository.mark_done(task_id)
+
+    def _resolve_doc_version(self, task_type: str, current_version: int) -> int:
+        """根据索引任务类型计算本次写入的文档版本号。
+
+        Args:
+            task_type: 索引任务类型，来自 `kb_index_task.task_type`。
+            current_version: 文档当前版本号。
+
+        Returns:
+            本次 chunk 写入和文档完成状态应使用的版本号。
+        """
+        if task_type == IndexTaskType.INDEX.value:
+            return current_version
+        if task_type == IndexTaskType.REINDEX.value:
+            return current_version + 1
+        raise NonRetryableIndexError(f"unknown index task type: {task_type}")
 
     def _build_doc_chunks(
         self,
@@ -282,7 +395,7 @@ class IndexService:
         # 用独立后台协程等待，不在当前索引执行协程里 sleep，避免阻塞本次任务收尾。
         task = asyncio.create_task(self._delayed_retry(task_id, doc_id, delay_seconds))
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._handle_background_task_done)
 
     async def _delayed_retry(self, task_id: int, doc_id: int, delay_seconds: int) -> None:
         """等待指定时间后重新启动索引任务。
