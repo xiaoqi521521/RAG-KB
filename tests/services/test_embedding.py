@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from pydantic import ValidationError
 
@@ -126,6 +128,29 @@ def test_embed_documents_uses_cache_and_preserves_order():
     assert redis_client.set_calls == [
         (service.build_cache_key("报销单据需在费用发生后 30 天内提交。"), 604800, service.codec.dumps(_vector(0.2)))
     ]
+
+
+def test_embed_documents_logs_cache_hit_rate(caplog):
+    service, _, redis_client = _build_service(
+        embedding_map={
+            ("报销单据需在费用发生后 30 天内提交。",): [_vector(0.2)],
+        }
+    )
+    cached_key = service.build_cache_key("员工每年享有 5 天带薪年假。")
+    redis_client.store[cached_key] = service.codec.dumps(_vector(0.1))
+
+    with caplog.at_level(logging.INFO, logger="app.services.embedding"):
+        asyncio_run(
+            service.embed_documents(
+                [
+                    "员工每年享有 5 天带薪年假。",
+                    "报销单据需在费用发生后 30 天内提交。",
+                    "员工每年享有 5 天带薪年假。",
+                ]
+            )
+        )
+
+    assert "cache_hit_rate=66.67%" in caplog.text
 
 
 def test_embed_documents_removes_dirty_cache_and_rebuilds():

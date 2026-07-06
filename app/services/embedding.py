@@ -214,11 +214,13 @@ class EmbeddingService:
             raise EmbeddingProviderError("embedding result is incomplete") from exc
 
         elapsed_ms = (time.perf_counter() - started_at) * 1000
+        cache_hit_rate = cache_hit_count / len(texts) * 100
         logger.info(
-            "Embedding completed: texts=%s cache_hits=%s cache_misses=%s dirty_cache=%s api_batches=%s elapsed_ms=%.2f api_elapsed_ms=%.2f token_usage_unavailable=%s",
+            "Embedding completed: texts=%s cache_hits=%s cache_misses=%s cache_hit_rate=%.2f%% dirty_cache=%s api_batches=%s elapsed_ms=%.2f api_elapsed_ms=%.2f token_usage_unavailable=%s",
             len(texts),
             cache_hit_count,
             cache_miss_count,
+            cache_hit_rate,
             dirty_cache_count,
             api_batch_count,
             elapsed_ms,

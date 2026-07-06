@@ -390,6 +390,9 @@ async def test_run_task_logs_indexing_stage_start_and_finish(caplog: pytest.LogC
     assert "文档分块阶段结束了..." in messages
     assert "Embedding阶段开始了..." in messages
     assert "Embedding阶段结束了..." in messages
+    assert any("chunk 入库完成" in message for message in messages)
+    assert any("旧版本 chunk 清理完成" in message for message in messages)
+    assert any("索引任务 DONE" in message for message in messages)
 
 
 @pytest.mark.asyncio

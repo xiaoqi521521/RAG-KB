@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.time import shanghai_now_naive
 from app.models import DocumentStatus, KbDocument
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class DocumentRepository:
@@ -101,7 +96,7 @@ class DocumentRepository:
         document.chunk_count = chunk_count
         document.token_count = token_count
         document.version = version
-        document.indexed_at = _utcnow_naive()
+        document.indexed_at = shanghai_now_naive()
         await self.session.flush()
 
     async def mark_failed(self, doc_id: int, error_msg: str) -> None:

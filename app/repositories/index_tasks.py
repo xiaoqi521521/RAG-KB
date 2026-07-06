@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.time import shanghai_now_naive
 from app.models import IndexTask, IndexTaskStatus, IndexTaskType
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class IndexTaskRepository:
@@ -54,7 +49,7 @@ class IndexTaskRepository:
         if task is None:
             return
         task.status = IndexTaskStatus.RUNNING.value
-        task.started_at = _utcnow_naive()
+        task.started_at = shanghai_now_naive()
         task.error_msg = None
         await self.session.flush()
 
@@ -65,7 +60,7 @@ class IndexTaskRepository:
             return
         task.status = IndexTaskStatus.DONE.value
         task.error_msg = None
-        task.finished_at = _utcnow_naive()
+        task.finished_at = shanghai_now_naive()
         await self.session.flush()
 
     async def mark_failed(self, task_id: int, error_msg: str) -> None:
@@ -75,7 +70,7 @@ class IndexTaskRepository:
             return
         task.status = IndexTaskStatus.FAILED.value
         task.error_msg = error_msg
-        task.finished_at = _utcnow_naive()
+        task.finished_at = shanghai_now_naive()
         await self.session.flush()
 
     async def mark_retry_pending(

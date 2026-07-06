@@ -5,12 +5,16 @@ from enum import StrEnum
 from typing import Any
 
 from pgvector.sqlalchemy import Vector as PGVector  # type: ignore[import-untyped]
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, SmallInteger, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, SmallInteger, String, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
 
 from app.core.database import Base
+from app.core.time import shanghai_now_naive
+
+
+SHANGHAI_NOW_SQL = text("timezone('Asia/Shanghai', now())")
 
 
 class TSVector(UserDefinedType):
@@ -65,10 +69,14 @@ class KnowledgeBase(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime,
+        nullable=False,
+        default=shanghai_now_naive,
+        server_default=SHANGHAI_NOW_SQL,
+        onupdate=shanghai_now_naive,
     )
     is_deleted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
@@ -85,7 +93,7 @@ class KbPermission(Base):
     permission: Mapped[str] = mapped_column(String(20), nullable=False)
     granted_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     granted_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
 
 
@@ -107,7 +115,7 @@ class KbDocument(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     uploaded_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime)
     is_deleted: Mapped[bool] = mapped_column(
@@ -130,7 +138,7 @@ class DocChunk(Base):
     token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     doc_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
 
 
@@ -152,7 +160,7 @@ class IndexTask(Base):
     max_retry: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default="3")
     error_msg: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -170,10 +178,10 @@ class ChatSession(Base):
     title: Mapped[str | None] = mapped_column(String(200))
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
     last_active_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
     is_deleted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
@@ -192,7 +200,7 @@ class ChatMessage(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, default=0, server_default="0")
     feedback: Mapped[int | None] = mapped_column(SmallInteger)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
 
 
@@ -205,7 +213,7 @@ class AnswerFeedback(Base):
     feedback: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
 
 
@@ -219,7 +227,7 @@ class EvalDataset(Base):
     expected_chunk_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
 
 
@@ -234,4 +242,6 @@ class EvalResult(Base):
     actual_answer: Mapped[str | None] = mapped_column(Text)
     faithfulness: Mapped[float | None] = mapped_column(Float)
     answer_relevancy: Mapped[float | None] = mapped_column(Float)
-    eval_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+    eval_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
+    )

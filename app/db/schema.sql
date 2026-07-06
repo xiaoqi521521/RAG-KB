@@ -16,8 +16,8 @@ CREATE TABLE kb_knowledge_base (
     department_id   VARCHAR(50)     NOT NULL,           -- 归属部门
     is_public       BOOLEAN         NOT NULL DEFAULT FALSE, -- 是否对所有人开放
     created_by      BIGINT          NOT NULL,           -- 创建者 userId
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     is_deleted      BOOLEAN         NOT NULL DEFAULT FALSE
 );
 
@@ -34,7 +34,7 @@ CREATE TABLE kb_permission (
     subject_id      VARCHAR(50)     NOT NULL,           -- 部门ID 或 userId
     permission      VARCHAR(20)     NOT NULL,           -- READ / WRITE / ADMIN
     granted_by      BIGINT          NOT NULL,
-    granted_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
+    granted_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     UNIQUE (kb_id, subject_type, subject_id)
 );
 
@@ -57,7 +57,7 @@ CREATE TABLE kb_document (
     token_count     INT             DEFAULT 0,          -- 向量化消耗的 Token 数
     version         INT             NOT NULL DEFAULT 1, -- 文档版本号，更新时递增
     uploaded_by     BIGINT          NOT NULL,
-    uploaded_at     TIMESTAMP       NOT NULL DEFAULT NOW(),
+    uploaded_at     TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     indexed_at      TIMESTAMP,                         -- 最近一次索引完成时间
     is_deleted      BOOLEAN         NOT NULL DEFAULT FALSE
 );
@@ -83,7 +83,7 @@ CREATE TABLE kb_doc_chunk (
     section_title   VARCHAR(500),                      -- 所在章节标题（如果能识别）
     token_count     INT             NOT NULL DEFAULT 0, -- 该块的 Token 估算数
     doc_version     INT             NOT NULL,           -- 对应的文档版本号
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
 );
 
 COMMENT ON TABLE kb_doc_chunk IS '文档分块表，每条记录是一个可检索的最小单元';
@@ -132,7 +132,7 @@ CREATE TABLE kb_index_task (
     retry_count     INT             NOT NULL DEFAULT 0,
     max_retry       INT             NOT NULL DEFAULT 3,
     error_msg       TEXT,
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     started_at      TIMESTAMP,
     finished_at     TIMESTAMP
 );
@@ -149,8 +149,8 @@ CREATE TABLE kb_chat_session (
     kb_ids          TEXT            NOT NULL,           -- JSON 数组，查询的知识库列表
     title           VARCHAR(200),                      -- 会话标题（取第一条消息）
     message_count   INT             NOT NULL DEFAULT 0,
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
-    last_active_at  TIMESTAMP       NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    last_active_at  TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     is_deleted      BOOLEAN         NOT NULL DEFAULT FALSE
 );
 
@@ -169,7 +169,7 @@ CREATE TABLE kb_chat_message (
     token_count     INT             DEFAULT 0,          -- 消耗的 Token 数
     latency_ms      INT             DEFAULT 0,          -- 生成耗时（毫秒）
     feedback        SMALLINT,                          -- 用户反馈：1=好 -1=差 NULL=未反馈
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
 );
 
 COMMENT ON COLUMN kb_chat_message.sources IS
@@ -186,7 +186,7 @@ CREATE TABLE kb_answer_feedback (
     user_id         BIGINT          NOT NULL,
     feedback        SMALLINT        NOT NULL,           -- 1=有用 -1=无用
     comment         TEXT,                              -- 可选的文字反馈
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     UNIQUE (message_id, user_id)
 );
 
@@ -200,7 +200,7 @@ CREATE TABLE kb_eval_dataset (
     expected_answer TEXT,
     expected_chunk_ids  BIGINT[],                      -- 期望召回的 chunk ID
     created_by      BIGINT          NOT NULL,
-    created_at      TIMESTAMP       NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
 );
 
 CREATE TABLE kb_eval_result (
@@ -212,5 +212,5 @@ CREATE TABLE kb_eval_result (
     actual_answer   TEXT,
     faithfulness    FLOAT,                             -- RAGAS Faithfulness 分数
     answer_relevancy FLOAT,                            -- RAGAS Answer Relevancy 分数
-    eval_at         TIMESTAMP       NOT NULL DEFAULT NOW()
+    eval_at         TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
 );

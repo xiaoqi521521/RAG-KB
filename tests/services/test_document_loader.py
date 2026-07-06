@@ -80,6 +80,32 @@ class FakeMinerULoader:
         raise ValueError(f"unsupported fake MinerU source: {source}")
 
 
+class FakeMinerULoaderWithHtmlTable:
+    calls: list[dict[str, object]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.calls.append(kwargs)
+
+    def load(self) -> list[Document]:
+        source = str(self.calls[-1]["source"])
+        suffix = Path(source).suffix.lower()
+        table_markdown = """
+# 人员信息
+<table>
+  <tr><td>姓名</td><td>部门</td><td>入职日期</td></tr>
+  <tr><td>张三</td><td>研发部</td><td>2024-01-01</td></tr>
+</table>
+"""
+        if suffix in {".pdf", ".docx"}:
+            return [
+                Document(
+                    page_content=table_markdown,
+                    metadata={"page": 1, "filename": Path(source).name},
+                )
+            ]
+        raise ValueError(f"unsupported fake MinerU source: {source}")
+
+
 def test_parse_txt_file():
     """对齐参考文件 parseTxtFile：通过统一入口解析 TXT。"""
     service = _build_loader_service(FakeMinerULoader)
@@ -117,6 +143,22 @@ def test_parse_pdf():
     assert all("title" not in doc.metadata for doc in docs)
 
 
+def test_parse_pdf_converts_html_table_to_plain_text():
+    """MinerU PDF 表格可能返回 HTML，加载层需转换为可读纯文本。"""
+    FakeMinerULoaderWithHtmlTable.calls = []
+    service = _build_loader_service(FakeMinerULoaderWithHtmlTable)
+
+    docs = service.load(BytesIO(b"pdf bytes"), "policy.pdf")
+    text = _extract_text(docs)
+
+    assert "[表格]" in text
+    assert "姓名 | 部门 | 入职日期" in text
+    assert "张三 | 研发部 | 2024-01-01" in text
+    assert "<table" not in text
+    assert "<tr" not in text
+    assert "<td" not in text
+
+
 def test_parse_pdf_logs_mineru_request_summary(caplog):
     """MinerU 请求只保留开始和结束摘要，不依赖 httpx 明细日志。"""
     FakeMinerULoader.calls = []
@@ -146,6 +188,22 @@ def test_parse_docx():
     assert docs[0].metadata["source"] == "policy.docx"
     assert docs[0].metadata["file_type"] == "DOCX"
     assert docs[0].metadata["page_num"] == 1
+
+
+def test_parse_docx_converts_html_table_to_plain_text():
+    """MinerU Word 表格可能返回 HTML，加载层需转换为可读纯文本。"""
+    FakeMinerULoaderWithHtmlTable.calls = []
+    service = _build_loader_service(FakeMinerULoaderWithHtmlTable)
+
+    docs = service.load(BytesIO(b"docx bytes"), "policy.docx")
+    text = _extract_text(docs)
+
+    assert "[表格]" in text
+    assert "姓名 | 部门 | 入职日期" in text
+    assert "张三 | 研发部 | 2024-01-01" in text
+    assert "<table" not in text
+    assert "<tr" not in text
+    assert "<td" not in text
 
 
 def test_parse_md():

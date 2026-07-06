@@ -283,6 +283,13 @@ class IndexService:
         token_count = sum(chunk.token_count for chunk in doc_chunks)
 
         await self.chunk_repository.insert_many(doc_chunks)
+        logger.info(
+            "chunk 入库完成：doc_id=%s chunk_count=%s doc_version=%s token_count=%s",
+            doc_id,
+            len(doc_chunks),
+            new_version,
+            token_count,
+        )
         await self.document_repository.mark_done(
             doc_id,
             chunk_count=len(doc_chunks),
@@ -291,7 +298,18 @@ class IndexService:
         )
         # 新版本已完整写入后再清理旧版本；若清理失败，旧数据残留也不会影响最新版本查询。
         await self.chunk_repository.delete_older_versions(doc_id, new_version)
+        logger.info(
+            "旧版本 chunk 清理完成：doc_id=%s current_version=%s",
+            doc_id,
+            new_version,
+        )
         await self.task_repository.mark_done(task_id)
+        logger.info(
+            "索引任务 DONE：task_id=%s doc_id=%s doc_version=%s",
+            task_id,
+            doc_id,
+            new_version,
+        )
 
     def _resolve_doc_version(self, task_type: str, current_version: int) -> int:
         """根据索引任务类型计算本次写入的文档版本号。
