@@ -39,6 +39,24 @@ class DocumentUploadResponse(BaseModel):
         )
 
 
+class DocumentReindexSubmitResponse(BaseModel):
+    """文档替换或强制重建提交后的响应模型。
+
+    Args:
+        doc_id: 已提交重建任务的文档 ID。
+        file_name: 当前文档文件名。
+        status: 文档进入后台索引前的状态，通常为 PENDING。
+        task_id: 新创建的 REINDEX 任务 ID。
+        message: 面向前端展示的提交结果说明。
+    """
+
+    doc_id: int
+    file_name: str
+    status: str
+    task_id: int
+    message: str
+
+
 class DocumentItem(BaseModel):
     """文档列表项响应模型。
 
