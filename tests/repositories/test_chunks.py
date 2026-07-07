@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from sqlalchemy import Float
+
+from app.repositories.chunks import ChunkRepository
+
+
+class FakeResult:
+    def all(self) -> list[tuple[int, int, str, int, int, str, int | None, str | None, float]]:
+        return [
+            (10, 1, "研发规范.md", 2, 3, "代码提交前必须通过本地测试。", None, "代码提交", 0.25)
+        ]
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return FakeResult()
+
+
+async def test_search_by_vector_builds_current_version_filtered_query() -> None:
+    session = FakeSession()
+    repository = ChunkRepository(session)
+
+    hits = await repository.search_by_vector(query_vector=[0.1, 0.2], kb_ids=[2, 3], top_k=5)
+
+    statement_text = str(session.statement)
+    assert "kb_doc_chunk.embedding <=> :embedding_1" in statement_text
+    assert "kb_doc_chunk.kb_id IN" in statement_text
+    assert "kb_doc_chunk.doc_version = kb_document.version" in statement_text
+    assert "kb_document.status = :status_1" in statement_text
+    assert "kb_document.is_deleted IS false" in statement_text
+    assert isinstance(list(session.statement.selected_columns)[-1].type, Float)
+    assert hits[0].chunk_id == 10
+    assert hits[0].score == 0.8
