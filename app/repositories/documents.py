@@ -86,6 +86,10 @@ class DocumentRepository:
         chunk_count: int,
         token_count: int,
         version: int,
+        file_name: str | None = None,
+        file_type: str | None = None,
+        file_size: int | None = None,
+        minio_path: str | None = None,
     ) -> None:
         """将文档状态更新为完成，并写入索引结果统计。"""
         document = await self.get(doc_id)
@@ -96,6 +100,14 @@ class DocumentRepository:
         document.chunk_count = chunk_count
         document.token_count = token_count
         document.version = version
+        if file_name is not None:
+            document.file_name = file_name
+        if file_type is not None:
+            document.file_type = file_type
+        if file_size is not None:
+            document.file_size = file_size
+        if minio_path is not None:
+            document.minio_path = minio_path
         document.indexed_at = shanghai_now_naive()
         await self.session.flush()
 
@@ -116,43 +128,18 @@ class DocumentRepository:
         document.is_deleted = True
         await self.session.flush()
 
-    async def replace_file_and_reset_index(
-        self,
-        doc_id: int,
-        *,
-        file_name: str,
-        file_type: str,
-        file_size: int,
-        minio_path: str,
-    ) -> KbDocument:
-        """替换文档原文件元数据，并重置本轮重建索引状态。
+    async def reset_for_reindex(self, doc_id: int) -> None:
+        """重置未发布文档的索引状态，已发布文档保持可查询。
 
-        Args:
-            doc_id: 待替换文档 ID。
-            file_name: 新文件名。
-            file_type: 根据新文件名识别出的文件类型。
-            file_size: 新文件大小，单位为字节。
-            minio_path: 新文件在 MinIO 中的对象路径。
-
-        Returns:
-            更新后的文档实体。
+        DONE 文档代表当前线上可查询版本。重建任务进度由 `kb_index_task`
+        承载，不再把已发布文档改回 PENDING，避免在线检索被状态过滤挡住。
         """
         document = await self.get(doc_id)
         if document is None:
-            raise ValueError(f"document not found: {doc_id}")
-
-        document.file_name = file_name
-        document.file_type = file_type
-        document.file_size = file_size
-        document.minio_path = minio_path
-        self._reset_index_fields(document)
-        await self.session.flush()
-        return document
-
-    async def reset_for_reindex(self, doc_id: int) -> None:
-        """重置文档状态和旧统计字段，允许重新进入索引流程。"""
-        document = await self.get(doc_id)
-        if document is None:
+            return
+        if document.status == DocumentStatus.DONE.value:
+            document.error_msg = None
+            await self.session.flush()
             return
         self._reset_index_fields(document)
         await self.session.flush()

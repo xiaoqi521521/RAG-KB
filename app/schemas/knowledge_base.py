@@ -44,8 +44,8 @@ class DocumentReindexSubmitResponse(BaseModel):
 
     Args:
         doc_id: 已提交重建任务的文档 ID。
-        file_name: 当前文档文件名。
-        status: 文档进入后台索引前的状态，通常为 PENDING。
+        file_name: 当前已发布文档文件名。替换任务完成前仍显示旧文件名。
+        status: 当前已发布文档状态。已完成文档重建期间通常保持 DONE。
         task_id: 新创建的 REINDEX 任务 ID。
         message: 面向前端展示的提交结果说明。
     """

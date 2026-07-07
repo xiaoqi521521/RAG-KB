@@ -15,7 +15,6 @@
   -> 权限校验
   -> EmbeddingService.embed_query(...)
   -> ChunkRepository.search_by_vector(...)
-  -> rag_min_score 过滤
   -> SourceBuilder.build(...)
   -> ChatOpenAI.ainvoke(...)
   -> 返回 answer / sources / hit_count / latency_ms
@@ -29,7 +28,7 @@
 - `ChunkRepository.search_by_vector(...)`：已经能在权限范围内按 PGVector 距离召回当前版本 chunk。
 - `ChunkSearchHit`：已经包含文档名、知识库 ID、chunk 元数据、内容和向量 score，可作为混合检索命中结构的基础。
 - `SourceBuilder`：已经能把检索命中转换为 `[参考N]` 上下文和结构化 sources。
-- `Settings`：已有 `rag_vector_top_k`、`rag_return_top_n`、`rag_min_score` 等基础 RAG 参数。
+- `Settings`：已有 `rag_vector_top_k`、`rag_fulltext_top_k`、`rag_return_top_n`、`rag_rrf_k`、`rag_query_pipeline` 等 RAG 参数。
 - `PermissionService.require_read(...)`：已经在路由层完成检索前硬权限校验。
 
 本阶段要解决的核心问题：
@@ -54,7 +53,7 @@
 4. 向量召回：在允许知识库范围内按 PGVector 距离召回 `rag_vector_top_k` 个候选
 5. 全文召回：将 question 转换为 PostgreSQL tsquery，在允许知识库范围内召回 `rag_fulltext_top_k` 个候选
 6. RRF 融合：按每路排名计算 `1 / (rrf_k + rank)`，同一 chunk 多路命中时累加
-7. 有效命中过滤：按融合排序取候选，结合配置阈值和返回数量生成最终命中列表
+7. 候选裁剪：按融合排序取候选，最终由 `RAG_RETURN_TOP_N` 和上下文预算决定进入 Prompt 的 chunk
 8. 生成回答：复用 `SourceBuilder` 和 `ChatOpenAI`，返回 answer、sources、hit_count、latency_ms
 ```
 
@@ -97,7 +96,7 @@ POST /api/v1/rag/query
   -> 按空白、常见中英文标点拆分
   -> 过滤停用词和过短 token
   -> 保留英文缩写、数字编号、条款号、连字符词等精确关键词
-  -> 生成 plainto_tsquery / websearch_to_tsquery 可用输入
+  -> 生成 `关键词 & 关键词` 形式的 to_tsquery 输入
 ```
 
 如果拆分后没有有效关键词，全文检索通道应安全降级为空结果，不能影响向量检索通道。中文全文检索效果取决于 PostgreSQL 配置和文本预处理能力，本阶段计划先使用数据库原生能力和简单 token 处理，后续再评估 jieba、pg_jieba 或专用检索引擎。
@@ -126,14 +125,14 @@ LIMIT rag_vector_top_k
 
 #### 全文召回
 
-全文召回新增 Repository 方法，查询范围必须与向量通道一致：
+全文召回新增 Repository 方法，查询范围必须与向量通道一致。当前实现使用 `content_tsv @@ to_tsquery('simple', query_text)`，其中 `content_tsv` 由数据库触发器维护，Python 索引入库不显式写入该字段：
 
 ```plain
 DocChunk.kb_id IN allowed_kb_ids
 DocChunk.doc_version = KbDocument.version
 KbDocument.status = DONE
 KbDocument.is_deleted = false
-content / section_title / document_name 全文匹配
+content_tsv @@ to_tsquery('simple', query_text)
 LIMIT rag_fulltext_top_k
 ```
 
@@ -157,7 +156,7 @@ RRF_score(doc) = Σ 1 / (k + rank_i)
 k = 60
 ```
 
-Python 版计划将 RRF 抽成独立模块，输入为有序命中列表：
+Python 版将 RRF 保留在 `hybrid_retriever.py` 内部，输入为有序命中列表：
 
 ```plain
 vector_hits: [chunk101, chunk102, chunk103]
@@ -177,31 +176,30 @@ chunk105 = 1/(60+2)
 - 分数相同时保持稳定排序，优先保留更早出现在向量或全文结果中的命中。
 - 每条融合命中保留来源标记，例如 `retrieval_sources=["vector", "fulltext"]`，便于日志和后续评估。
 
-#### 有效命中和阈值语义
+#### 候选数量和阈值语义
 
-第 12 章中 `rag_min_score` 当前表示向量距离换算后的检索得分阈值。混合检索后最终 `score` 将变成 RRF 分数，不能继续直接沿用 `rag_min_score` 的旧含义，否则会混淆：
+当前实现保留 `rag_min_score` 配置，但 v1 和 v2 查询管道都暂不使用它过滤候选。混合检索后最终 `score` 会变成 RRF 分数，不能直接沿用向量相似度阈值语义，否则会混淆：
 
 ```plain
 vector score = 1 / (1 + distance)
 rrf score = Σ 1 / (rrf_k + rank)
 ```
 
-本阶段计划在 Spec 中明确拆分阈值语义：
+本阶段在 Spec / Process 中明确：
 
-- `rag_min_score` 可继续作为向量通道候选质量阈值，或改名为 `rag_min_vector_score`。
-- 新增 `rag_rrf_top_n` 或复用 `rag_return_top_n` 控制融合后进入上下文的数量。
+- `rag_min_score` 当前不参与向量通道、全文通道或 RRF 输出过滤。
+- 复用 `rag_return_top_n` 控制最多进入上下文和响应 sources 的 chunk 数量。
 - RRF 分数默认用于排序，不直接作为“语义相似度百分比”解释。
-- 是否引入 `rag_min_rrf_score` 需要谨慎，RRF 分数与 TopK 和通道数量相关，默认不建议用固定阈值做强过滤。
+- 是否引入向量原始分阈值或 RRF 阈值需要谨慎，后续应单独设计。
 
 为了保持接口体验，本阶段建议：
 
 ```plain
-retrieved_count = 向量候选数 + 全文候选数（去重前或按 Spec 固定）
 hit_count = 实际进入 Prompt 的引用 chunk 数量，与 sources 数量一致
 sources = 实际进入 Prompt 的引用 chunk
 ```
 
-如果暂不修改响应结构，也至少要在 Process / Spec 中明确 `hit_count` 的定义，避免把数据库原始召回数、过滤后命中数和最终引用数混在一起。
+本阶段不新增 `retrieved_count` 响应字段。向量召回数、全文召回数和 RRF 融合候选数只进入日志或内部统计，避免把 API 响应变成调试结构。
 
 #### 与生成链路衔接
 
@@ -210,7 +208,7 @@ sources = 实际进入 Prompt 的引用 chunk
 ```plain
 HybridRetriever.retrieve(question, kb_ids)
   -> list[HybridSearchHit]
-  -> RagQueryService 低召回判断
+  -> RagQueryServiceV2 无召回判断
   -> SourceBuilder.build(...)
   -> ChatOpenAI.ainvoke(...)
 ```
@@ -280,9 +278,9 @@ rrf_elapsed_ms
 - 扩展 `ChunkRepository`，新增 PostgreSQL 全文检索方法，并复用权限、版本、状态和删除过滤。
 - 保留现有 PGVector 向量召回，向量 TopK 和全文 TopK 分别配置。
 - 在 `HybridRetriever` 内部实现 RRF 融合，按 `chunk_id` 去重并按 RRF 分数降序输出。
-- 新增混合检索服务，负责串联向量召回、全文召回、RRF 融合和候选数量控制。
+- 新增混合检索服务，负责串联向量召回、全文召回、RRF 融合和候选排序。
 - 新增 `RagQueryServiceV2`，使用混合检索结果输入，生成链路和拒答策略保持稳定；原 `RagQueryService` 保留基础向量检索管道。
-- 明确 `score`、`hit_count`、`retrieved_count` 等字段在混合检索后的语义，避免把 RRF 分数解释为相似度百分比。
+- 明确 `score`、`hit_count`、`sources` 等字段在混合检索后的语义，避免把 RRF 分数解释为相似度百分比。
 - 增加单元测试覆盖 RRF 算法、全文查询词构建、全文 SQL 过滤、重复 chunk 去重和混合检索接入。
 - 同步更新对应 Spec / Process 文档，记录最终字段语义、配置项和验证结果。
 
@@ -356,10 +354,10 @@ app/services/rag_query_v2.py
   -> 保持拒答、SourceBuilder 和 ChatOpenAI 生成链路稳定
 
 app/core/config.py
-  -> 增加 rag_fulltext_top_k、rag_rrf_k 等配置
+  -> 增加 rag_fulltext_top_k、rag_rrf_k、rag_query_pipeline 等配置
 
 app/schemas/rag.py
-  -> 如确定新增 retrieved_count，则同步响应模型
+  -> 不新增 retrieved_count，仅同步 score 和 hit_count 语义
 ```
 
 建议新增或调整的测试：
@@ -397,7 +395,7 @@ tests/api/test_rag.py
 - 精确关键词问题相比纯向量检索更容易召回包含关键词的 chunk。
 - 语义改写问题在全文无强命中时仍能依赖向量召回。
 - 无任何有效候选时返回固定拒答，不调用聊天模型。
-- 正常响应中的 `hit_count`、`sources` 和可选 `retrieved_count` 语义清晰，不把 RRF 分数误称为相似度百分比。
+- 正常响应中的 `hit_count` 与 `sources.length` 一致，不把 RRF 分数误称为相似度百分比。
 - 日志能区分 `vector_count`、`fulltext_count`、`merged_count`、`returned_count` 和各阶段耗时。
 - 文档文件名符合 Plan 阶段要求，使用 `-plan.md` 后缀。
 
@@ -405,10 +403,9 @@ tests/api/test_rag.py
 
 完成本 Plan 后，下一份 Spec 应重点回答：
 
-- 是否新增 `retrieved_count` 字段，以及它表示去重前候选数还是两路候选总数。
 - 混合检索后的 `score` 字段是否返回 RRF 分数，是否需要新增 `vector_score` / `fulltext_score` 内部调试字段。
-- `rag_min_score` 在混合检索后是否改名或仅用于向量通道过滤。
-- PostgreSQL 全文检索使用 `plainto_tsquery`、`websearch_to_tsquery` 还是 `to_tsquery`，中文文本如何处理。
+- 后续相似度阈值过滤是否重新启用，以及它应作用于向量原始分、全文 rank、RRF 分数还是 Reranker 分数。
+- PostgreSQL 全文检索使用 `to_tsquery('simple', query_text)`，中文文本如何处理。
 - 是否需要数据库索引支持全文检索，例如 `to_tsvector(...)` GIN 索引；若需要，是否新增迁移。
 - `HybridRetriever`、内部 RRF、`TsQueryBuilder` 的具体文件路径、方法签名和返回 DTO。
-- 低召回拒答、日志字段和 API 响应字段如何与第 12 章兼容。
+- 无召回拒答、日志字段和 API 响应字段如何与第 12 章兼容。

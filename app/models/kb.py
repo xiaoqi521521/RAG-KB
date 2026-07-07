@@ -158,6 +158,7 @@ class IndexTask(Base):
     )
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     max_retry: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default="3")
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error_msg: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL

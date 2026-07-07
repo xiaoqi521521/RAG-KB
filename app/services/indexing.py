@@ -4,13 +4,14 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Protocol
 
 from langchain_core.documents import Document
 
 from app.integrations.minio import MinioStorageService
-from app.models import DocChunk, IndexTaskType, KbDocument
+from app.models import DocChunk, DocumentStatus, IndexTaskType, KbDocument
 from app.repositories.chunks import ChunkRepository
 from app.repositories.documents import DocumentRepository
 from app.repositories.index_tasks import IndexTaskRepository
@@ -39,6 +40,22 @@ class IndexTaskRunner(Protocol):
 BackgroundServiceFactory = Callable[[], AbstractAsyncContextManager[IndexTaskRunner]]
 CommitBeforeLaunch = Callable[[], Awaitable[None]]
 CommitAfterStatusChange = Callable[[], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class IndexSource:
+    """本次索引任务实际读取和发布的原文件信息。"""
+
+    file_name: str
+    file_type: str
+    file_size: int
+    minio_path: str
+    old_minio_path: str | None = None
+
+    @property
+    def is_replacement(self) -> bool:
+        """是否为文档替换产生的新原文件。"""
+        return self.old_minio_path is not None
 
 
 class IndexPipelineError(Exception):
@@ -119,11 +136,18 @@ class IndexService:
         self._launch_task(task.id, doc_id)
         return task.id
 
-    async def reindex_document(self, doc_id: int) -> int:
+    async def reindex_document(
+        self,
+        doc_id: int,
+        *,
+        payload: dict[str, object] | None = None,
+    ) -> int:
         """提交重建索引任务并后台执行。
 
         Args:
             doc_id: 待重建索引的文档 ID。
+            payload: 重建任务私有载荷。文档替换时用于暂存新文件元数据，
+                避免任务完成前污染当前可查询版本。
 
         Returns:
             新创建的重建索引任务 ID。
@@ -133,7 +157,11 @@ class IndexService:
             # 重建索引依赖已有文档元数据；记录缺失时直接终止。
             raise NonRetryableIndexError(f"document not found: {doc_id}")
 
-        task = await self.task_repository.create(doc_id, task_type=IndexTaskType.REINDEX)
+        task = await self.task_repository.create(
+            doc_id,
+            task_type=IndexTaskType.REINDEX,
+            payload=payload,
+        )
         await self._commit_before_launch()
         self._launch_task(task.id, doc_id)
         return task.id
@@ -238,14 +266,16 @@ class IndexService:
         document = await self.document_repository.get(doc_id)
         if document is None:
             raise NonRetryableIndexError(f"document not found: {doc_id}")
+        index_source = self._resolve_index_source(document, task.payload)
 
         await self.task_repository.mark_running(task_id)
-        await self.document_repository.mark_processing(doc_id)
+        if not self._should_keep_document_published(task.task_type, document):
+            await self.document_repository.mark_processing(doc_id)
         await self._commit_after_status_change()
 
         # 第二步：下载持久化源文件。MinIO/网络/IO 异常通常是瞬时问题，允许任务级重试。
         try:
-            raw_file = await self.storage_service.download(document.minio_path)
+            raw_file = await self.storage_service.download(index_source.minio_path)
         except IndexPipelineError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -256,7 +286,7 @@ class IndexService:
         parsed_docs = await asyncio.to_thread(
             self.loader_service.load,
             BytesIO(raw_file),
-            document.file_name,
+            index_source.file_name,
         )
         logger.info("文档加载阶段结束了...")
         logger.info("文档分块阶段开始了...")
@@ -294,14 +324,21 @@ class IndexService:
             new_version,
             token_count,
         )
+        publish_source = index_source if index_source.is_replacement else None
         await self.document_repository.mark_done(
             doc_id,
             chunk_count=len(doc_chunks),
             token_count=token_count,
             version=new_version,
+            file_name=publish_source.file_name if publish_source is not None else None,
+            file_type=publish_source.file_type if publish_source is not None else None,
+            file_size=publish_source.file_size if publish_source is not None else None,
+            minio_path=publish_source.minio_path if publish_source is not None else None,
         )
         # 新版本已完整写入后再清理旧版本；若清理失败，旧数据残留也不会影响最新版本查询。
         await self.chunk_repository.delete_older_versions(doc_id, new_version)
+        if index_source.old_minio_path is not None:
+            await self.storage_service.delete(index_source.old_minio_path)
         logger.info(
             "旧版本 chunk 清理完成：doc_id=%s current_version=%s",
             doc_id,
@@ -330,6 +367,52 @@ class IndexService:
         if task_type == IndexTaskType.REINDEX.value:
             return current_version + 1
         raise NonRetryableIndexError(f"unknown index task type: {task_type}")
+
+    def _should_keep_document_published(self, task_type: str, document: KbDocument) -> bool:
+        """判断执行态是否应保持当前发布文档状态不变。
+
+        已完成文档的 REINDEX 只是构建下一版本，任务状态应写入 `kb_index_task`，
+        不能把主文档改成 PROCESSING，否则查询层的 DONE 过滤会屏蔽旧版本 chunk。
+        """
+        return task_type == IndexTaskType.REINDEX.value and document.status == DocumentStatus.DONE.value
+
+    def _resolve_index_source(
+        self,
+        document: KbDocument,
+        payload: dict[str, object] | None,
+    ) -> IndexSource:
+        """解析本次索引实际使用的原文件信息。
+
+        普通索引和强制重建使用当前文档元数据；文档替换任务从 payload 中读取
+        新文件元数据，并等索引成功后再发布到 `kb_document`。
+        """
+        source_payload = payload.get("source") if isinstance(payload, dict) else None
+        if source_payload is None:
+            return IndexSource(
+                file_name=document.file_name,
+                file_type=document.file_type,
+                file_size=document.file_size,
+                minio_path=document.minio_path,
+            )
+        if not isinstance(source_payload, dict):
+            raise NonRetryableIndexError("invalid index task payload: source must be object")
+
+        try:
+            file_name = str(source_payload["file_name"])
+            file_type = str(source_payload["file_type"])
+            file_size = int(source_payload["file_size"])
+            minio_path = str(source_payload["minio_path"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NonRetryableIndexError("invalid index task payload: missing source metadata") from exc
+
+        old_minio_path = payload.get("old_minio_path") if isinstance(payload, dict) else None
+        return IndexSource(
+            file_name=file_name,
+            file_type=file_type,
+            file_size=file_size,
+            minio_path=minio_path,
+            old_minio_path=str(old_minio_path) if old_minio_path is not None else None,
+        )
 
     def _build_doc_chunks(
         self,
@@ -381,8 +464,13 @@ class IndexService:
             error_msg: 失败原因，写入任务和文档状态便于排查。
         """
         await self.task_repository.mark_failed(task_id, error_msg)
-        if await self.document_repository.get(doc_id) is not None:
-            await self.document_repository.mark_failed(doc_id, error_msg)
+        task = await self.task_repository.get(task_id)
+        document = await self.document_repository.get(doc_id)
+        if document is None:
+            return
+        if task is not None and self._should_keep_document_published(task.task_type, document):
+            return
+        await self.document_repository.mark_failed(doc_id, error_msg)
 
     async def _retry_if_possible(self, task_id: int, doc_id: int, error_msg: str) -> None:
         """在未超过最大重试次数时记录重试并调度下一次执行。

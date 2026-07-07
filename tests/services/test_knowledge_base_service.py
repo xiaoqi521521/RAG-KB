@@ -343,3 +343,20 @@ async def test_reindex_document_resets_document_and_submits_reindex_task() -> No
     assert document.status == DocumentStatus.PENDING.value
     assert document.error_msg is None
     assert bundle.index_service.reindexed == [document.id]
+
+
+@pytest.mark.asyncio
+async def test_reindex_document_keeps_done_document_published_while_task_runs() -> None:
+    bundle = _bundle()
+    document = await bundle.service.upload_document(10, FakeUploadFile("handbook.txt"), _user())
+    document.status = DocumentStatus.DONE.value
+    document.chunk_count = 3
+    document.token_count = 120
+
+    task_id = await bundle.service.reindex_document(10, document.id)
+
+    assert task_id == 201
+    assert document.status == DocumentStatus.DONE.value
+    assert document.chunk_count == 3
+    assert document.token_count == 120
+    assert bundle.index_service.reindexed == [document.id]

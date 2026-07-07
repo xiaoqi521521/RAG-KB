@@ -41,11 +41,13 @@ def _build_document(**overrides: object) -> KbDocument:
 class FakeDocumentRepository:
     def __init__(self, docs: list[KbDocument]) -> None:
         self.docs = {doc.id: doc for doc in docs}
+        self.processing_doc_ids: list[int] = []
 
     async def get(self, doc_id: int) -> KbDocument | None:
         return self.docs.get(doc_id)
 
     async def mark_processing(self, doc_id: int) -> None:
+        self.processing_doc_ids.append(doc_id)
         self.docs[doc_id].status = DocumentStatus.PROCESSING.value
 
     async def mark_done(
@@ -55,6 +57,10 @@ class FakeDocumentRepository:
         chunk_count: int,
         token_count: int,
         version: int,
+        file_name: str | None = None,
+        file_type: str | None = None,
+        file_size: int | None = None,
+        minio_path: str | None = None,
     ) -> None:
         doc = self.docs[doc_id]
         doc.status = DocumentStatus.DONE.value
@@ -62,6 +68,14 @@ class FakeDocumentRepository:
         doc.chunk_count = chunk_count
         doc.token_count = token_count
         doc.version = version
+        if file_name is not None:
+            doc.file_name = file_name
+        if file_type is not None:
+            doc.file_type = file_type
+        if file_size is not None:
+            doc.file_size = file_size
+        if minio_path is not None:
+            doc.minio_path = minio_path
 
     async def mark_failed(self, doc_id: int, error_msg: str) -> None:
         doc = self.docs[doc_id]
@@ -79,6 +93,7 @@ class FakeIndexTaskRepository:
         doc_id: int,
         *,
         task_type: IndexTaskType = IndexTaskType.INDEX,
+        payload: dict[str, object] | None = None,
     ) -> IndexTask:
         task = IndexTask(
             id=self.next_id,
@@ -87,6 +102,7 @@ class FakeIndexTaskRepository:
             status=IndexTaskStatus.PENDING.value,
             retry_count=0,
             max_retry=3,
+            payload=payload,
         )
         self.tasks[task.id] = task
         self.next_id += 1
@@ -141,6 +157,7 @@ class FakeStorage:
         self.data = data
         self.exc = exc
         self.download_calls: list[str] = []
+        self.deleted: list[str] = []
 
     async def download(self, object_key: str) -> bytes:
         self.download_calls.append(object_key)
@@ -148,6 +165,9 @@ class FakeStorage:
             raise self.exc
         assert self.data is not None
         return self.data
+
+    async def delete(self, object_key: str) -> None:
+        self.deleted.append(object_key)
 
 
 class FakeLoader:
@@ -465,6 +485,28 @@ async def test_run_task_commits_running_and_processing_status_before_loading() -
 
 
 @pytest.mark.asyncio
+async def test_run_task_reindex_keeps_done_document_queryable_while_running() -> None:
+    events: list[str] = []
+    doc = _build_document(status=DocumentStatus.DONE.value, version=1)
+
+    async def commit_after_status_change() -> None:
+        task = bundle.tasks.tasks[task_id]
+        events.append(f"commit:{task.status}:{doc.status}")
+
+    bundle = _build_service(
+        docs=[doc],
+        index_service_kwargs={"commit_after_status_change": commit_after_status_change},
+    )
+    task_id = await bundle.service.reindex_document(1)
+
+    await bundle.service.run_task(task_id, 1)
+
+    assert events[0] == "commit:RUNNING:DONE"
+    assert bundle.documents.processing_doc_ids == []
+    assert doc.status == DocumentStatus.DONE.value
+
+
+@pytest.mark.asyncio
 async def test_run_task_reindex_increments_document_version() -> None:
     doc = _build_document(version=1)
     bundle = _build_service(
@@ -489,6 +531,48 @@ async def test_run_task_reindex_increments_document_version() -> None:
     inserted = bundle.chunks.inserted[0]
     assert inserted.doc_version == 2
     assert bundle.chunks.deleted == [(1, 2)]
+
+
+@pytest.mark.asyncio
+async def test_run_task_reindex_with_replacement_payload_publishes_new_file_after_success() -> None:
+    doc = _build_document(
+        status=DocumentStatus.DONE.value,
+        version=2,
+        file_name="old-handbook.txt",
+        file_type="TXT",
+        file_size=64,
+        minio_path="kb/10/old-handbook.txt",
+    )
+    bundle = _build_service(
+        docs=[doc],
+        chunks=[Document(page_content="新版制度", metadata={"estimated_tokens": 4})],
+        vectors=[[0.5] * 1024],
+    )
+    task_id = await bundle.service.reindex_document(
+        1,
+        payload={
+            "source": {
+                "file_name": "updated.pdf",
+                "file_type": "PDF",
+                "file_size": 256,
+                "minio_path": "kb/10/new-updated.pdf",
+            },
+            "old_minio_path": "kb/10/old-handbook.txt",
+        },
+    )
+
+    await bundle.service.run_task(task_id, 1)
+
+    assert bundle.storage.download_calls == ["kb/10/new-updated.pdf"]
+    assert doc.status == DocumentStatus.DONE.value
+    assert doc.version == 3
+    assert doc.file_name == "updated.pdf"
+    assert doc.file_type == "PDF"
+    assert doc.file_size == 256
+    assert doc.minio_path == "kb/10/new-updated.pdf"
+    assert bundle.chunks.inserted[0].doc_version == 3
+    assert bundle.chunks.deleted == [(1, 3)]
+    assert bundle.storage.deleted == ["kb/10/old-handbook.txt"]
 
 
 @pytest.mark.asyncio

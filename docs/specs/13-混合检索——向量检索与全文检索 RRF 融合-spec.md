@@ -182,7 +182,7 @@ Content-Type: application/json
         "score": 0.03226
       }
     ],
-    "hit_count": 7,
+    "hit_count": 1,
     "latency_ms": 860
   }
 }

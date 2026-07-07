@@ -81,31 +81,29 @@ class DocumentUpdateService:
         file_size = self._require_file_size(file)
         old_minio_path = document.minio_path
         new_minio_path: str | None = None
-        document_replaced = False
 
         try:
-            # 先上传新原文，再切换文档记录；若数据库尚未切换就失败，可安全删除新对象。
+            # 新文件只放入任务 payload，索引成功前不覆盖当前发布版本。
             new_minio_path = await self.storage_service.upload(kb_id, file)
-            document = await self.document_repository.replace_file_and_reset_index(
+            task_id = await self.index_service.reindex_document(
                 doc_id,
-                file_name=file_name,
-                file_type=file_type,
-                file_size=file_size,
-                minio_path=new_minio_path,
+                payload={
+                    "source": {
+                        "file_name": file_name,
+                        "file_type": file_type,
+                        "file_size": file_size,
+                        "minio_path": new_minio_path,
+                    },
+                    "old_minio_path": old_minio_path,
+                },
             )
-            document_replaced = True
-            task_id = await self.index_service.reindex_document(doc_id)
-        except Exception as exc:
-            if new_minio_path is not None and not document_replaced:
+        except Exception:
+            if new_minio_path is not None:
                 await self.storage_service.delete(new_minio_path)
-            if document_replaced:
-                await self.document_repository.mark_failed(doc_id, str(exc))
             raise
 
-        # 旧对象删除失败只记录告警，不能影响新版本索引任务提交结果。
-        await self.storage_service.delete(old_minio_path)
         logger.info(
-            "[DocumentUpdate] 文档内容替换已提交：kb_id=%s doc_id=%s task_id=%s old_path=%s new_path=%s user_id=%s",
+            "[DocumentUpdate] 文档内容替换任务已提交：kb_id=%s doc_id=%s task_id=%s current_path=%s new_path=%s user_id=%s",
             kb_id,
             doc_id,
             task_id,
@@ -116,7 +114,7 @@ class DocumentUpdateService:
         return self._submitted_response(
             document,
             task_id,
-            "文档内容已替换，重建索引任务已提交，请通过 status 接口查询进度",
+            "文档替换任务已提交，新版本索引完成前继续使用当前可查询版本",
         )
 
     async def force_reindex(self, kb_id: int, doc_id: int) -> DocumentReindexSubmitResponse:
@@ -131,10 +129,12 @@ class DocumentUpdateService:
         """
         document = await self._get_editable_document(kb_id, doc_id)
         try:
-            await self.document_repository.reset_for_reindex(doc_id)
+            if document.status != DocumentStatus.DONE.value:
+                await self.document_repository.reset_for_reindex(doc_id)
             task_id = await self.index_service.reindex_document(doc_id)
         except Exception as exc:
-            await self.document_repository.mark_failed(doc_id, str(exc))
+            if document.status != DocumentStatus.DONE.value:
+                await self.document_repository.mark_failed(doc_id, str(exc))
             raise
 
         logger.info(
@@ -146,7 +146,7 @@ class DocumentUpdateService:
         return self._submitted_response(
             document,
             task_id,
-            "强制重建索引任务已提交，请通过 status 接口查询进度",
+            "强制重建索引任务已提交，已发布版本在重建期间继续可查询",
         )
 
     async def _get_editable_document(self, kb_id: int, doc_id: int) -> KbDocument:

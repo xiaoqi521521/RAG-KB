@@ -164,7 +164,7 @@ class RagQueryRequest(BaseModel):
         "score": 0.82
       }
     ],
-    "hit_count": 3,
+    "hit_count": 1,
     "latency_ms": 820
   }
 }

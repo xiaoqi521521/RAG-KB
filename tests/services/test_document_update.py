@@ -39,36 +39,6 @@ class FakeDocumentRepository:
             return None
         return self.document
 
-    async def replace_file_and_reset_index(
-        self,
-        doc_id: int,
-        *,
-        file_name: str,
-        file_type: str,
-        file_size: int,
-        minio_path: str,
-    ) -> KbDocument:
-        assert self.document is not None
-        self.replaced.append(
-            {
-                "doc_id": doc_id,
-                "file_name": file_name,
-                "file_type": file_type,
-                "file_size": file_size,
-                "minio_path": minio_path,
-            }
-        )
-        self.document.file_name = file_name
-        self.document.file_type = file_type
-        self.document.file_size = file_size
-        self.document.minio_path = minio_path
-        self.document.status = DocumentStatus.PENDING.value
-        self.document.error_msg = None
-        self.document.chunk_count = None
-        self.document.token_count = None
-        self.document.indexed_at = None
-        return self.document
-
     async def reset_for_reindex(self, doc_id: int) -> None:
         assert self.document is not None
         self.reset_doc_ids.append(doc_id)
@@ -100,11 +70,16 @@ class FakeStorageService:
 
 class FakeIndexService:
     def __init__(self, exc: Exception | None = None) -> None:
-        self.reindexed: list[int] = []
+        self.reindexed: list[tuple[int, dict[str, object] | None]] = []
         self.exc = exc
 
-    async def reindex_document(self, doc_id: int) -> int:
-        self.reindexed.append(doc_id)
+    async def reindex_document(
+        self,
+        doc_id: int,
+        *,
+        payload: dict[str, object] | None = None,
+    ) -> int:
+        self.reindexed.append((doc_id, payload))
         if self.exc is not None:
             raise self.exc
         return 200 + doc_id
@@ -165,22 +140,30 @@ async def test_replace_content_updates_existing_document_submits_reindex_and_del
     )
 
     assert response.doc_id == 7
-    assert response.file_name == "updated.pdf"
-    assert response.status == DocumentStatus.PENDING.value
+    assert response.file_name == "handbook.txt"
+    assert response.status == DocumentStatus.DONE.value
     assert response.task_id == 207
-    assert bundle.document_repo.replaced == [
-        {
-            "doc_id": 7,
-            "file_name": "updated.pdf",
-            "file_type": "PDF",
-            "file_size": 256,
-            "minio_path": "kb/10/new-updated.pdf",
-        }
+    assert bundle.document_repo.replaced == []
+    assert bundle.index_service.reindexed == [
+        (
+            7,
+            {
+                "source": {
+                    "file_name": "updated.pdf",
+                    "file_type": "PDF",
+                    "file_size": 256,
+                    "minio_path": "kb/10/new-updated.pdf",
+                },
+                "old_minio_path": "kb/10/old-handbook.txt",
+            },
+        )
     ]
-    assert bundle.index_service.reindexed == [7]
-    assert bundle.storage.deleted == ["kb/10/old-handbook.txt"]
-    assert bundle.document.chunk_count is None
-    assert bundle.document.token_count is None
+    assert bundle.storage.deleted == []
+    assert bundle.document.file_name == "handbook.txt"
+    assert bundle.document.minio_path == "kb/10/old-handbook.txt"
+    assert bundle.document.status == DocumentStatus.DONE.value
+    assert bundle.document.chunk_count == 3
+    assert bundle.document.token_count == 120
 
 
 @pytest.mark.asyncio
@@ -191,13 +174,13 @@ async def test_force_reindex_resets_existing_document_without_uploading_file() -
 
     assert response.doc_id == 7
     assert response.file_name == "handbook.txt"
-    assert response.status == DocumentStatus.PENDING.value
+    assert response.status == DocumentStatus.DONE.value
     assert response.task_id == 207
-    assert bundle.document_repo.reset_doc_ids == [7]
+    assert bundle.document_repo.reset_doc_ids == []
     assert bundle.storage.uploaded == []
-    assert bundle.index_service.reindexed == [7]
-    assert bundle.document.chunk_count is None
-    assert bundle.document.token_count is None
+    assert bundle.index_service.reindexed == [(7, None)]
+    assert bundle.document.chunk_count == 3
+    assert bundle.document.token_count == 120
 
 
 @pytest.mark.asyncio
@@ -219,6 +202,6 @@ async def test_replace_content_marks_failed_and_keeps_new_file_when_reindex_subm
     with pytest.raises(RuntimeError, match="index submit failed"):
         await bundle.service.replace_content(10, 7, FakeUploadFile("updated.txt"), _user())
 
-    assert bundle.storage.deleted == []
-    assert bundle.document_repo.failed == [(7, "index submit failed")]
-    assert bundle.document.status == DocumentStatus.FAILED.value
+    assert bundle.storage.deleted == ["kb/10/new-updated.txt"]
+    assert bundle.document_repo.failed == []
+    assert bundle.document.status == DocumentStatus.DONE.value

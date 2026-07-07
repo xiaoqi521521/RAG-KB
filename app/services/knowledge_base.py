@@ -4,7 +4,7 @@ from fastapi import HTTPException, UploadFile, status
 
 from app.core.context import CurrentUser
 from app.integrations.minio import MinioStorageService
-from app.models import KbDocument, KnowledgeBase, PermissionSubjectType
+from app.models import DocumentStatus, KbDocument, KnowledgeBase, PermissionSubjectType
 from app.repositories.chunks import ChunkRepository
 from app.repositories.documents import DocumentRepository
 from app.repositories.index_tasks import IndexTaskRepository
@@ -150,9 +150,10 @@ class KnowledgeBaseService:
         await self.storage_service.delete(document.minio_path)
 
     async def reindex_document(self, kb_id: int, doc_id: int) -> int:
-        """重置文档状态并提交重建索引任务。"""
-        await self._get_document_in_kb(kb_id, doc_id)
-        await self.document_repository.reset_for_reindex(doc_id)
+        """提交重建索引任务，已发布文档在重建期间保持可查询。"""
+        document = await self._get_document_in_kb(kb_id, doc_id)
+        if document.status != DocumentStatus.DONE.value:
+            await self.document_repository.reset_for_reindex(doc_id)
         return await self.index_service.reindex_document(doc_id)
 
     def _detect_file_type(self, file_name: str) -> str:

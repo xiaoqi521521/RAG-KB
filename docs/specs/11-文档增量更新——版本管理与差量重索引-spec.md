@@ -14,7 +14,7 @@
 核心目标：
 
 - 保持文档业务身份稳定，替换文件时不创建新的 `kb_document`。
-- 新版本索引完成前旧版本 chunk 继续可用，避免查询空窗。
+- 新版本索引完成前旧版本 chunk 继续可用，避免查询空窗；已发布文档重建期间主文档状态保持 `DONE`，重建进度由 `kb_index_task` 承载。
 - 重建前清理旧统计字段，避免前端轮询时误判新版本已经完成。
 - 两个新接口都要求知识库写权限，并校验 `doc_id` 属于 `kb_id`。
 - 不做页级或段落级 diff，差量收益由 `EmbeddingService` 的文本 hash 缓存承担。
@@ -100,10 +100,10 @@ Form 参数：
   "message": "success",
   "data": {
     "doc_id": 1,
-    "file_name": "updated.pdf",
-    "status": "PENDING",
+    "file_name": "handbook.pdf",
+    "status": "DONE",
     "task_id": 12,
-    "message": "文档内容已替换，重建索引任务已提交，请通过 status 接口查询进度"
+    "message": "文档替换任务已提交，新版本索引完成前继续使用当前可查询版本"
   }
 }
 ```
@@ -123,16 +123,13 @@ class DocumentReindexSubmitResponse(BaseModel):
 
 - `kb_document.id` 不变。
 - `kb_document.kb_id` 不变。
-- `kb_document.file_name` 更新为新文件名。
-- `kb_document.file_type` 根据新文件名重新识别。
-- `kb_document.file_size` 更新为新文件大小。
-- `kb_document.minio_path` 更新为新对象 key。
-- `kb_document.status = PENDING`。
-- `kb_document.error_msg = None`。
-- `kb_document.chunk_count = None` 或 `0`，需在实现中统一。
-- `kb_document.token_count = None` 或 `0`，需与 `chunk_count` 策略一致。
-- `kb_document.indexed_at = None`。
+- `kb_document.file_name`、`file_type`、`file_size`、`minio_path` 在任务提交时保持当前已发布值。
+- `kb_document.status` 对已发布文档保持 `DONE`。
+- `kb_document.version` 在任务提交时保持当前已发布版本。
+- 新文件元数据写入 `kb_index_task.payload.source`。
+- 旧文件路径写入 `kb_index_task.payload.old_minio_path`，供新版本发布后清理。
 - 创建一条 `kb_index_task(task_type=REINDEX, status=PENDING)`。
+- 既有数据库需执行 `app/db/migrations/20260707_add_index_task_payload.sql`，确保 `kb_index_task.payload` 列存在。
 
 错误响应：
 
@@ -171,9 +168,9 @@ Path 参数：
   "data": {
     "doc_id": 1,
     "file_name": "handbook.pdf",
-    "status": "PENDING",
+    "status": "DONE",
     "task_id": 13,
-    "message": "强制重建索引任务已提交，请通过 status 接口查询进度"
+    "message": "强制重建索引任务已提交，已发布版本在重建期间继续可查询"
   }
 }
 ```
@@ -181,9 +178,9 @@ Path 参数：
 持久化结果：
 
 - 不更新 `file_name`、`file_type`、`file_size`、`minio_path`。
-- `kb_document.status = PENDING`。
-- `kb_document.error_msg = None`。
-- 清理旧 `chunk_count`、`token_count`、`indexed_at`。
+- 已发布文档的 `kb_document.status` 保持 `DONE`。
+- 已发布文档的 `chunk_count`、`token_count`、`indexed_at` 保持上一轮成功发布值。
+- 非 `DONE` 文档可通过 `reset_for_reindex(...)` 清理旧错误状态和统计字段。
 - 创建一条 `kb_index_task(task_type=REINDEX, status=PENDING)`。
 
 错误响应：
@@ -210,6 +207,8 @@ GET /api/v1/kb/{kb_id}/documents/{doc_id}/status
 - 新版本完成后的 `chunk_count`、`token_count`、`indexed_at`
 - 失败时的 `error_msg`
 
+当前实现注意：RAG 检索 SQL 只召回 `KbDocument.status == DONE` 且 `DocChunk.doc_version == KbDocument.version` 的 chunk。因此已发布文档的替换或强制重建不能把主文档状态改为 `PENDING / PROCESSING`。本阶段已将重建进度放入 `kb_index_task`，并通过任务 `payload` 暂存替换文件元数据，新版本完整写入后才切换 `document.version` 和文件元数据。
+
 ## 2.4 代码执行流程
 
 ### 2.4.1 总体调用链路
@@ -223,8 +222,7 @@ document_updates.replace_content route
   -> DocumentRepository.get_active_in_kb(kb_id, doc_id)
   -> 校验文件名、类型、大小和文档状态
   -> MinioStorageService.upload(kb_id, file)
-  -> DocumentRepository.replace_file_and_reset_index(...)
-  -> IndexService.reindex_document(doc_id)
+  -> IndexService.reindex_document(doc_id, payload={source, old_minio_path})
   -> 返回 DocumentReindexSubmitResponse
 ```
 
@@ -236,7 +234,7 @@ document_updates.force_reindex route
   -> DocumentUpdateService.force_reindex(kb_id, doc_id)
   -> DocumentRepository.get_active_in_kb(kb_id, doc_id)
   -> 校验文档状态
-  -> DocumentRepository.reset_for_reindex(doc_id)
+  -> DONE 文档不重置主状态；非 DONE 文档才 reset_for_reindex(doc_id)
   -> IndexService.reindex_document(doc_id)
   -> 返回 DocumentReindexSubmitResponse
 ```
@@ -292,7 +290,7 @@ app/services/document_update.py
 
 - 编排文档替换和强制重建。
 - 复用现有文件类型和大小校验逻辑；如果实现时复制自 `KnowledgeBaseService`，应优先抽成内部私有方法，避免行为不一致。
-- 在提交索引任务前完成文档状态重置。
+- 已发布文档提交索引任务前不重置主状态；非 `DONE` 文档才执行状态重置。
 - 处理 MinIO 新文件上传后的失败补偿。
 
 推荐服务方法：
@@ -341,36 +339,14 @@ async def get_active_in_kb(self, kb_id: int, doc_id: int) -> KbDocument | None
 新增方法二：
 
 ```python
-async def replace_file_and_reset_index(
-    self,
-    doc_id: int,
-    *,
-    file_name: str,
-    file_type: str,
-    file_size: int,
-    minio_path: str,
-) -> KbDocument
-```
-
-职责：
-
-- 更新文件元数据和 MinIO 路径。
-- 重置状态为 `PENDING`。
-- 清空 `error_msg`。
-- 清理 `chunk_count`、`token_count`、`indexed_at`。
-- 不在这里递增 `version`；版本递增由 `IndexService` 的 `REINDEX` 执行阶段统一处理。
-
-新增方法三：
-
-```python
 async def reset_for_reindex(self, doc_id: int) -> None
 ```
 
 当前已有该方法，但需要增强为：
 
-- `status = PENDING`
-- `error_msg = None`
-- `chunk_count = None` 或 `0`
+- `DONE` 文档保持 `status = DONE`，只清理 `error_msg`
+- 非 `DONE` 文档重置为 `status = PENDING`
+- 非 `DONE` 文档清理 `chunk_count`、`token_count`、`indexed_at`
 - `token_count = None` 或 `0`
 - `indexed_at = None`
 
@@ -402,7 +378,26 @@ FAILED
 
 `FAILED` 允许再次提交，是为了支持人工恢复。
 
-### 2.4.6 异常处理和补偿
+### 2.4.6 查询可用性边界
+
+当前版本切换策略保证“新版本 chunk 完整写入后再清理旧版本 chunk”。在线查询额外依赖 `kb_document.status = DONE`，因此本阶段要求已发布文档在 REINDEX 期间保持 `DONE`，避免旧 chunk 被查询层过滤。
+
+现有行为：
+
+```plain
+替换或强制重建提交
+  -> document.status 仍为 DONE
+后台任务开始
+  -> task.status = RUNNING
+RAG 检索
+  -> 要求 document.status = DONE
+  -> 继续召回 document.version 指向的旧版本 chunk
+新版本完整写入
+  -> document.version 和文件元数据切换为新版本
+  -> 删除旧版本 chunk
+```
+
+### 2.4.7 异常处理和补偿
 
 文档替换的关键补偿：
 
@@ -428,9 +423,9 @@ MinIO 上传新文件成功
 
 任务提交失败：
 
-- 如果发生在状态重置之后，应把文档标记为 `FAILED` 并记录错误。
-- 不删除旧 chunk。
-- 替换场景中，若数据库已切换到新 `minio_path` 但任务提交失败，状态接口会显示 `FAILED`，用户可再次触发强制重建。
+- 替换场景中如果新文件已上传但任务未创建成功，应删除新 MinIO 对象。
+- 当前已发布文档不标记为 `FAILED`，旧 chunk 不删除，查询继续使用旧版本。
+- 非 `DONE` 文档的失败状态仍可写入主文档，便于上传后首次索引失败恢复。
 
 ## 2.5 技术约束与最佳实践
 
@@ -450,12 +445,12 @@ MinIO 上传新文件成功
 
 ### 功能行为
 
-- `PUT /api/v1/kb/{kb_id}/documents/{doc_id}/content` 成功后，返回 `doc_id`、新 `file_name`、`status=PENDING` 和 `task_id`。
+- `PUT /api/v1/kb/{kb_id}/documents/{doc_id}/content` 成功后，返回 `doc_id`、当前已发布 `file_name`、当前 `status` 和 `task_id`。
 - 替换文档不会创建新的 `kb_document` 记录，原 `doc_id` 保持不变。
-- 替换文档会更新 `file_name`、`file_type`、`file_size`、`minio_path`。
+- 替换文档提交时不会立即更新 `file_name`、`file_type`、`file_size`、`minio_path`；这些字段在新版本索引成功后发布。
 - 替换文档会创建 `REINDEX` 任务，而不是 `INDEX` 任务。
 - `POST /api/v1/kb/{kb_id}/documents/{doc_id}/reindex-force` 成功后，不更新文件元数据和 `minio_path`。
-- 强制重建会创建 `REINDEX` 任务，并把文档状态重置为 `PENDING`。
+- 强制重建会创建 `REINDEX` 任务；已发布文档状态保持 `DONE`。
 - 两个接口提交后，已有 status 接口能返回最新任务的 `retry_count` 和文档状态。
 
 ### 异常分支
@@ -466,7 +461,8 @@ MinIO 上传新文件成功
 - 替换接口收到空文件名或不支持扩展名时返回 400。
 - 替换接口中文件超过大小限制时返回 400。
 - 替换接口在新 MinIO 上传成功但后续失败时，会调用 `delete(new_minio_path)` 做补偿。
-- 任务提交失败时，文档进入 `FAILED` 并记录 `error_msg`，旧 chunk 不删除。
+- 替换任务提交失败时删除新 MinIO 对象，当前已发布文档不进入 `FAILED`。
+- REINDEX 执行失败时任务进入 `FAILED`；若文档原本是 `DONE`，主文档保持 `DONE`，旧 chunk 继续可查询。
 
 ### 权限与数据边界
 
@@ -476,7 +472,7 @@ MinIO 上传新文件成功
 
 ### 日志与可观测性
 
-- 替换成功日志包含 `kb_id`、`doc_id`、`task_id`、`old_minio_path`、`new_minio_path`。
+- 替换提交成功日志包含 `kb_id`、`doc_id`、`task_id`、`current_path`、`new_path`。
 - 强制重建成功日志包含 `kb_id`、`doc_id`、`task_id`。
 - 失败日志包含操作类型和失败阶段。
 - 本阶段不强制新增 Prometheus 指标；如新增，需同步更新 Spec。

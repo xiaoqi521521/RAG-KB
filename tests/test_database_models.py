@@ -56,6 +56,7 @@ def test_database_models_are_registered_on_base_metadata():
     assert chunk_columns["embedding"].type.compile() == "VECTOR(1024)"
     assert chunk_columns["embedding"].type.bind_processor(None) is not None
     assert chunk_columns["content_tsv"].type.compile(dialect=None) == "TSVECTOR"
+    assert "payload" in Base.metadata.tables["kb_index_task"].columns
 
 
 def test_timestamp_columns_use_shanghai_application_defaults():

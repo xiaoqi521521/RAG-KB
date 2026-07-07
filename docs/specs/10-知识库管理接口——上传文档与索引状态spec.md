@@ -512,7 +512,7 @@ POST /api/v1/kb/{kb_id}/documents/{doc_id}/reindex
   -> PermissionService.require_write(kb_id, user)
   -> KnowledgeBaseService.reindex_document(kb_id, doc_id, user)
        -> 查询 kb_document
-       -> 重置文档状态为 PENDING / 清空 error_msg
+       -> DONE 文档保持发布状态；非 DONE 文档重置为 PENDING / 清空 error_msg
        -> 调用 IndexService.reindex_document(doc_id)
        -> 索引管道按 REINDEX 将 document.version 递增
   -> 返回 202 + ApiResponse[str]
@@ -770,7 +770,7 @@ GIVEN 文档存在且用户有写权限
 
 WHEN 调用重建索引接口
 
-THEN 文档状态重置并重新提交索引任务，接口返回 `202`。
+THEN 重新提交索引任务，接口返回 `202`；若文档已发布，主文档状态保持 `DONE`。
 
 ## 参考资料
 

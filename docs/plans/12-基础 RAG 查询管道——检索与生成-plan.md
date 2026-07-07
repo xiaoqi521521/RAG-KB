@@ -13,7 +13,7 @@
 - `KbDocument.version`：已支持文档重建后的当前版本号，查询侧必须只召回当前版本 chunk。
 - `PermissionService.require_read(...)`：已具备知识库读权限校验能力，查询入口必须在检索前完成硬校验。
 - `ChatOpenAI` 客户端初始化：`app/core/clients.py` 已通过 OpenAI-compatible API 初始化聊天模型。
-- `Settings` 中已有 `rag_vector_top_k`、`rag_return_top_n`、`rag_min_score`、`rag_context_max_tokens`、`chat_model`、`chat_temperature` 和 `chat_max_tokens` 等配置。
+- `Settings` 中已有 `rag_vector_top_k`、`rag_return_top_n`、`rag_min_score`、`rag_context_max_tokens`、`chat_model`、`chat_temperature` 和 `chat_max_tokens` 等配置；当前实现保留 `rag_min_score` 配置但暂不用于过滤候选。
 
 基础查询管道要解决的核心问题是：在不引入后续增强复杂度的前提下，让前端或 cURL 能通过 HTTP 接口向一个或多个有权限知识库提问，并得到基于检索上下文的中文回答。回答必须具备两个企业级底线：
 
@@ -33,7 +33,7 @@
 2. 校验输入和读权限：问题不能为空；每个 `kb_id` 都必须通过 `PermissionService.require_read`
 3. 向量化问题：调用 `EmbeddingService.embed_query(question)` 得到查询向量
 4. 执行向量检索：在 `kb_doc_chunk` 中按允许的 `kb_id`、当前 `doc_version` 和向量距离召回 TopK
-5. 低召回处理：无结果或低于相似度阈值时直接返回“未找到相关内容”
+5. 无召回处理：没有检索结果时直接返回“未找到相关内容”；低分候选当前不按阈值过滤
 6. 组装上下文和引用：按召回顺序拼接 chunk 内容，并保留文档、页码、章节和 chunk 标识
 7. 调用聊天模型：使用只允许基于参考内容回答的 System Prompt 生成答案
 8. 返回查询结果：返回 answer、sources、命中数量、耗时等基础字段；必要时写入会话消息记录
@@ -96,25 +96,21 @@ ORDER BY kb_doc_chunk.embedding <=> :query_vector
 LIMIT :top_k
 ```
 
-为了让服务层能判断低置信度，Repository 返回结果时应携带距离或转换后的相似度分数。当前 `ChunkRepository` 只有写入和删除方法，后续 Spec 应补齐查询方法，例如按允许知识库执行向量相似度检索并返回 `ChunkSearchHit` 这类轻量结果对象。
+Repository 返回结果时应携带距离转换后的 `score`，用于排序展示、日志和后续阈值方案评估。当前实现不再用 `rag_min_score` 过滤候选，低分 chunk 仍可进入 `SourceBuilder`，最终进入 Prompt 的数量由 `rag_return_top_n` 和上下文预算控制。
 
 跨多个知识库查询时，不应像参考 Java 基础版那样先每个知识库各取 TopK 再简单截断；Python 版本建议一次 SQL 在允许 `kb_ids` 范围内全局排序，避免某个知识库结果过多挤掉更相关结果。后续混合检索阶段再引入向量 TopK、全文 TopK 和 RRF 融合。
 
-#### 低召回和拒答
+#### 无召回和拒答
 
-基础阶段需要在生成前做第一层拒答：
+基础阶段在生成前只做无召回拒答：
 
 ```plain
 检索结果为空
   -> 不调用聊天模型
   -> 返回“在知识库中未找到相关内容”
-
-最高相似度低于 rag_min_score
-  -> 不调用聊天模型，或返回低置信度拒答
-  -> 记录 query、kb_ids、top_score 和 elapsed_ms
 ```
 
-是否把 PGVector 距离转换为 0-1 相似度，需要在 Spec 中结合实际 SQL 表达式固定。Plan 层只要求：低置信度阈值必须来自配置，不能硬编码在服务函数中。
+`rag_min_score` 暂时只作为后续“相似度阈值过滤”方案的保留配置，不参与当前基础查询管道的候选过滤。后续重新启用阈值时，需要单独明确分数公式、过滤位置、日志字段和用户可见行为。
 
 生成阶段还需要第二层拒答：Prompt 明确要求模型只根据参考内容回答；参考内容不足时必须说明“未找到相关内容”。这层不能替代检索前的权限和低召回判断，只作为防幻觉兜底。
 
@@ -178,7 +174,7 @@ System Prompt 应沿用参考资料的核心规则，并贴合企业知识库场
       "score": 0.82
     }
   ],
-  "hit_count": 3,
+  "hit_count": 1,
   "latency_ms": 820
 }
 ```
@@ -197,7 +193,7 @@ System Prompt 应沿用参考资料的核心规则，并贴合企业知识库场
 
 #### 分支三：低置信度结果
 
-如果召回结果存在但最高分低于阈值，服务返回低置信度拒答。响应可以带空 sources，也可以带低置信度候选供调试；面向用户的默认结果不应把低置信度 chunk 当成可靠引用。
+当前阶段不启用低置信度阈值过滤。即使命中分数低于 `rag_min_score`，候选也可以进入 `SourceBuilder`；是否拒答由“无召回”与模型是否能基于参考内容回答共同决定。低置信度过滤后续单独规划。
 
 #### 分支四：部分知识库无权限
 
@@ -205,7 +201,7 @@ System Prompt 应沿用参考资料的核心规则，并贴合企业知识库场
 
 #### 分支五：索引中的文档
 
-文档处于 `PENDING`、`PROCESSING` 或 `FAILED` 时，其 chunk 不应参与基础查询。对于重建中的文档，检索层通过 `doc_version = kb_document.version` 使用当前已完成版本；新版本未完成前不暴露半成品 chunk。
+当前检索 SQL 同时要求 `doc_version = kb_document.version` 和 `kb_document.status = DONE`。这能避免暴露半成品 chunk。文档替换或强制重建期间，索引管道会保持已发布文档 `status = DONE` 和旧 `version`，把重建进度写入 `kb_index_task`，因此查询继续使用旧版本 chunk；新版本完整发布后再切换 `document.version`。
 
 #### 分支六：外部模型失败
 
@@ -222,10 +218,10 @@ Embedding 失败时查询无法继续，应返回服务不可用类错误并记�
 - 明确使用 `EmbeddingService.embed_query(...)` 完成问题向量化。
 - 明确基础检索只使用 PGVector 向量相似度，不引入全文检索和 RRF。
 - 明确检索 SQL 必须过滤允许的 `kb_id`、当前文档版本、未删除文档和已完成索引文档。
-- 明确无结果或低置信度时拒答，不能调用模型自由生成。
+- 明确无结果时拒答，不能调用模型自由生成。
 - 明确 Prompt 只允许基于参考内容回答，并要求中文、简洁和禁止编造。
 - 明确 sources 至少包含 `document_id`、`document_name`、`kb_id`、`chunk_id`、`page_number` 或 `section_title`。
-- 明确基础可观测信息：检索耗时、生成耗时、命中数量、低置信度拒答次数和模型失败日志。
+- 明确基础可观测信息：检索耗时、生成耗时、实际注入 Prompt 的引用数量和模型失败日志。
 - 对齐当前 Python 项目的 `EmbeddingService`、`PermissionService`、`DocChunk`、`KbDocument`、`Settings` 和 `ChatOpenAI` 客户端。
 
 ### Out of Scope
@@ -258,13 +254,13 @@ Embedding 失败时查询无法继续，应返回服务不可用类错误并记�
 代价：
 
 - 初始代码比一行式 LangChain RetrievalQA 多一些。
-- 需要自己定义 hit DTO、source builder 和低置信度策略。
+- 需要自己定义 hit DTO、source builder 和拒答策略。
 
 ### 备选方案一：直接使用 LangChain Retriever / Chain
 
 把 PGVector 封装成 LangChain retriever，再接入通用 RAG Chain。
 
-优点是代码量少，能更快演示。缺点是权限过滤、当前版本过滤、低置信度拒答、引用结构和日志指标容易分散或被抽象遮住，不适合作为本项目企业级查询主链路。
+优点是代码量少，能更快演示。缺点是权限过滤、当前版本过滤、拒答策略、引用结构和日志指标容易分散或被抽象遮住，不适合作为本项目企业级查询主链路。
 
 ### 备选方案二：一步到位实现混合检索
 
@@ -324,9 +320,9 @@ ChunkSearchHit
 - 检索 SQL 包含 `kb_id` 过滤、当前版本过滤、文档未删除过滤和文档 `DONE` 状态过滤。
 - 查询问题会调用与建库一致的 Embedding 模型维度。
 - 无召回结果时返回“在知识库中未找到相关内容”，不调用聊天模型。
-- 低于配置阈值时返回低置信度拒答，阈值来自配置。
+- 当前阶段不按 `rag_min_score` 过滤候选；后续如启用阈值，需要补充独立验收标准。
 - 正常命中时，Prompt 中只包含允许知识库的参考内容。
-- 正常响应包含 answer、sources、hit_count 和 latency_ms。
+- 正常响应包含 answer、sources、hit_count 和 latency_ms，其中 `hit_count` 与实际返回的 sources 数量一致。
 - sources 至少能追溯到文档、知识库、chunk、页码或章节。
 - 日志能区分 embedding、retrieval 和 generation 耗时。
 - 本文档文件名符合 Plan 阶段要求，已使用 `-plan.md` 后缀。

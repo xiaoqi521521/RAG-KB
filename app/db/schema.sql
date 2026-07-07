@@ -131,11 +131,14 @@ CREATE TABLE kb_index_task (
     status          VARCHAR(20)     NOT NULL DEFAULT 'PENDING',
     retry_count     INT             NOT NULL DEFAULT 0,
     max_retry       INT             NOT NULL DEFAULT 3,
+    payload         JSONB,
     error_msg       TEXT,
     created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     started_at      TIMESTAMP,
     finished_at     TIMESTAMP
 );
+
+COMMENT ON COLUMN kb_index_task.payload IS '索引任务扩展载荷，例如文档替换时暂存待发布文件元数据';
 
 CREATE INDEX idx_task_status ON kb_index_task(status, created_at);
 CREATE INDEX idx_task_doc_id ON kb_index_task(doc_id);

@@ -128,7 +128,7 @@ statement = (
 )
 ```
 
-这里没有把多个知识库拆成多次查询再在 Python 中截断，而是在同一条 SQL 中对允许的 `kb_ids` 做全局排序。`doc_version = document.version` 是重建期间查询不中断的关键过滤条件，新版本 chunk 未切换为当前版本前不会被召回。`type_coerce(..., Float)` 是 pgvector + SQLAlchemy 的关键边界：`DocChunk.embedding.op("<=>")(...)` 默认会继承左侧 Vector 类型，如果不显式改成浮点，数据库返回的距离值会被 pgvector 的向量解析器误处理。
+这里没有把多个知识库拆成多次查询再在 Python 中截断，而是在同一条 SQL 中对允许的 `kb_ids` 做全局排序。`doc_version = document.version` 能避免新版本 chunk 未完成前被召回，`KbDocument.status == DONE` 能过滤未发布文档；文档替换或强制重建期间，索引管道保持已发布文档 `DONE` 和旧版本号，因此查询继续召回旧版本 chunk。`type_coerce(..., Float)` 是 pgvector + SQLAlchemy 的关键边界：`DocChunk.embedding.op("<=>")(...)` 默认会继承左侧 Vector 类型，如果不显式改成浮点，数据库返回的距离值会被 pgvector 的向量解析器误处理。
 
 ### 无召回拒答
 

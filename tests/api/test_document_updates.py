@@ -34,9 +34,9 @@ class FakeDocumentUpdateService:
         return DocumentReindexSubmitResponse(
             doc_id=doc_id,
             file_name=file.filename,
-            status=DocumentStatus.PENDING.value,
+            status=DocumentStatus.DONE.value,
             task_id=30,
-            message="文档内容已替换，重建索引任务已提交，请通过 status 接口查询进度",
+            message="文档替换任务已提交，新版本索引完成前继续使用当前可查询版本",
         )
 
     async def force_reindex(self, kb_id: int, doc_id: int):
@@ -44,9 +44,9 @@ class FakeDocumentUpdateService:
         return DocumentReindexSubmitResponse(
             doc_id=doc_id,
             file_name="handbook.txt",
-            status=DocumentStatus.PENDING.value,
+            status=DocumentStatus.DONE.value,
             task_id=31,
-            message="强制重建索引任务已提交，请通过 status 接口查询进度",
+            message="强制重建索引任务已提交，已发布版本在重建期间继续可查询",
         )
 
 
@@ -76,7 +76,7 @@ def test_replace_content_endpoint_requires_write_and_returns_submitted_response(
 
     assert response.status_code == 200
     assert response.json()["data"]["task_id"] == 30
-    assert response.json()["data"]["status"] == "PENDING"
+    assert response.json()["data"]["status"] == "DONE"
     assert permission_service.write_checks == [10]
     assert update_service.replaced == [(10, 7, "updated.txt")]
 
@@ -90,6 +90,6 @@ def test_force_reindex_endpoint_requires_write_and_returns_submitted_response() 
 
     assert response.status_code == 200
     assert response.json()["data"]["task_id"] == 31
-    assert response.json()["data"]["status"] == "PENDING"
+    assert response.json()["data"]["status"] == "DONE"
     assert permission_service.write_checks == [10]
     assert update_service.force_reindexed == [(10, 7)]

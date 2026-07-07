@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,12 +20,14 @@ class IndexTaskRepository:
         doc_id: int,
         *,
         task_type: IndexTaskType = IndexTaskType.INDEX,
+        payload: dict[str, Any] | None = None,
     ) -> IndexTask:
         """为指定文档创建一条待执行的索引任务。"""
         task = IndexTask(
             doc_id=doc_id,
             task_type=task_type.value,
             status=IndexTaskStatus.PENDING.value,
+            payload=payload,
         )
         self.session.add(task)
         await self.session.flush()

@@ -15,8 +15,10 @@
 ### 修改文件
 
 - `app/api/router.py`：注册 `document_updates.router`，路径前缀为 `/api/v1/kb`。
-- `app/repositories/documents.py`：新增 `get_active_in_kb(...)`、`replace_file_and_reset_index(...)`，并增强 `reset_for_reindex(...)` 清理旧统计字段。
+- `app/repositories/documents.py`：新增 `get_active_in_kb(...)`；`reset_for_reindex(...)` 对已发布 `DONE` 文档保持状态不变，避免重建期间影响在线查询。
 - `app/schemas/knowledge_base.py`：新增 `DocumentReindexSubmitResponse`，用于替换和强制重建接口响应。
+- `app/db/schema.sql`：为 `kb_index_task` 增加 `payload JSONB`，用于暂存替换文件的待发布元数据。
+- `app/db/migrations/20260707_add_index_task_payload.sql`：为已有数据库补充 `payload` 列。
 
 ### 删除文件
 
@@ -42,9 +44,8 @@ PUT /api/v1/kb/{kb_id}/documents/{doc_id}/content
   -> 拒绝 PENDING / PROCESSING 文档
   -> 校验文件名、类型、大小
   -> 上传新文件到 MinIO
-  -> replace_file_and_reset_index(...)
-  -> IndexService.reindex_document(doc_id)
-  -> 删除旧 MinIO 对象
+  -> IndexService.reindex_document(doc_id, payload={source, old_minio_path})
+  -> 新版本索引成功后再发布新文件元数据并删除旧 MinIO 对象
   -> 返回 doc_id / file_name / status / task_id
 ```
 
@@ -56,7 +57,7 @@ POST /api/v1/kb/{kb_id}/documents/{doc_id}/reindex-force
   -> DocumentUpdateService.force_reindex(...)
   -> get_active_in_kb(kb_id, doc_id)
   -> 拒绝 PENDING / PROCESSING 文档
-  -> reset_for_reindex(doc_id)
+  -> DONE 文档不重置主状态；未发布文档才 reset_for_reindex(doc_id)
   -> IndexService.reindex_document(doc_id)
   -> 返回 doc_id / file_name / status / task_id
 ```
@@ -65,13 +66,15 @@ POST /api/v1/kb/{kb_id}/documents/{doc_id}/reindex-force
 
 路由层新增 `document_updates.py`，与现有 `knowledge_bases.py` 共用 `/api/v1/kb` 前缀，但不修改已有 `knowledge_bases.reindex_document`。两个新接口都先调用 `PermissionService.require_write(...)`，确保文档替换和强制重建不会被只读用户触发。
 
-服务层新增 `DocumentUpdateService`。替换文档时先读取 `kb_id + doc_id + is_deleted=False` 匹配的文档，再拒绝正在 `PENDING` 或 `PROCESSING` 的文档，避免并发重建写入多个版本。文件校验通过后上传新对象，随后更新文档元数据并清空旧统计字段，再调用 `IndexService.reindex_document(doc_id)` 创建 `REINDEX` 任务。
+服务层新增 `DocumentUpdateService`。替换文档时先读取 `kb_id + doc_id + is_deleted=False` 匹配的文档，再拒绝正在 `PENDING` 或 `PROCESSING` 的文档，避免并发重建写入多个版本。文件校验通过后上传新对象，但不立刻覆盖 `kb_document.file_name / minio_path / status / version`，而是把新文件元数据放入 `kb_index_task.payload`，再调用 `IndexService.reindex_document(doc_id, payload=...)` 创建 `REINDEX` 任务。
 
-如果新文件上传成功但数据库尚未切换就失败，会删除新 MinIO 对象做补偿。如果数据库已经切换到新 `minio_path` 后任务提交失败，不删除新对象，而是将文档标记为 `FAILED`，保留新原文，方便用户后续重新触发强制重建。
+如果新文件上传成功但任务提交失败，会删除新 MinIO 对象做补偿。因为当前发布文档行没有被修改，所以不会把用户仍可查询的旧版本标记为 `FAILED`。
 
-强制重建不上传文件、不修改 `minio_path` 和文件元数据，只重置状态与统计字段，然后提交 `REINDEX` 任务。
+强制重建不上传文件、不修改 `minio_path` 和文件元数据。若文档已经是 `DONE`，不再重置主文档状态和旧统计字段，只提交 `REINDEX` 任务；若文档尚未发布成功，才清理旧错误状态并进入重建流程。
 
-`DocumentRepository.reset_for_reindex(...)` 已增强为清理 `chunk_count`、`token_count`、`indexed_at`，避免前端看到上一轮索引统计后误判新任务已完成。
+`DocumentRepository.reset_for_reindex(...)` 已调整为区分发布状态：`DONE` 文档只清理 `error_msg` 并保持可查询；非 `DONE` 文档仍会清理统计字段并重置为 `PENDING`。
+
+当前实现的查询影响：已发布文档替换或强制重建期间，`kb_document.status` 保持 `DONE`，`kb_document.version` 继续指向旧版本 chunk；RAG 检索 SQL 仍能召回旧版本内容。后台任务只更新 `kb_index_task.status`，新版本 chunk 完整写入后才切换 `document.version` 和替换文件元数据，再清理旧版本 chunk。
 
 ## 3.3 核心代码片段及讲解
 
@@ -104,25 +107,22 @@ old_minio_path = document.minio_path
 
 try:
     new_minio_path = await self.storage_service.upload(kb_id, file)
-    document = await self.document_repository.replace_file_and_reset_index(...)
-    document_replaced = True
-    task_id = await self.index_service.reindex_document(doc_id)
+    task_id = await self.index_service.reindex_document(
+        doc_id,
+        payload={"source": {...}, "old_minio_path": old_minio_path},
+    )
 except Exception as exc:
-    if new_minio_path is not None and not document_replaced:
+    if new_minio_path is not None:
         await self.storage_service.delete(new_minio_path)
-    if document_replaced:
-        await self.document_repository.mark_failed(doc_id, str(exc))
     raise
-
-await self.storage_service.delete(old_minio_path)
 ```
 
 设计点：
 
-- 先上传新文件，再切换文档记录。
-- 只有数据库尚未切换时才删除新对象。
-- 数据库已经切到新对象后，如果任务提交失败，保留新对象并标记失败，避免后续重建读不到原文。
-- 旧文件删除放在任务提交成功后执行，删除失败由 `MinioStorageService.delete(...)` 记录告警，不阻断主流程。
+- 先上传新文件，但只把新文件元数据放入任务 payload。
+- 任务提交失败时删除新对象，当前发布文档行保持不变。
+- 新版本索引成功后，`IndexService` 才发布新文件元数据并删除旧对象。
+- 旧文件删除失败由 `MinioStorageService.delete(...)` 记录告警，不阻断新版本发布。
 
 ### 仓储层状态重置
 
@@ -137,7 +137,9 @@ def _reset_index_fields(self, document: KbDocument) -> None:
 
 设计点：
 
-- 重建前清空旧统计字段，避免状态接口混淆新旧索引结果。
+- `DONE` 文档不再通过 `_reset_index_fields(...)` 重置，避免重建期间被查询层过滤。
+- 非 `DONE` 文档仍使用该方法进入重新索引状态。
+- 非 `DONE` 文档重建前清空旧统计字段，避免状态接口混淆新旧索引结果。
 - 不在仓储层递增版本号；版本递增仍由 `IndexService` 的 `REINDEX` 执行流程统一处理。
 
 ## 3.4 验证结果
@@ -186,5 +188,5 @@ $env:PYTHONPATH='.'; uv run mypy app
 
 - `knowledge_bases.py` 里的既有 `/reindex` 按 Spec 要求未处理，仍保持原样。
 - 新增 `/reindex-force` 与既有 `/reindex` 会在功能上相近，但命名上保留参考资料语义，后续如需统一 API，应另开重构任务。
-- 替换文档时任务提交失败后保留新 MinIO 对象，这是为了支持后续重新触发强制重建；如果产品希望失败后自动回滚旧文件，需要单独设计回滚策略。
-- `reset_for_reindex(...)` 现在会清空旧统计字段，这会改变既有 `/reindex` 触发后的状态展示行为，但符合本阶段 Spec 对“避免旧统计误导前端”的要求。
+- 替换文档时任务提交失败会删除新 MinIO 对象，并保持当前发布文档不变。
+- `reset_for_reindex(...)` 只重置非 `DONE` 文档；已发布文档的重建进度以后应主要参考最新 `kb_index_task`。

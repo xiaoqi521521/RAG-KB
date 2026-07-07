@@ -2,7 +2,7 @@
 
 本文基于 [11-文档增量更新——版本管理与差量重索引.md](/D:/Code/python/Practical_Project/rag-kb/docs/references/11-文档增量更新——版本管理与差量重索引.md) 梳理 LangChain / FastAPI 版本中的文档更新、版本管理与差量重索引计划。
 
-本阶段关注“文档内容发生变化后，如何保持文档 ID 稳定、查询不中断、Embedding 成本可控、索引状态可追踪”。它不是重新设计完整索引管道，也不做复杂段落级 diff。当前项目已经具备 `IndexService.reindex_document(...)`、文档管理路由和版本化 chunk 写入基础，因此本文重点明确下一步需要补齐的业务流程、边界和验收方向。
+本阶段关注“文档内容发生变化后，如何保持文档 ID 稳定、尽量减少查询影响、Embedding 成本可控、索引状态可追踪”。它不是重新设计完整索引管道，也不做复杂段落级 diff。当前项目已经具备 `IndexService.reindex_document(...)`、文档管理路由和版本化 chunk 写入基础，因此本文重点明确下一步需要补齐的业务流程、边界和验收方向。
 
 ## 1.1 任务背景
 
@@ -20,7 +20,7 @@
 参考文献给出的核心取舍是：生产上优先支持“整文档替换 + 版本化重建 + Embedding 缓存复用”。也就是说，本阶段不做精细到页、段落或 chunk 的内容 diff，而是在重新解析和重新分块后，依赖 `EmbeddingService` 的内容 hash 缓存复用未变化 chunk 的向量。这样可以在复杂度可控的前提下，同时保证：
 
 - 文档 ID 不变，前端和引用关系更稳定。
-- 新版本索引完成前，旧版本 chunk 仍然可用。
+- 新版本索引完成前旧版本 chunk 仍然可用；已发布文档重建期间保持 `kb_document.status = DONE`，重建进度由 `kb_index_task` 承载。
 - 内容相同的 chunk 命中 Redis embedding 缓存，不重复调用外部模型。
 - 强制重建索引可以复用同一套版本切换流程。
 
@@ -113,7 +113,7 @@ app/repositories/documents.py
 
 #### 版本号与 chunk 生命周期
 
-版本字段是本阶段保证查询不中断的关键。
+版本字段是避免半成品 chunk 被查询到的关键。在线 RAG 检索同时过滤 `kb_document.status = DONE`，因此已发布文档重建期间必须保持 `DONE`，只让 `kb_index_task` 表达重建进度。
 
 ```plain
 首次索引：
@@ -155,15 +155,11 @@ app/repositories/documents.py
 
 ```plain
 用户提交替换/重建
-  -> document.status = PENDING
-  -> document.error_msg = null
-  -> document.chunk_count = null 或 0
-  -> document.token_count = null 或 0
-  -> document.indexed_at = null 或保留 last_indexed_at 另字段
+  -> 已发布 document.status 保持 DONE
+  -> 新文件元数据暂存到 index_task.payload
   -> index_task.status = PENDING
 
 后台开始执行
-  -> document.status = PROCESSING
   -> index_task.status = RUNNING
 
 执行成功
@@ -223,7 +219,9 @@ app/repositories/documents.py
 
 #### 分支四：替换期间用户查询
 
-在线查询链路在本阶段不是实现重点，但 Plan 必须保留约束：替换或强制重建期间，查询应继续使用旧版本 chunk。只有当新版本任务成功完成后，查询才切到新版本。这个能力最终依赖检索 SQL 的版本过滤，而不是 Prompt。
+在线查询链路在本阶段不是实现重点，但 Plan 必须保留目标约束：替换或强制重建期间，理想行为是查询继续使用旧版本 chunk，只有当新版本任务成功完成后才切到新版本。
+
+当前实现已按该目标调整：文档替换或强制重建不会把已发布文档状态重置为 `PENDING / PROCESSING`，`document.version` 继续指向旧版本 chunk；新文件元数据暂存到 `kb_index_task.payload`，待新版本索引成功后再发布。因此任务执行期间用户查询仍会命中旧版本内容。
 
 #### 分支五：重复点击重建
 
@@ -240,14 +238,14 @@ app/repositories/documents.py
 
 本阶段必须覆盖的业务范围：
 
-- 明确文档替换流程：保持 `doc_id` 不变，替换 MinIO 原文和文档元数据，提交 `REINDEX` 任务。
+- 明确文档替换流程：保持 `doc_id` 不变，新 MinIO 原文和文件元数据先进入任务 payload，提交 `REINDEX` 任务成功后再发布。
 - 明确强制重建流程：不替换原文，只基于当前 `minio_path` 重新索引。
 - 明确版本化 chunk 策略：新版本 chunk 完整写入成功后，再切换 `document.version` 并清理旧版本。
 - 明确差量成本优化方式：不做精细 diff，依赖 Embedding 内容 hash 缓存复用未变化 chunk 的向量。
-- 明确状态流转：`PENDING -> PROCESSING -> DONE / FAILED`，并要求重建前清理旧统计字段。
+- 明确状态流转：首次索引仍按文档状态 `PENDING -> PROCESSING -> DONE / FAILED`；已发布文档 REINDEX 期间主文档保持 `DONE`，任务状态表达 `PENDING -> RUNNING -> DONE / FAILED`。
 - 明确权限边界：替换和强制重建必须要求知识库写权限，并校验 `doc_id` 属于 `kb_id`。
 - 明确失败处理：新文件上传、数据库更新、任务提交、索引执行和旧资源清理分别定义补偿或降级策略。
-- 明确查询不中断约束：重建期间旧版本 chunk 保持可用，检索层后续必须过滤当前版本。
+- 明确查询不中断目标：重建期间旧版本 chunk 保持可用，直到新版本完整发布。
 - 对齐当前 Python 项目已有的 `IndexService`、`KnowledgeBaseService`、Repository 和路由能力。
 
 ### Out of Scope
@@ -329,11 +327,11 @@ PUT /api/v1/kb/{kb_id}/documents/{doc_id}/content
 
 本 Plan 不直接修改代码，但后续 Spec 和实现应能验证以下行为：
 
-- 替换文档成功后，`doc_id` 不变，`minio_path`、文件名、大小和类型更新。
+- 替换文档提交后，`doc_id` 不变，`minio_path`、文件名、大小和类型在新版本索引成功后更新。
 - 替换文档会创建 `REINDEX` 任务，而不是重新创建一条文档记录。
 - 强制重建不改变 `minio_path`，但会创建 `REINDEX` 任务。
 - 重建任务成功后，`document.version` 递增，新的 `DocChunk.doc_version` 与文档版本一致。
-- 重建失败时，旧版本 chunk 不被删除，查询不中断。
+- 重建失败时，旧版本 chunk 不被删除；若文档原本已发布，主文档保持 `DONE`，旧版本继续可查询。
 - 重建开始后，状态接口不会继续展示容易误解为新版本完成的旧统计数据。
 - 无写权限用户不能替换文档或强制重建。
 - `doc_id` 不属于 `kb_id` 时返回文档不存在或无权限，不泄露其他知识库文档信息。
@@ -347,6 +345,7 @@ PUT /api/v1/kb/{kb_id}/documents/{doc_id}/content
 - `PUT /api/v1/kb/{kb_id}/documents/{doc_id}/content` 的请求、响应、错误码和权限依赖。
 - `DocumentRepository` 替换文件元数据和重置统计字段的精确方法签名。
 - 文档处于 `PENDING` / `PROCESSING` 时重复替换或重复重建的处理策略。
+- 如何拆分“可查询发布状态”和“重建任务状态”，避免文档替换期间影响 RAG 查询。
 - 新 MinIO 对象、旧 MinIO 对象和数据库事务失败时的补偿顺序。
 - 旧版本 chunk 清理失败时，任务是否保持 DONE 并记录告警。
 - 哪些测试覆盖权限、版本递增、旧版本保留、状态重置和缓存复用路径。
