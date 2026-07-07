@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     rag_fulltext_top_k: int = 20
     rag_return_top_n: int = 5
     rag_min_score: float = 0.5
+    rag_rrf_k: int = 60
+    rag_query_pipeline: str = "v2"
     rag_context_max_tokens: int = 3000
 
     max_upload_file_size_mb: int = 50

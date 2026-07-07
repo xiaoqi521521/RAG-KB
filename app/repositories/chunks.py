@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import Float
-from sqlalchemy import select
 from sqlalchemy import delete
+from sqlalchemy import Float
+from sqlalchemy import literal_column
+from sqlalchemy import func
+from sqlalchemy import select
 from sqlalchemy import type_coerce
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,6 +104,69 @@ class ChunkRepository:
                 page_num=row[6],
                 section_title=row[7],
                 score=1 / (1 + float(row[8])),
+            )
+            for row in result.all()
+        ]
+
+    async def search_by_fulltext(
+        self,
+        *,
+        query_text: str,
+        kb_ids: list[int],
+        top_k: int,
+    ) -> list[ChunkSearchHit]:
+        """按 PostgreSQL 全文检索召回当前可用版本的 chunk。
+
+        Args:
+            query_text: 已清洗并按 `&` 拼接的 tsquery 文本，传给 to_tsquery。
+            kb_ids: 已通过读权限校验的知识库 ID 列表。
+            top_k: 数据库召回数量上限。
+
+        Returns:
+            按全文 rank 从高到低排序的 ChunkSearchHit 列表。
+        """
+        if not query_text.strip() or not kb_ids or top_k <= 0:
+            return []
+
+        ts_config = literal_column("'simple'")
+        query_expr = func.to_tsquery(ts_config, query_text)
+        rank_expr = type_coerce(func.ts_rank(DocChunk.content_tsv, query_expr), Float).label("rank")
+
+        statement = (
+            select(
+                DocChunk.id,
+                DocChunk.doc_id,
+                KbDocument.file_name,
+                DocChunk.kb_id,
+                DocChunk.chunk_index,
+                DocChunk.content,
+                DocChunk.page_num,
+                DocChunk.section_title,
+                rank_expr,
+            )
+            .join(KbDocument, DocChunk.doc_id == KbDocument.id)
+            .where(
+                DocChunk.kb_id.in_(kb_ids),
+                DocChunk.doc_version == KbDocument.version,
+                KbDocument.status == DocumentStatus.DONE.value,
+                KbDocument.is_deleted.is_(False),
+                DocChunk.content_tsv.op("@@")(query_expr),
+            )
+            .order_by(rank_expr.desc())
+            .limit(top_k)
+        )
+        result = await self.session.execute(statement)
+        return [
+            ChunkSearchHit(
+                chunk_id=row[0],
+                doc_id=row[1],
+                document_name=row[2],
+                kb_id=row[3],
+                chunk_index=row[4],
+                content=row[5],
+                page_num=row[6],
+                section_title=row[7],
+                score=float(row[8]),
             )
             for row in result.all()
         ]

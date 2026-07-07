@@ -54,7 +54,7 @@ app/core/clients.py
   -> get_embeddings() 返回 OpenAI-compatible embedding 客户端
 
 app/core/config.py
-  -> Settings 已有 rag_vector_top_k、rag_return_top_n、rag_min_score、rag_context_max_tokens
+  -> Settings 已有 rag_vector_top_k、rag_return_top_n、rag_min_score、rag_context_max_tokens；rag_min_score 当前保留给后续阈值过滤规划
 ```
 
 核心目标：
@@ -62,7 +62,7 @@ app/core/config.py
 - 对外提供 `POST /api/v1/rag/query`。
 - 检索前完成读权限校验，禁止无权限知识库进入向量查询。
 - 检索 SQL 过滤当前文档版本、未删除文档和已完成索引文档。
-- 没有召回或召回分数低于阈值时拒答，不调用聊天模型自由发挥。
+- 没有召回时拒答，不调用聊天模型自由发挥；当前阶段不按相似度阈值过滤候选。
 - 正常命中时，Prompt 只包含允许知识库的参考内容。
 - 响应返回 answer、sources、hit_count、latency_ms，sources 可追溯到文档和 chunk。
 
@@ -81,7 +81,7 @@ app/core/config.py
 - 基础查询只做 PGVector 向量检索，不做全文检索、RRF 或 Reranker。
 - 查询入口必须校验所有请求 `kb_ids` 的读权限。
 - 查询响应必须包含 answer、sources、hit_count、latency_ms。
-- 增加单元测试和 API 测试，覆盖权限过滤、当前版本过滤、无召回拒答、低分拒答、正常生成和来源元数据。
+- 增加单元测试和 API 测试，覆盖权限过滤、当前版本过滤、无召回拒答、低分候选仍可进入上下文、正常生成和来源元数据。
 
 ### Out of Scope
 
@@ -170,7 +170,7 @@ class RagQueryRequest(BaseModel):
 }
 ```
 
-字段语义说明：`hit_count` 表示通过 `rag_min_score` 过滤后的有效 chunk 数量；`sources` 表示实际进入 Prompt 的引用 chunk 来源列表，命中多个 chunk 时返回多条来源记录，但数量可能因 `rag_return_top_n` 或上下文预算裁剪而小于 `hit_count`。数据库 TopK 召回但低于阈值的候选只作为内部检索候选，不进入 API 响应。
+字段语义说明：`hit_count` 表示实际进入 Prompt 的引用 chunk 数量，与 `sources.length` 一致。当前阶段不按 `rag_min_score` 过滤候选；`rag_return_top_n` 从 `.env` 的 `RAG_RETURN_TOP_N` 读取，控制最多进入 Prompt 和响应 `sources` 的 chunk 数量。
 
 建议响应 DTO：
 
@@ -199,7 +199,7 @@ class RagQueryResponse(BaseModel):
 
 ### 2.3.3 拒答响应
 
-无召回和低置信度统一返回 200，业务上是一次成功处理的查询，只是答案为拒答：
+无召回统一返回 200，业务上是一次成功处理的查询，只是答案为拒答：
 
 ```json
 {
@@ -214,7 +214,7 @@ class RagQueryResponse(BaseModel):
 }
 ```
 
-低置信度场景不返回候选 sources。原因是低分 chunk 不应被前端展示成可靠引用；调试信息写入日志。
+当前阶段不启用低置信度阈值过滤；只在检索无召回时返回空 `sources`。相似度阈值过滤将在后续阶段重新设计并补充验收标准。
 
 ### 2.3.4 错误响应
 
@@ -243,8 +243,7 @@ rag.query route
   -> RagQueryService.query(question, unique_kb_ids, user)
   -> EmbeddingService.embed_query(question)
   -> ChunkRepository.search_by_vector(query_vector, kb_ids, top_k)
-  -> 按 rag_min_score 过滤每个候选 chunk
-  -> SourceBuilder.build(qualified_hits, return_top_n)
+  -> SourceBuilder.build(hits, return_top_n)
   -> ChatOpenAI.ainvoke([SystemMessage(...), HumanMessage(...)])
   -> RagQueryResponse
   -> ApiResponse.ok(response)
@@ -370,8 +369,8 @@ LIMIT top_k
 分数规则：
 
 - Repository 内部可以先取 PGVector 距离 `distance`。
-- 对外返回 `score = 1 / (1 + distance)`，范围为 `(0, 1]`，便于和 `settings.rag_min_score` 比较。
-- `rag_min_score` 默认值来自配置，当前为 `0.5`。
+- 对外返回 `score = 1 / (1 + distance)`，范围为 `(0, 1]`，当前仅作为排序和展示分数。
+- `rag_min_score` 默认值来自配置，当前阶段不参与候选过滤。
 - 如果后续切换为 cosine similarity 或数据库表达式变化，必须同步更新本 Spec 和测试断言。
 
 实现建议：
@@ -446,7 +445,7 @@ app/services/rag_query.py
 
 - 编排基础查询主链路。
 - 不直接做权限判断，权限由路由入口完成；服务仍只接收已授权 `kb_ids`。
-- 负责无召回、低置信度、模型失败和耗时日志。
+- 负责无召回、模型失败和耗时日志。
 - 不写会话表。
 
 建议构造参数：
@@ -490,11 +489,10 @@ async def query(
        kb_ids=kb_ids,
        top_k=settings.rag_vector_top_k,
    )
-5. qualified_hits = [hit for hit in hits if hit.score >= settings.rag_min_score]
-6. if not qualified_hits: return refusal_response(...)
-7. context, sources = source_builder.build(qualified_hits, return_top_n=settings.rag_return_top_n)
-8. answer = await generate_answer(normalized_question, context)
-9. return RagQueryResponse(answer=answer, sources=sources, hit_count=len(qualified_hits), latency_ms=...)
+5. if not hits: return refusal_response(...)
+6. context, sources = source_builder.build(hits, return_top_n=settings.rag_return_top_n)
+7. answer = await generate_answer(normalized_question, context)
+8. return RagQueryResponse(answer=answer, sources=sources, hit_count=len(sources), latency_ms=...)
 ```
 
 拒答文案固定为：
@@ -594,8 +592,7 @@ chat_model.ainvoke(...) 抛出异常
 日志要求：
 
 - 查询开始和结束记录 `user_id`、`kb_ids`、`hit_count`、`latency_ms`。
-- 拒答日志记录 `reason=no_hits` 或 `reason=low_score`。
-- 低分拒答记录 `top_score` 和 `min_score`。
+- 拒答日志记录 `reason=no_hits`。
 - 模型异常日志记录错误类型，不记录完整 Prompt 内容，避免日志泄露内部文档大段内容。
 
 ## 2.5 技术约束与最佳实践
@@ -605,12 +602,11 @@ chat_model.ainvoke(...) 抛出异常
 - 检索 Repository 必须 join `KbDocument`，过滤 `doc_version = KbDocument.version`，避免召回重建过程中的半成品 chunk。
 - 检索 Repository 必须过滤 `KbDocument.status == DocumentStatus.DONE.value` 和 `KbDocument.is_deleted.is_(False)`。
 - 本阶段不使用 LangChain 一行式 RetrievalQA、Agent 或 Tool 抽象承接主链路，避免权限、拒答和引用溯源边界被隐藏。
-- 本阶段不使用 LangChain 官方 RAG Chain 示例中的 `retriever | prompt | model | parser` 管道作为主链路；该模式可用于理解调用方式，但不适合承载本项目的权限硬过滤、低分拒答、版本过滤和 sources 结构化返回。
+- 本阶段不使用 LangChain 官方 RAG Chain 示例中的 `retriever | prompt | model | parser` 管道作为主链路；该模式可用于理解调用方式，但不适合承载本项目的权限硬过滤、版本过滤和 sources 结构化返回。
 - `EmbeddingService.embed_query(...)` 与索引阶段必须使用同一 embedding 模型和维度。
 - 向量查询必须使用参数化表达式或 SQLAlchemy 表达式，不手写拼接向量字符串。
 - `rag_vector_top_k` 控制数据库召回数量，`rag_return_top_n` 控制进入 Prompt 的 chunk 数量，两者不能混用。
-- `rag_min_score` 对每个候选 chunk 生效，低于阈值的 chunk 不进入 Prompt、sources 或 `hit_count`。
-- `rag_min_score` 只和 Spec 中定义的 `score = 1 / (1 + distance)` 比较；如果分数公式变化，必须同步更新配置说明和测试。
+- 当前阶段不使用 `rag_min_score` 过滤候选；该配置保留给后续相似度阈值过滤方案。
 - Prompt 中不得包含无权限知识库的任何 chunk 内容。
 - 本阶段不把 `session_id` 写入会话表，避免提前进入多轮对话范围。
 - 所有新增函数、方法和核心类必须按项目约定添加 Docstring；复杂 SQL 和拒答边界需要添加说明“为什么这么过滤”。
@@ -625,8 +621,7 @@ chat_model.ainvoke(...) 抛出异常
 - 正常命中时返回非空 `answer`、非空 `sources`、`hit_count > 0` 和 `latency_ms >= 0`。
 - 正常命中时 Prompt 中只包含检索命中的参考内容，不包含无关知识库 chunk。
 - 无召回时返回固定拒答文案，`sources=[]`，`hit_count=0`，且不调用聊天模型。
-- 所有候选 chunk 都低于 `settings.rag_min_score` 时返回固定拒答文案，`sources=[]`，`hit_count=0`，且不调用聊天模型。
-- 正常命中时，低于 `settings.rag_min_score` 的候选 chunk 不出现在 `sources` 中。
+- 正常命中时，即使候选分数低于 `settings.rag_min_score`，当前阶段也允许进入 `SourceBuilder`，最终数量由 `rag_return_top_n` 和上下文预算控制。
 - `session_id` 传入时不影响本阶段查询结果，也不读取或写入会话历史。
 
 ### 异常分支
@@ -661,7 +656,6 @@ chat_model.ainvoke(...) 抛出异常
 ### 日志与可观测性
 
 - 正常查询日志包含 `user_id`、`kb_ids`、`hit_count`、`latency_ms`。
-- 低分拒答日志包含 `top_score`、`min_score`。
 - Embedding、retrieval、generation 三段耗时至少在 debug 或 info 日志中可见。
 - 日志不输出完整上下文和完整 Prompt。
 - 本阶段不强制新增 Prometheus 指标；如实现新增指标，必须同步更新本 Spec。

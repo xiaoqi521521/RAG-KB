@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -168,6 +169,26 @@ class FakeChunkService:
 
     def split_documents(self, docs: list[Document]) -> list[Document]:
         return self.chunks
+
+
+class ThreadRecordingLoader(FakeLoader):
+    def __init__(self, docs: list[Document]) -> None:
+        super().__init__(docs)
+        self.thread_id: int | None = None
+
+    def load(self, file: BytesIO, file_name: str) -> list[Document]:
+        self.thread_id = threading.get_ident()
+        return super().load(file, file_name)
+
+
+class ThreadRecordingChunkService(FakeChunkService):
+    def __init__(self, chunks: list[Document]) -> None:
+        super().__init__(chunks)
+        self.thread_id: int | None = None
+
+    def split_documents(self, docs: list[Document]) -> list[Document]:
+        self.thread_id = threading.get_ident()
+        return super().split_documents(docs)
 
 
 class FakeEmbeddingService:
@@ -372,6 +393,7 @@ async def test_run_task_initial_index_keeps_document_initial_version() -> None:
     assert inserted.section_title == "总则"
     assert inserted.token_count == 12
     assert inserted.doc_version == 1
+    assert inserted.content_tsv is None
     assert bundle.chunks.deleted == [(1, 1)]
 
 
@@ -393,6 +415,26 @@ async def test_run_task_logs_indexing_stage_start_and_finish(caplog: pytest.LogC
     assert any("chunk 入库完成" in message for message in messages)
     assert any("旧版本 chunk 清理完成" in message for message in messages)
     assert any("索引任务 DONE" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_run_task_offloads_parse_and_chunk_steps_from_event_loop_thread() -> None:
+    main_thread_id = threading.get_ident()
+    loader = ThreadRecordingLoader([Document(page_content="员工手册正文", metadata={"page_num": 1})])
+    chunk_service = ThreadRecordingChunkService(
+        [Document(page_content="员工手册正文", metadata={"page_num": 1, "estimated_tokens": 8})]
+    )
+    bundle = _build_service()
+    bundle.service.loader_service = loader
+    bundle.service.chunk_service = chunk_service
+    task_id = await bundle.service.submit_index_task(1)
+
+    await bundle.service.run_task(task_id, 1)
+
+    assert loader.thread_id is not None
+    assert chunk_service.thread_id is not None
+    assert loader.thread_id != main_thread_id
+    assert chunk_service.thread_id != main_thread_id
 
 
 @pytest.mark.asyncio

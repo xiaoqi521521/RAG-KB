@@ -36,3 +36,24 @@ async def test_search_by_vector_builds_current_version_filtered_query() -> None:
     assert isinstance(list(session.statement.selected_columns)[-1].type, Float)
     assert hits[0].chunk_id == 10
     assert hits[0].score == 0.8
+
+
+async def test_search_by_fulltext_builds_current_version_filtered_query() -> None:
+    session = FakeSession()
+    repository = ChunkRepository(session)
+
+    hits = await repository.search_by_fulltext(query_text="Commit & Message", kb_ids=[2, 3], top_k=5)
+
+    statement_text = str(session.statement)
+    assert "to_tsquery" in statement_text
+    assert "websearch_to_tsquery" not in statement_text
+    assert "ts_rank" in statement_text
+    assert "content_tsv" in statement_text
+    assert "to_tsvector" not in statement_text
+    assert "kb_doc_chunk.kb_id IN" in statement_text
+    assert "kb_doc_chunk.doc_version = kb_document.version" in statement_text
+    assert "kb_document.status = :status_1" in statement_text
+    assert "kb_document.is_deleted IS false" in statement_text
+    assert isinstance(list(session.statement.selected_columns)[-1].type, Float)
+    assert hits[0].chunk_id == 10
+    assert hits[0].score == 0.25

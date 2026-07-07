@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
 from app.schemas.rag import RagQueryResponse
+from app.services.rag_query import RagQueryService
+from app.services.rag_query_v2 import RagQueryServiceV2
 
 
 def _user() -> CurrentUser:
@@ -29,6 +34,22 @@ class FakeRagQueryService:
     async def query(self, *, question: str, kb_ids: list[int], user: CurrentUser) -> RagQueryResponse:
         self.calls.append({"question": question, "kb_ids": kb_ids, "user_id": user.user_id})
         return RagQueryResponse(answer="需要通过本地测试。[参考1]", sources=[], hit_count=1, latency_ms=12)
+
+
+@dataclass
+class FakeSettings:
+    rag_query_pipeline: str
+    embedding_dimension: int = 1024
+    embedding_batch_size: int = 10
+    embedding_cache_version: str = "v1"
+    embedding_cache_ttl_seconds: int = 604800
+    embedding_max_retries: int = 3
+    rag_context_max_tokens: int = 3000
+    rag_vector_top_k: int = 20
+    rag_fulltext_top_k: int = 20
+    rag_return_top_n: int = 5
+    rag_min_score: float = 0.5
+    rag_rrf_k: int = 60
 
 
 def _client(
@@ -74,3 +95,27 @@ def test_query_endpoint_stops_before_service_when_permission_denied() -> None:
     assert response.status_code == 403
     assert permission_service.read_checks == [2, 3]
     assert rag_service.calls == []
+
+
+def test_dependency_builder_can_select_basic_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api.routes import rag
+
+    monkeypatch.setattr(rag, "get_embeddings", lambda: object())
+    monkeypatch.setattr(rag, "get_redis", lambda: object())
+    monkeypatch.setattr(rag, "get_chat_model", lambda: object())
+
+    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v1"))
+
+    assert isinstance(service, RagQueryService)
+
+
+def test_dependency_builder_can_select_hybrid_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api.routes import rag
+
+    monkeypatch.setattr(rag, "get_embeddings", lambda: object())
+    monkeypatch.setattr(rag, "get_redis", lambda: object())
+    monkeypatch.setattr(rag, "get_chat_model", lambda: object())
+
+    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v2"))
+
+    assert isinstance(service, RagQueryServiceV2)

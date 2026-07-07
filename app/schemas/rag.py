@@ -4,12 +4,12 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class RagQueryRequest(BaseModel):
-    """基础 RAG 查询请求体。
+    """RAG 查询请求体。
 
     Args:
         question: 用户问题，进入服务层前会去除首尾空白。
         kb_ids: 需要查询的知识库 ID 列表，会去重并保持首次出现顺序。
-        session_id: 可选会话 ID；基础查询阶段不读取或写入会话历史。
+        session_id: 可选会话 ID；当前阶段不读取或写入会话历史。
     """
 
     question: str = Field(min_length=1, max_length=2000)
@@ -54,7 +54,7 @@ class SourceCitation(BaseModel):
         chunk_index: chunk 在文档中的序号。
         page_number: 来源页码；非分页文档为 None。
         section_title: 来源章节标题；无法识别章节时为 None。
-        score: 向量检索相似度分数。
+        score: 最终检索排序分；混合检索阶段为 RRF 分数，不是相似度百分比。
     """
 
     document_id: int
@@ -68,12 +68,12 @@ class SourceCitation(BaseModel):
 
 
 class RagQueryResponse(BaseModel):
-    """基础 RAG 查询响应体。
+    """RAG 查询响应体。
 
     Args:
         answer: 生成答案或固定拒答文案。
         sources: 实际进入 Prompt 的引用来源列表。
-        hit_count: 向量检索阶段返回的候选 chunk 数量。
+        hit_count: 实际进入 Prompt 的引用 chunk 数量，与 sources 数量一致。
         latency_ms: 本次查询总耗时，单位毫秒。
     """
 

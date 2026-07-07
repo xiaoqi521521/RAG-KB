@@ -253,10 +253,14 @@ class IndexService:
 
         # 第三步：解析并分块。空分块可能来自解析抖动或文件内容异常，交给重试上限兜底。
         logger.info("文档加载阶段开始了...")
-        parsed_docs = self.loader_service.load(BytesIO(raw_file), document.file_name)
+        parsed_docs = await asyncio.to_thread(
+            self.loader_service.load,
+            BytesIO(raw_file),
+            document.file_name,
+        )
         logger.info("文档加载阶段结束了...")
         logger.info("文档分块阶段开始了...")
-        chunks = self.chunk_service.split_documents(parsed_docs)
+        chunks = await asyncio.to_thread(self.chunk_service.split_documents, parsed_docs)
         logger.info("文档分块阶段结束了...")
         if not chunks:
             raise RetryableIndexError("no valid chunks generated from document")

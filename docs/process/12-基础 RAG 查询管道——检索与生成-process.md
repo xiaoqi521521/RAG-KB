@@ -11,11 +11,11 @@
 - `app/services/rag_query.py`：定义 `RagQueryService`，编排问题向量化、向量检索、低召回拒答、上下文组装和 ChatOpenAI 生成。
 - `app/api/routes/rag.py`：新增 `POST /api/v1/rag/query` 路由，完成读权限硬校验并调用查询服务。
 - `tests/services/test_source_builder.py`：覆盖引用编号、TopN 截断和上下文字符预算。
-- `tests/services/test_rag_query.py`：覆盖无召回拒答、低分拒答、正常生成和空模型响应异常。
+- `tests/services/test_rag_query.py`：覆盖无召回拒答、低分候选仍可进入上下文、正常生成和空模型响应异常。
 - `tests/repositories/test_chunks.py`：覆盖向量检索 SQL 的权限范围、当前版本、完成状态和未删除过滤。
 - `tests/api/test_rag.py`：覆盖查询接口的读权限校验、知识库 ID 去重和权限失败短路。
 - `docs/plans/12-基础 RAG 查询管道——检索与生成-plan.md`：记录基础 RAG 查询管道的业务流程、范围边界和实施计划。
-- `docs/specs/12-基础 RAG 查询管道——检索与生成-spec.md`：记录接口模型、代码执行流程、阈值语义和验收标准。
+- `docs/specs/12-基础 RAG 查询管道——检索与生成-spec.md`：记录接口模型、代码执行流程、返回数量语义和验收标准。
 - `docs/process/12-基础 RAG 查询管道——检索与生成-process.md`：记录实际落地文件、核心代码和验证结果。
 
 ### 修改文件
@@ -23,8 +23,8 @@
 - `app/repositories/chunks.py`：新增 `ChunkSearchHit` 和 `search_by_vector(...)`，支持 PGVector `<=>` 距离排序，并过滤当前文档版本、完成状态和未删除文档。
 - `app/api/router.py`：挂载 `rag.router` 到 `/api/v1/rag`。
 - `pyproject.toml`：为 pytest 增加 `pythonpath = ["."]`，使直接运行子目录测试时能稳定导入 `app` 包。
-- `docs/specs/12-基础 RAG 查询管道——检索与生成-spec.md`：同步 `rag_min_score` 逐 chunk 过滤语义，明确 `hit_count` 表示过滤后的有效命中数量。
-- `docs/process/12-基础 RAG 查询管道——检索与生成-process.md`：同步最终实现、阈值过滤逻辑和验证结果。
+- `docs/specs/12-基础 RAG 查询管道——检索与生成-spec.md`：同步当前阶段不按 `rag_min_score` 过滤，明确 `RAG_RETURN_TOP_N` 控制最多进入 Prompt 和 sources 的 chunk 数量。
+- `docs/process/12-基础 RAG 查询管道——检索与生成-process.md`：同步最终实现、返回数量逻辑和验证结果。
 
 ### 删除文件
 
@@ -34,9 +34,9 @@
 
 - 新增 `POST /api/v1/rag/query` 路由，路由层先逐个校验知识库读权限，再调用 RAG 查询服务。
 - 新增 `ChunkRepository.search_by_vector(...)`，使用 PGVector `<=>` 距离排序，并过滤当前文档版本、DONE 状态和未删除文档。
-- 新增 `RagQueryService`，串联问题向量化、向量检索、逐 chunk 最低分过滤、Prompt 组装和 ChatOpenAI 异步生成。
+- 新增 `RagQueryService`，串联问题向量化、向量检索、Prompt 组装和 ChatOpenAI 异步生成。
 - 新增 `SourceBuilder`，统一生成 `[参考N]` 上下文和结构化 `sources`。
-- 增加服务、Repository 和 API 测试，覆盖权限短路、低分拒答、阈值过滤、引用构建和 PGVector SQL 条件。
+- 增加服务、Repository 和 API 测试，覆盖权限短路、低分候选进入上下文、引用构建和 PGVector SQL 条件。
 
 ### 关联文档同步
 
@@ -56,9 +56,8 @@ POST /api/v1/rag/query
   -> RagQueryService.query(...)
   -> EmbeddingService.embed_query(question)
   -> ChunkRepository.search_by_vector(query_vector, kb_ids, top_k)
-  -> 按 rag_min_score 过滤每个候选 chunk
-  -> 无命中或无有效命中时返回固定拒答
-  -> SourceBuilder.build(qualified_hits, return_top_n)
+  -> 无命中时返回固定拒答
+  -> SourceBuilder.build(hits, return_top_n)
   -> ChatOpenAI.ainvoke([SystemMessage, HumanMessage])
   -> 返回 ApiResponse[RagQueryResponse]
 ```
@@ -77,9 +76,9 @@ POST /api/v1/rag/query
 3. `RagQueryService.query(...)` 负责基础 RAG 主流程：
    - 调用 `EmbeddingService.embed_query(...)` 生成查询向量。
    - 调用 `ChunkRepository.search_by_vector(...)` 在允许知识库范围内召回 chunk。
-   - 按 `settings.rag_min_score` 过滤每个候选 chunk，只有达标 chunk 才能进入 Prompt 和 sources。
-   - 无命中或过滤后无有效命中时返回固定拒答。
-   - 命中有效结果后交给 `SourceBuilder` 生成上下文和 sources。
+   - 当前阶段不按 `settings.rag_min_score` 过滤候选。
+   - 无命中时返回固定拒答。
+   - 命中结果后交给 `SourceBuilder` 生成上下文和 sources。
    - 使用 `SystemMessage` 和 `HumanMessage` 调用 `chat_model.ainvoke(...)`。
 
 4. `ChunkRepository.search_by_vector(...)` 使用 SQLAlchemy 表达式生成 PGVector 距离查询：
@@ -131,15 +130,14 @@ statement = (
 
 这里没有把多个知识库拆成多次查询再在 Python 中截断，而是在同一条 SQL 中对允许的 `kb_ids` 做全局排序。`doc_version = document.version` 是重建期间查询不中断的关键过滤条件，新版本 chunk 未切换为当前版本前不会被召回。`type_coerce(..., Float)` 是 pgvector + SQLAlchemy 的关键边界：`DocChunk.embedding.op("<=>")(...)` 默认会继承左侧 Vector 类型，如果不显式改成浮点，数据库返回的距离值会被 pgvector 的向量解析器误处理。
 
-### 低召回拒答
+### 无召回拒答
 
 ```python
-qualified_hits = [hit for hit in hits if hit.score >= self.settings.rag_min_score]
-if not qualified_hits:
+if not hits:
     return self._refusal_response(started_at)
 ```
 
-无命中和过滤后无有效命中都不会调用聊天模型。`rag_min_score` 是逐 chunk 生效的阈值，不只是最高分拒答开关；低于阈值的候选即使被数据库 TopK 召回，也不会进入 Prompt、sources 或 `hit_count`。这样既节省模型成本，也避免空上下文或弱相关上下文诱导模型使用通用知识补全内部制度。
+无命中时不会调用聊天模型。当前阶段暂不使用 `rag_min_score` 过滤候选，低分 chunk 仍可进入 `SourceBuilder`；最终进入 Prompt 和响应 `sources` 的数量由 `.env` 中的 `RAG_RETURN_TOP_N` 和上下文预算控制。相似度阈值过滤后续单独规划。
 
 ### ChatOpenAI 异步调用
 
@@ -158,10 +156,10 @@ response = await self.chat_model.ainvoke(messages)
 已执行以下命令：
 
 ```powershell
-uv run pytest tests/services/test_rag_query.py::test_query_filters_sources_below_min_score_before_generation -v
+uv run pytest tests/services/test_rag_query.py::test_query_passes_all_hits_to_source_builder_without_similarity_threshold -v
 ```
 
-结果：1 passed，确认低于 `rag_min_score` 的候选 chunk 不会进入 `SourceBuilder`、`sources` 或 `hit_count`。
+结果：1 passed，确认低于 `rag_min_score` 的候选 chunk 当前仍会进入 `SourceBuilder`，最终返回数量由 `RAG_RETURN_TOP_N` 控制。
 
 ```powershell
 uv run pytest tests/services/test_source_builder.py tests/services/test_rag_query.py tests/repositories/test_chunks.py tests/api/test_rag.py -v
