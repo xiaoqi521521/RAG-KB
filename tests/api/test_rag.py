@@ -10,6 +10,7 @@ from app.core.context import CurrentUser
 from app.schemas.rag import RagQueryResponse
 from app.services.rag_query import RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
+from app.services.rag_query_v3 import RagQueryServiceV3
 
 
 def _user() -> CurrentUser:
@@ -39,6 +40,8 @@ class FakeRagQueryService:
 @dataclass
 class FakeSettings:
     rag_query_pipeline: str
+    chat_model: str = "qwen-plus"
+    query_cache_ttl_seconds: int = 600
     embedding_dimension: int = 1024
     embedding_batch_size: int = 10
     embedding_cache_version: str = "v1"
@@ -119,3 +122,15 @@ def test_dependency_builder_can_select_hybrid_query_pipeline(monkeypatch: pytest
     service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v2"))
 
     assert isinstance(service, RagQueryServiceV2)
+
+
+def test_dependency_builder_can_select_hyde_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api.routes import rag
+
+    monkeypatch.setattr(rag, "get_embeddings", lambda: object())
+    monkeypatch.setattr(rag, "get_redis", lambda: object())
+    monkeypatch.setattr(rag, "get_chat_model", lambda: object())
+
+    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v3"))
+
+    assert isinstance(service, RagQueryServiceV3)

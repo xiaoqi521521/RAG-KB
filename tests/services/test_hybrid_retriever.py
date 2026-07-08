@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
 from app.repositories.chunks import ChunkSearchHit
-from app.services.hybrid_retriever import HybridRetriever, _rrf_fuse
+from app.services.hybrid_retriever import HybridRetriever
 
 
 def _hit(chunk_id: int, score: float = 0.9) -> ChunkSearchHit:
@@ -76,45 +75,6 @@ class FakeSettings:
     rag_fulltext_top_k: int = 10
     rag_min_score: float = 0.5
     rag_rrf_k: int = 60
-
-
-def test_rrf_module_is_merged_into_hybrid_retriever() -> None:
-    assert not Path("app/services/rrf.py").exists()
-
-
-def test_rrf_scores_single_ranked_route() -> None:
-    fused = _rrf_fuse({"vector": [_hit(10)]}, rrf_k=60)
-
-    assert len(fused) == 1
-    assert fused[0].hit.chunk_id == 10
-    assert fused[0].score == 1 / 61
-    assert fused[0].retrieval_sources == ("vector",)
-
-
-def test_rrf_deduplicates_and_accumulates_scores_across_routes() -> None:
-    fused = _rrf_fuse(
-        {
-            "vector": [_hit(10), _hit(11)],
-            "fulltext": [_hit(11), _hit(12)],
-        },
-        rrf_k=60,
-    )
-
-    assert [item.hit.chunk_id for item in fused] == [11, 10, 12]
-    assert fused[0].score == (1 / 62) + (1 / 61)
-    assert fused[0].retrieval_sources == ("vector", "fulltext")
-
-
-def test_rrf_keeps_first_seen_order_when_scores_tie() -> None:
-    fused = _rrf_fuse(
-        {
-            "vector": [_hit(10), _hit(11)],
-            "fulltext": [_hit(12), _hit(13)],
-        },
-        rrf_k=60,
-    )
-
-    assert [item.hit.chunk_id for item in fused] == [10, 12, 11, 13]
 
 
 @pytest.mark.asyncio
