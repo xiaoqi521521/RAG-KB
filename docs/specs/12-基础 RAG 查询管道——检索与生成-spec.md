@@ -40,7 +40,7 @@ ctx7 docs /websites/langchain "Python ChatOpenAI async ainvoke messages SystemMe
 
 ```plain
 app/services/embedding.py
-  -> EmbeddingService.embed_query(text) 可复用批量向量化、Redis 缓存、重试和维度校验
+  -> EmbeddingService.embed_query(text) 可复用 provider 调用、重试和维度校验；用户问题向量不读写 Redis 缓存
 
 app/models/kb.py
   -> DocChunk 已有 embedding、kb_id、doc_id、chunk_index、page_num、section_title、doc_version
@@ -313,7 +313,7 @@ get_rag_query_service(session, settings)
 
 - `ChatOpenAI` 客户端由 `get_chat_model()` 获取，未配置时会抛出 `RuntimeError`，服务层应转为 503。
 - `EmbeddingService` 的构造函数当前为 `EmbeddingService(embeddings, redis_client, config=None)`；实现阶段可以沿用默认 `EmbeddingConfig()`，也可以显式传入由 `Settings` 对齐的配置。
-- 如果显式传入 `EmbeddingConfig`，必须至少保证 `dimension=settings.embedding_dimension`、`batch_size=settings.embedding_batch_size`、`cache_version=settings.embedding_cache_version`、`cache_ttl_seconds=settings.embedding_cache_ttl_seconds`、`max_retries=settings.embedding_max_retries` 与当前配置一致，避免查询向量维度或缓存隔离和索引阶段不一致。
+- 如果显式传入 `EmbeddingConfig`，必须至少保证 `dimension=settings.embedding_dimension`、`batch_size=settings.embedding_batch_size`、`cache_version=settings.embedding_cache_version`、`cache_ttl_seconds=settings.embedding_cache_ttl_seconds`、`max_retries=settings.embedding_max_retries` 与当前配置一致，避免查询向量维度和索引阶段不一致。用户问题向量不使用 Redis 缓存，`cache_version` 只影响文档 chunk 缓存。
 - `get_rag_query_service(...)` 只负责组装依赖，不在依赖函数中执行权限校验、向量化、检索或模型调用。
 
 ### 2.4.4 ChunkRepository 向量检索

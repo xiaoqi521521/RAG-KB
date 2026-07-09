@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     chat_max_tokens: int = 2048
 
     reranker_endpoint: str
-    reranker_model: str = "gte-rerank-v2"
+    reranker_model: str = "qwen3-rerank"
     reranker_timeout_ms: int = 800
     reranker_top_n: int = 5
 

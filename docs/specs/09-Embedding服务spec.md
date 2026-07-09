@@ -16,10 +16,11 @@ Python 重构版使用 `langchain_openai.OpenAIEmbeddings` 接入 DashScope Open
 - 定义统一入口：`EmbeddingService`。
 - 支持批量向量化：`embed_documents(texts)`。
 - 支持单条查询向量化：`embed_query(text)`。
-- 使用 Redis 做跨实例共享缓存。
-- 缓存 key 基于模型版本和文本内容 hash 构造。
-- 缓存命中时不调用外部 API。
-- 缓存未命中时按批次调用 `OpenAIEmbeddings`。
+- 文档 chunk 向量使用 Redis 做跨实例共享缓存。
+- 文档 chunk 缓存 key 基于缓存版本和文本内容 hash 构造。
+- 文档 chunk 缓存命中时不调用外部 API。
+- 文档 chunk 缓存未命中时按批次调用 `OpenAIEmbeddings`。
+- 用户问题 `embed_query(...)` 不读写 Redis 缓存，也不打印 `Embedding completed` 缓存统计日志。
 - 返回向量顺序必须与输入文本顺序一一对应。
 - 反序列化缓存失败时删除脏 key，并当作 cache miss 重新向量化。
 - 对网络抖动、超时、5xx、限流等临时错误做有限重试和指数退避。
@@ -90,7 +91,7 @@ list[list[float]]
 vector = await embedding_service.embed_query(question)
 ```
 
-`embed_query` 与 `embed_documents([question])` 使用相同模型、相同缓存规则和相同向量维度，保证建库与查询处于同一向量空间。
+`embed_query` 与文档向量化使用相同模型和相同向量维度，保证建库与查询处于同一向量空间。用户问题向量不进入 Redis 缓存；每次查询都直接调用 Embedding provider，避免短文本查询缓存与文档 chunk 缓存混在一起，也避免为在线查询打印缓存命中日志。
 
 ---
 
@@ -151,11 +152,11 @@ EmbeddingVectorCodec
 
 - 统一暴露批量和单条向量化入口。
 - 处理文本规范化和输入校验。
-- 查询 Redis 缓存。
+- 文档 chunk 向量化时查询 Redis 缓存。
 - 收集缓存 miss 的文本并分批调用 Embedding API。
 - 将 API 返回结果按原始输入顺序组装。
-- 写入 Redis 缓存。
-- 记录日志和指标。
+- 文档 chunk 向量化成功后写入 Redis 缓存。
+- 文档 chunk 向量化记录缓存日志和指标；用户问题向量化不打印缓存统计日志。
 
 建议接口：
 
@@ -183,12 +184,12 @@ class EmbeddingService:
 
 ### Redis Cache
 
-缓存使用 `redis.asyncio.Redis`。
+缓存使用 `redis.asyncio.Redis`，当前只用于文档 chunk 向量缓存。
 
 职责：
 
-- 批量读取缓存。
-- 写入向量字符串并设置 TTL。
+- 批量读取文档 chunk 缓存。
+- 写入文档 chunk 向量字符串并设置 TTL。
 - 删除反序列化失败的脏 key。
 
 建议优先使用 pipeline 批量 `GET` / `SETEX`，减少 Redis 网络往返。Redis 命令本身失败时不应静默返回错误向量；可按场景选择：
@@ -203,16 +204,16 @@ class EmbeddingService:
 
 ### Key 结构
 
-建议 key：
+当前文档 chunk key：
 
 ```plain
-emb:{embedding_cache_version}:{md5(normalized_text)}
+rag:emb:doc:{embedding_cache_version}:{md5(normalized_text)}
 ```
 
 示例：
 
 ```plain
-emb:v1:f0b8a2c7d0b4...
+rag:emb:doc:v1:f0b8a2c7d0b4...
 ```
 
 说明：
@@ -222,6 +223,7 @@ emb:v1:f0b8a2c7d0b4...
 - `embedding_cache_version` 用于模型、维度或序列化格式变化时整体切换缓存命名空间。
 - key 中不再额外放 `embedding_model`，避免和 `embedding_cache_version` 表达重复；更换模型时必须同步递增缓存版本。
 - 不把 `tenant_id` 放入 key。相同模型下相同文本的向量天然一致，缓存值只有向量、不包含原文和权限数据；权限隔离必须在检索层硬过滤，而不是靠缓存 key。
+- 不再为用户问题生成 `rag:emb:query:*` 向量缓存 key；`namespace="query"` 会强制跳过缓存读写。
 
 ### Value 格式
 
@@ -271,6 +273,18 @@ emb:v1:f0b8a2c7d0b4...
   -> 按 original_index 写回结果
   -> 将新向量写入 Redis，设置 TTL
   -> 按输入顺序组装 list[list[float]]
+```
+
+当调用 `embed_query(question)` 时，流程复用单文本规范化、provider 调用、维度校验和重试逻辑，但强制关闭缓存：
+
+```plain
+用户问题
+  -> 校验并规范化文本
+  -> 不读取 Redis
+  -> 调用 Embedding API
+  -> 校验返回数量和维度
+  -> 不写入 Redis
+  -> 不打印 Embedding completed 缓存统计日志
 ```
 
 关键约束：
@@ -358,9 +372,9 @@ embedding_cache_ttl_seconds=604800
 
 | original_index | normalized_text | Redis key | 读取结果 |
 | --- | --- | --- | --- |
-| 0 | `员工每年享有 5 天带薪年假。` | `emb:v1:8d9f...a21c` | 命中 |
-| 1 | `报销单据需在费用发生后 30 天内提交。` | `emb:v1:19ab...77e0` | miss |
-| 2 | `员工每年享有 5 天带薪年假。` | `emb:v1:8d9f...a21c` | 命中 |
+| 0 | `员工每年享有 5 天带薪年假。` | `rag:emb:doc:v1:8d9f...a21c` | 命中 |
+| 1 | `报销单据需在费用发生后 30 天内提交。` | `rag:emb:doc:v1:19ab...77e0` | miss |
+| 2 | `员工每年享有 5 天带薪年假。` | `rag:emb:doc:v1:8d9f...a21c` | 命中 |
 
 Redis 中已存在的 value：
 
@@ -391,7 +405,7 @@ provider 返回：
 服务校验数量和维度后写入 Redis：
 
 ```plain
-SETEX emb:v1:19ab...77e0 604800 "[0.044,0.013,-0.087,0.229]"
+SETEX rag:emb:doc:v1:19ab...77e0 604800 "[0.044,0.013,-0.087,0.229]"
 ```
 
 ### 输出顺序恢复
@@ -499,7 +513,7 @@ Embedding API 最终失败时必须 fail loud：
 
 ## Token 与监控
 
-Embedding 服务需要记录以下指标或结构化日志字段：
+文档 chunk 向量化需要记录以下指标或结构化日志字段：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -519,6 +533,7 @@ Token 统计规则：
 - 如果 provider 返回 usage，则记录真实 token。
 - 如果 LangChain / provider 当前不暴露 usage，则不要伪造精确值；记录 `token_usage_unavailable=true`，必要时另行记录基于字符数的估算值。
 - 文档表 `kb_document.token_count` 可以由索引服务汇总本次真实 token 或估算 token；Embedding 服务只提供本次调用的统计结果。
+- 用户问题 `embed_query(...)` 不记录缓存命中、缓存 miss 或 cache hit rate 日志；查询链路只记录上层 RAG 请求日志和异常日志。
 
 ---
 
@@ -559,7 +574,7 @@ Embedding 服务不直接接收 `tenant_id`、`kb_id`、`doc_id`。这些字段�
 约束：
 
 - 查询向量必须使用与建库相同的 `embedding_model` 和 `embedding_dimension`。
-- 查询文本可以使用同一 Redis 缓存，以便重复问题降低延迟。
+- 查询文本不使用 Redis 向量缓存；`embed_query(...)` 每次直接调用 provider，避免用户问题短文本缓存与文档 chunk 缓存混用。
 - 查询向量生成失败时，查询链路不能继续执行向量检索；应返回明确错误或降级到全文检索由后续查询服务单独定义。
 - 权限过滤不在 Embedding 服务中实现。
 
@@ -647,6 +662,14 @@ WHEN 调用 `embed_query(...)`
 
 THEN 返回 1024 维向量，后续可用于 PGVector 余弦检索。
 
+### 场景十一：用户问题向量不缓存
+
+GIVEN 调用 `embed_query("年假怎么申请")`
+
+WHEN 服务生成查询向量
+
+THEN 不读取 Redis、不写入 Redis、不打印 `Embedding completed` 缓存统计日志。
+
 ---
 
 ## 测试建议
@@ -672,6 +695,7 @@ tests/services/test_embedding.py
 - 重试等待策略使用固定指数退避，不启用 jitter。
 - 4xx 不重试。
 - 写缓存失败不影响本次成功结果。
+- `embed_query(...)` 默认不读写缓存，也不打印缓存完成日志。
 
 测试不应为了方便污染生产代码，例如加入仅测试使用的分支、参数或绕过逻辑。可以通过协议、fake client、fake cache 实现可测试性。
 
@@ -685,8 +709,8 @@ tests/services/test_embedding.py
 - 重试建议使用 `tenacity`，避免手写复杂重试循环。
 - 建库和查询必须使用同一 `embedding_model` 和同一 `embedding_dimension`。
 - `text-embedding-v3` 对应当前数据库 `VECTOR(1024)`。
-- 缓存必须设置 TTL。
-- 缓存 key 必须包含缓存版本信息；模型或维度变化时必须递增缓存版本。
+- 文档 chunk 缓存必须设置 TTL。
+- 文档 chunk 缓存 key 必须包含缓存版本信息；模型或维度变化时必须递增缓存版本。
 - 不在 Embedding 服务里写数据库。
 - 不在 Embedding 服务里做权限判断。
 - 不用 Prompt 或 LLM 参与向量生成。

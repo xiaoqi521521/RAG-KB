@@ -348,7 +348,7 @@ async def retrieve(self, *, question: str, kb_ids: list[int]) -> EnhancedRetriev
 
 1. 调用 `HybridRetriever.retrieve(question=original_question, kb_ids=kb_ids)`，得到原始问题的混合检索结果。此结果内部已经完成向量检索、全文检索和第一阶段 RRF。
 2. 调用 `query_rewriter.generate_hyde_answer(question)` 得到 HyDE 假设性回答。
-3. HyDE 可用时，调用 `EmbeddingService.embed_query(hyde_answer)` 生成 HyDE 向量。
+3. HyDE 可用时，调用 `EmbeddingService.embed_query(hyde_answer, namespace="hyde", cache_enabled=False)` 生成 HyDE 向量；HyDE 文本本身可缓存，HyDE 文本向量不缓存。
 4. 使用 `ChunkRepository.search_by_vector(...)` 在同一 `kb_ids` 范围内执行 HyDE 向量检索。
 5. 调用公共 `rrf_fuse(...)`，把 `original_hybrid` 和 `hyde_vector` 两路排序结果做第二阶段 RRF。
 6. 返回 `EnhancedRetrieveResult`；后续进入 Prompt 的数量仍由 `SourceBuilder` 和现有 `rag_return_top_n` 控制。

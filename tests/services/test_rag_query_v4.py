@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from app.core.context import CurrentUser
+from app.repositories.chunks import ChunkSearchHit
+from app.schemas.rag import SourceCitation
+from app.services.enhanced_retriever import EnhancedRetrieveResult
+from app.services.rag_query import RAG_REFUSAL_ANSWER
+from app.services.reranker import RerankResult
+from app.services.rag_query_v4 import RagQueryServiceV4
+
+
+def _user() -> CurrentUser:
+    return CurrentUser(user_id=1, department_id="engineering", role="ADMIN")
+
+
+def _hit(chunk_id: int, score: float = 0.1) -> ChunkSearchHit:
+    return ChunkSearchHit(
+        chunk_id=chunk_id,
+        doc_id=1,
+        document_name="dev-guide.md",
+        kb_id=2,
+        chunk_index=chunk_id,
+        content=f"chunk {chunk_id} content",
+        page_num=None,
+        section_title="Commit",
+        score=score,
+    )
+
+
+class FakeRetriever:
+    def __init__(self, hits: list[ChunkSearchHit]) -> None:
+        self.hits = hits
+        self.calls: list[dict[str, object]] = []
+
+    async def retrieve(self, *, question: str, kb_ids: list[int]) -> EnhancedRetrieveResult:
+        self.calls.append({"question": question, "kb_ids": kb_ids})
+        return EnhancedRetrieveResult(
+            hits=self.hits,
+            original_count=len(self.hits),
+            hyde_count=1,
+            merged_count=len(self.hits),
+            degraded_reasons=(),
+        )
+
+
+class FakeReranker:
+    def __init__(self, result: RerankResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    async def rerank(self, *, question: str, candidates: list[ChunkSearchHit]) -> RerankResult:
+        self.calls.append({"question": question, "candidates": candidates})
+        return self.result
+
+
+class FakeConfidenceFilter:
+    def __init__(self, hits: list[ChunkSearchHit]) -> None:
+        self.hits = hits
+        self.calls: list[list[ChunkSearchHit]] = []
+
+    def filter(self, hits: list[ChunkSearchHit]) -> list[ChunkSearchHit]:
+        self.calls.append(hits)
+        return self.hits
+
+
+class FakeContextTrimmer:
+    def __init__(self, hits: list[ChunkSearchHit]) -> None:
+        self.hits = hits
+        self.calls: list[list[ChunkSearchHit]] = []
+
+    def trim(self, hits: list[ChunkSearchHit]) -> list[ChunkSearchHit]:
+        self.calls.append(hits)
+        return self.hits
+
+
+class FakeSourceBuilder:
+    def __init__(self, *, context: str = "[参考1]\nchunk 12 content") -> None:
+        self.context = context
+        self.calls: list[dict[str, object]] = []
+
+    def build(
+        self,
+        hits: list[ChunkSearchHit],
+        *,
+        return_top_n: int,
+    ) -> tuple[str, list[SourceCitation]]:
+        self.calls.append({"hits": hits, "return_top_n": return_top_n})
+        if not self.context:
+            return "", []
+        return (
+            self.context,
+            [
+                SourceCitation(
+                    document_id=hit.doc_id,
+                    document_name=hit.document_name,
+                    kb_id=hit.kb_id,
+                    chunk_id=hit.chunk_id,
+                    chunk_index=hit.chunk_index,
+                    page_number=hit.page_num,
+                    section_title=hit.section_title,
+                    score=hit.score,
+                )
+                for hit in hits[:return_top_n]
+            ],
+        )
+
+
+class FakeChatModel:
+    def __init__(self, content: object = "需要先运行测试。[参考1]") -> None:
+        self.content = content
+        self.messages: list[object] | None = None
+
+    async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
+        self.messages = messages
+        return SimpleNamespace(content=self.content)
+
+
+@dataclass
+class FakeSettings:
+    rag_return_top_n: int = 5
+
+
+def _rerank_result(*, hits: list[ChunkSearchHit], degraded: bool = False) -> RerankResult:
+    return RerankResult(
+        hits=hits,
+        degraded=degraded,
+        degraded_reason="reranker_timeout" if degraded else None,
+        input_count=3,
+        output_count=len(hits),
+        elapsed_ms=8,
+        total_tokens=123,
+    )
+
+
+def _service(
+    *,
+    retrieve_hits: list[ChunkSearchHit],
+    rerank_result: RerankResult,
+    filtered_hits: list[ChunkSearchHit] | None = None,
+    trimmed_hits: list[ChunkSearchHit] | None = None,
+    source_context: str = "[参考1]\nchunk 12 content",
+    chat_content: object = "需要先运行测试。[参考1]",
+) -> tuple[
+    RagQueryServiceV4,
+    FakeRetriever,
+    FakeReranker,
+    FakeConfidenceFilter,
+    FakeContextTrimmer,
+    FakeSourceBuilder,
+    FakeChatModel,
+]:
+    retriever = FakeRetriever(retrieve_hits)
+    reranker = FakeReranker(rerank_result)
+    confidence_filter = FakeConfidenceFilter(filtered_hits if filtered_hits is not None else rerank_result.hits)
+    context_trimmer = FakeContextTrimmer(trimmed_hits if trimmed_hits is not None else confidence_filter.hits)
+    source_builder = FakeSourceBuilder(context=source_context)
+    chat = FakeChatModel(chat_content)
+    service = RagQueryServiceV4(
+        retriever=retriever,
+        reranker=reranker,
+        confidence_filter=confidence_filter,
+        context_trimmer=context_trimmer,
+        source_builder=source_builder,
+        chat_model=chat,
+        settings=FakeSettings(),
+    )
+    return service, retriever, reranker, confidence_filter, context_trimmer, source_builder, chat
+
+
+@pytest.mark.asyncio
+async def test_query_reranks_filters_trims_then_generates_answer() -> None:
+    retrieve_hits = [_hit(10), _hit(11), _hit(12)]
+    reranked_hits = [_hit(12, 0.91), _hit(10, 0.82)]
+    filtered_hits = [_hit(12, 0.91)]
+    service, retriever, reranker, confidence_filter, context_trimmer, source_builder, chat = _service(
+        retrieve_hits=retrieve_hits,
+        rerank_result=_rerank_result(hits=reranked_hits),
+        filtered_hits=filtered_hits,
+    )
+
+    response = await service.query(question=" commit rule? ", kb_ids=[2], user=_user())
+
+    assert response.answer == "需要先运行测试。[参考1]"
+    assert [source.chunk_id for source in response.sources] == [12]
+    assert retriever.calls == [{"question": "commit rule?", "kb_ids": [2]}]
+    assert reranker.calls == [{"question": "commit rule?", "candidates": retrieve_hits}]
+    assert confidence_filter.calls == [reranked_hits]
+    assert context_trimmer.calls == [filtered_hits]
+    assert source_builder.calls[0]["hits"] == filtered_hits
+    assert chat.messages is not None
+    assert chat.messages[1].content == "commit rule?"
+
+
+@pytest.mark.asyncio
+async def test_query_skips_confidence_filter_when_reranker_degraded() -> None:
+    retrieve_hits = [_hit(10, 0.03), _hit(11, 0.02), _hit(12, 0.01)]
+    degraded_hits = retrieve_hits[:2]
+    service, _, _, confidence_filter, context_trimmer, source_builder, _ = _service(
+        retrieve_hits=retrieve_hits,
+        rerank_result=_rerank_result(hits=degraded_hits, degraded=True),
+    )
+
+    response = await service.query(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert [source.chunk_id for source in response.sources] == [10, 11]
+    assert confidence_filter.calls == []
+    assert context_trimmer.calls == [degraded_hits]
+    assert source_builder.calls[0]["hits"] == degraded_hits
+
+
+@pytest.mark.asyncio
+async def test_query_skips_confidence_filter_when_reranker_was_not_called_for_few_candidates() -> None:
+    retrieve_hits = [_hit(10, 0.03), _hit(11, 0.02)]
+    skipped_result = RerankResult(
+        hits=retrieve_hits,
+        degraded=False,
+        degraded_reason="skipped_not_enough_candidates",
+        input_count=2,
+        output_count=2,
+        elapsed_ms=0,
+        total_tokens=None,
+    )
+    service, _, _, confidence_filter, context_trimmer, source_builder, _ = _service(
+        retrieve_hits=retrieve_hits,
+        rerank_result=skipped_result,
+        filtered_hits=[_hit(10, 0.03)],
+        trimmed_hits=retrieve_hits,
+    )
+
+    response = await service.query(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert [source.chunk_id for source in response.sources] == [10, 11]
+    assert confidence_filter.calls == []
+    assert context_trimmer.calls == [retrieve_hits]
+    assert source_builder.calls[0]["hits"] == retrieve_hits
+
+
+@pytest.mark.asyncio
+async def test_query_returns_refusal_without_reranking_when_retriever_has_no_hits() -> None:
+    service, _, reranker, confidence_filter, context_trimmer, source_builder, chat = _service(
+        retrieve_hits=[],
+        rerank_result=_rerank_result(hits=[]),
+    )
+
+    response = await service.query(question="unknown?", kb_ids=[2], user=_user())
+
+    assert response.answer == RAG_REFUSAL_ANSWER
+    assert response.sources == []
+    assert reranker.calls == []
+    assert confidence_filter.calls == []
+    assert context_trimmer.calls == []
+    assert source_builder.calls == []
+    assert chat.messages is None
+
+
+@pytest.mark.asyncio
+async def test_query_returns_refusal_when_source_builder_returns_empty_context() -> None:
+    service, _, _, _, _, _, chat = _service(
+        retrieve_hits=[_hit(10), _hit(11), _hit(12)],
+        rerank_result=_rerank_result(hits=[_hit(12, 0.91)]),
+        source_context="",
+    )
+
+    response = await service.query(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert response.answer == RAG_REFUSAL_ANSWER
+    assert response.sources == []
+    assert chat.messages is None
+
+
+@pytest.mark.asyncio
+async def test_query_raises_503_when_chat_returns_blank_answer() -> None:
+    service, _, _, _, _, _, _ = _service(
+        retrieve_hits=[_hit(10), _hit(11), _hit(12)],
+        rerank_result=_rerank_result(hits=[_hit(12, 0.91)]),
+        chat_content="   ",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.query(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert exc_info.value.status_code == 503

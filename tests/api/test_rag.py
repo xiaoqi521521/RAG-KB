@@ -11,6 +11,7 @@ from app.schemas.rag import RagQueryResponse
 from app.services.rag_query import RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
 from app.services.rag_query_v3 import RagQueryServiceV3
+from app.services.rag_query_v4 import RagQueryServiceV4
 
 
 def _user() -> CurrentUser:
@@ -53,6 +54,8 @@ class FakeSettings:
     rag_return_top_n: int = 5
     rag_min_score: float = 0.5
     rag_rrf_k: int = 60
+    reranker_timeout_ms: int = 800
+    reranker_top_n: int = 5
 
 
 def _client(
@@ -130,6 +133,36 @@ def test_dependency_builder_can_select_hyde_query_pipeline(monkeypatch: pytest.M
     monkeypatch.setattr(rag, "get_embeddings", lambda: object())
     monkeypatch.setattr(rag, "get_redis", lambda: object())
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
+
+    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v3"))
+
+    assert isinstance(service, RagQueryServiceV3)
+
+
+def test_dependency_builder_can_select_reranker_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api.routes import rag
+
+    monkeypatch.setattr(rag, "get_embeddings", lambda: object())
+    monkeypatch.setattr(rag, "get_redis", lambda: object())
+    monkeypatch.setattr(rag, "get_chat_model", lambda: object())
+
+    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v4"))
+
+    assert isinstance(service, RagQueryServiceV4)
+
+
+def test_dependency_builder_does_not_construct_reranker_for_hyde_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.routes import rag
+
+    def fail_if_constructed(*args: object, **kwargs: object) -> object:
+        raise AssertionError("v3 must not construct reranker dependencies")
+
+    monkeypatch.setattr(rag, "get_embeddings", lambda: object())
+    monkeypatch.setattr(rag, "get_redis", lambda: object())
+    monkeypatch.setattr(rag, "get_chat_model", lambda: object())
+    monkeypatch.setattr(rag, "DashScopeRerankerClient", fail_if_constructed)
 
     service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v3"))
 

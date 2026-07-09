@@ -8,7 +8,7 @@
 
 离线索引链路已经具备文档上传、解析、分块、Embedding、chunk 入库和重建索引等基础能力。当前项目中可复用的关键基础包括：
 
-- `EmbeddingService.embed_query(...)`：可以将单条用户问题向量化，并复用 Redis embedding 缓存、维度校验和 provider 重试能力。
+- `EmbeddingService.embed_query(...)`：可以将单条用户问题向量化，复用维度校验和 provider 重试能力；用户问题向量不读写 Redis 缓存。
 - `DocChunk` 模型：已包含 `kb_id`、`doc_id`、`chunk_index`、`content`、`embedding`、`page_num`、`section_title`、`token_count` 和 `doc_version`。
 - `KbDocument.version`：已支持文档重建后的当前版本号，查询侧必须只召回当前版本 chunk。
 - `PermissionService.require_read(...)`：已具备知识库读权限校验能力，查询入口必须在检索前完成硬校验。
@@ -71,7 +71,7 @@ POST /api/v1/rag/query
 
 #### 问题向量化
 
-查询服务调用 `EmbeddingService.embed_query(question)` 生成查询向量。该方法内部已经复用批量向量化、缓存、维度校验和 provider 重试能力，因此基础查询管道不再新增单独的 query embedding 客户端。
+查询服务调用 `EmbeddingService.embed_query(question)` 生成查询向量。该方法内部复用文本规范化、provider 调用、维度校验和重试能力，但默认不读写 Redis 缓存，也不打印 `Embedding completed` 缓存统计日志，因此基础查询管道不再新增单独的 query embedding 客户端。
 
 需要保留两个边界：
 

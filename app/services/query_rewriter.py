@@ -157,9 +157,11 @@ class QueryRewriter:
     def _cache_key(self, kind: str, question: str) -> str:
         """构造改写缓存 key，按模型和策略版本隔离。"""
         digest = hashlib.md5(question.strip().encode("utf-8")).hexdigest()
+        if kind == "hyde":
+            return f"rag:hyde:{digest}"
         if kind == "multi":
             return f"rag:rewrite:{REWRITE_CACHE_VERSION}:multi:{MULTI_QUERY_COUNT}:{self.chat_model_name}:{digest}"
-        return f"rag:rewrite:{REWRITE_CACHE_VERSION}:hyde:{self.chat_model_name}:{digest}"
+        return f"rag:rewrite:{REWRITE_CACHE_VERSION}:{kind}:{self.chat_model_name}:{digest}"
 
     async def _invoke_chat(self, prompt: str) -> str:
         """调用聊天模型并返回非空字符串内容。"""

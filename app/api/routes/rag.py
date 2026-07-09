@@ -11,9 +11,12 @@ from app.core.clients import get_chat_model, get_embeddings, get_redis
 from app.core.config import Settings, get_settings
 from app.core.context import CurrentUser
 from app.core.database import get_db
+from app.integrations.dashscope import DashScopeRerankerClient
 from app.repositories.chunks import ChunkRepository
 from app.schemas.common import ApiResponse
 from app.schemas.rag import RagQueryRequest, RagQueryResponse
+from app.services.confidence_filter import ConfidenceFilter
+from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingConfig, EmbeddingService
 from app.services.enhanced_retriever import EnhancedRetriever
 from app.services.hybrid_retriever import HybridRetriever
@@ -22,6 +25,8 @@ from app.services.query_rewriter import QueryRewriter
 from app.services.rag_query import RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
 from app.services.rag_query_v3 import RagQueryServiceV3
+from app.services.rag_query_v4 import RagQueryServiceV4
+from app.services.reranker import RerankerService
 from app.services.source_builder import SourceBuilder
 from app.services.ts_query_builder import TsQueryBuilder
 
@@ -51,7 +56,8 @@ def get_rag_query_service(
         settings: 应用配置，用于检索 TopK、上下文预算和模型参数。
 
     Returns:
-        已组装依赖的查询管道。`v1` 为基础向量 RAG，`v2` 为混合检索 RAG，`v3` 为 HyDE 增强 RAG。
+        已组装依赖的查询管道。`v1` 为基础向量 RAG，`v2` 为混合检索 RAG，
+        `v3` 为 HyDE 增强 RAG，`v4` 为 HyDE 增强 + Reranker 精排 RAG。
     """
     embedding_config = EmbeddingConfig(
         dimension=settings.embedding_dimension,
@@ -89,27 +95,44 @@ def get_rag_query_service(
             settings=settings,
         )
 
+    if settings.rag_query_pipeline in {"v3", "v4"}:
+        enhanced_retriever = EnhancedRetriever(
+            query_rewriter=QueryRewriter(
+                chat_model=chat_model,
+                redis_client=get_redis(),
+                chat_model_name=settings.chat_model,
+                cache_ttl_seconds=settings.query_cache_ttl_seconds,
+            ),
+            hybrid_retriever=hybrid_retriever,
+            embedding_service=embedding_service,
+            chunk_repository=chunk_repository,
+            rrf_k=settings.rag_rrf_k,
+            hyde_vector_top_k=settings.rag_vector_top_k,
+        )
+
     if settings.rag_query_pipeline == "v3":
         return RagQueryServiceV3(
-            retriever=EnhancedRetriever(
-                query_rewriter=QueryRewriter(
-                    chat_model=chat_model,
-                    redis_client=get_redis(),
-                    chat_model_name=settings.chat_model,
-                    cache_ttl_seconds=settings.query_cache_ttl_seconds,
-                ),
-                hybrid_retriever=hybrid_retriever,
-                embedding_service=embedding_service,
-                chunk_repository=chunk_repository,
-                rrf_k=settings.rag_rrf_k,
-                hyde_vector_top_k=settings.rag_vector_top_k,
-            ),
+            retriever=enhanced_retriever,
             source_builder=source_builder,
             chat_model=chat_model,
             settings=settings,
         )
 
-    raise ValueError("rag_query_pipeline must be 'v1', 'v2' or 'v3'")
+    if settings.rag_query_pipeline == "v4":
+        return RagQueryServiceV4(
+            retriever=enhanced_retriever,
+            reranker=RerankerService(
+                client=DashScopeRerankerClient(settings=settings),
+                top_n=settings.reranker_top_n,
+            ),
+            confidence_filter=ConfidenceFilter(min_score=settings.rag_min_score),
+            context_trimmer=ContextTrimmer(),
+            source_builder=source_builder,
+            chat_model=chat_model,
+            settings=settings,
+        )
+
+    raise ValueError("rag_query_pipeline must be 'v1', 'v2', 'v3' or 'v4'")
 
 
 @router.post("/query")

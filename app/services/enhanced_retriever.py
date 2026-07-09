@@ -101,7 +101,11 @@ class EnhancedRetriever:
             return tuple(degraded_reasons)
 
         try:
-            hyde_vector = await self.embedding_service.embed_query(rewrite_result.hyde_answer)
+            hyde_vector = await self.embedding_service.embed_query(
+                rewrite_result.hyde_answer,
+                namespace="hyde",
+                cache_enabled=False,
+            )
             hyde_hits.extend(
                 await self.chunk_repository.search_by_vector(
                     query_vector=hyde_vector,

@@ -15,7 +15,7 @@ In scope：
 - 新增 Redis 向量缓存读写逻辑。
 - 新增批量向量化和单条查询向量化入口。
 - 新增向量 JSON 序列化 / 反序列化与维度校验。
-- 新增缓存 key 生成逻辑：`emb:{embedding_cache_version}:{md5(normalized_text)}`。
+- 新增文档 chunk 缓存 key 生成逻辑：`rag:emb:doc:{embedding_cache_version}:{md5(normalized_text)}`。
 - 新增 provider 调用重试逻辑。
 - 新增 embedding 专属配置项。
 - 更新 LangChain `OpenAIEmbeddings` 客户端初始化参数。
@@ -179,7 +179,7 @@ async def embed_documents(self, texts: list[str]) -> list[list[float]]
 async def embed_query(self, text: str) -> list[float]
 ```
 
-主要流程：
+`embed_documents(...)` 主要流程：
 
 ```plain
 输入 texts
@@ -195,12 +195,14 @@ async def embed_query(self, text: str) -> list[float]
   -> 按原始输入顺序组装结果
 ```
 
+`embed_query(...)` 当前用于用户问题向量化，默认不启用 Redis 缓存，也不打印 `Embedding completed` 缓存统计日志。它仍复用文本规范化、provider 调用、返回数量校验、维度校验和重试能力，保证查询向量与文档向量处于同一模型空间。
+
 ### 缓存 key
 
-实现使用：
+文档 chunk 缓存使用：
 
 ```plain
-emb:{embedding_cache_version}:{md5(normalized_text)}
+rag:emb:doc:{embedding_cache_version}:{md5(normalized_text)}
 ```
 
 说明：
@@ -208,6 +210,7 @@ emb:{embedding_cache_version}:{md5(normalized_text)}
 - 不把 `embedding_model` 放进 key。
 - 模型、维度或序列化格式变化时，通过递增 `embedding_cache_version` 失效旧缓存。
 - 不把 `tenant_id` / `kb_id` 放进 key，因为缓存值只保存向量，不保存原文、业务归属或权限信息。
+- 用户问题向量不再写入 `rag:emb:query:*` 缓存；`namespace="query"` 会强制跳过缓存读写。
 
 ### 批处理
 
@@ -285,12 +288,13 @@ tests/services/test_embedding.py
 - 重复文本复用同一个缓存 key，并恢复原始顺序。
 - 脏缓存删除后回退 API 重新生成。
 - 按配置批大小分批。
-- `embed_query(...)` 复用批量流程。
+- `embed_query(...)` 不读写 Redis 缓存、不打印缓存完成日志，但复用 provider 调用和校验逻辑。
 - provider 返回数量不一致时抛出 `EmbeddingProviderError`。
 - 超时类临时错误会重试。
 - 重试等待策略使用固定指数退避，不使用 jitter。
 - 非临时 provider 错误不重试。
 - 写缓存失败不影响本次成功结果。
+- 用户问题向量化不访问 Redis、不写入缓存、不打印 `Embedding completed`。
 - `EmbeddingConfig.from_settings(...)` 读取项目配置。
 - 非法 JSON 缓存抛出 `EmbeddingCacheError`。
 
@@ -395,3 +399,16 @@ Found 3 errors in 1 file
 ```
 
 mypy 未通过项集中在 `app/core/clients.py` 既有 LangChain 类型 stub 不匹配：`ChatOpenAI(max_tokens=...)`、`ChatOpenAI(api_key=str)`、`OpenAIEmbeddings(api_key=str)`。本次新增的 `check_embedding_ctx_length=False` 未引入新的 mypy 报错。
+
+## 后续同步更新：用户问题 Embedding 不缓存
+
+后续根据在线查询联调结论，用户问题 `embed_query(...)` 不再使用 Redis 向量缓存：
+
+- `embed_query(...)` 默认 `cache_enabled=False`。
+- `namespace="query"` 会强制跳过缓存读取和缓存写入。
+- 用户问题向量化不再生成或写入 `rag:emb:query:*` key。
+- 用户问题向量化不再打印 `Embedding completed` 缓存统计日志。
+- 文档 chunk 向量缓存保持不变，继续使用 `rag:emb:doc:{cache_version}:{md5(chunk_content)}`。
+- HyDE 文本缓存仍由 `QueryRewriter` 使用 `rag:hyde:{md5(question)}` 维护；HyDE 文本 Embedding 本身不缓存。
+
+本次同步后的目标行为由 `tests/services/test_embedding.py::test_embed_query_does_not_use_cache_or_write_completion_log` 覆盖。

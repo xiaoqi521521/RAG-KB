@@ -50,7 +50,9 @@ async def test_generate_hyde_answer_uses_cache_without_calling_chat() -> None:
         chat_model_name="qwen-plus",
         cache_ttl_seconds=600,
     )
-    redis.values[rewriter._cache_key("hyde", "年假怎么申请？")] = "员工需要在 OA 提交年假申请。"
+    cache_key = rewriter._cache_key("hyde", "年假怎么申请？")
+    assert cache_key == "rag:hyde:2f39b46980f2eca748542564863ee76b"
+    redis.values[cache_key] = "员工需要在 OA 提交年假申请。"
 
     result = await rewriter.generate_hyde_answer(" 年假怎么申请？ ")
 

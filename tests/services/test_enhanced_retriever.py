@@ -61,8 +61,14 @@ class FakeEmbeddingService:
         self.fail = fail
         self.queries: list[str] = []
 
-    async def embed_query(self, text: str) -> list[float]:
-        self.queries.append(text)
+    async def embed_query(
+        self,
+        text: str,
+        *,
+        namespace: str = "query",
+        cache_enabled: bool = True,
+    ) -> list[float]:
+        self.queries.append({"text": text, "namespace": namespace, "cache_enabled": cache_enabled})
         if self.fail:
             raise RuntimeError("embedding failed")
         return [0.1, 0.2]
@@ -103,7 +109,9 @@ async def test_retrieve_fuses_original_hybrid_and_hyde_vector_results() -> None:
     assert hybrid.calls == [{"question": "年假怎么申请？", "kb_ids": [2]}]
     assert rewriter.hyde_calls == ["年假怎么申请？"]
     assert rewriter.expand_calls == []
-    assert embedding.queries == ["员工申请年假需要在 OA 提交申请。"]
+    assert embedding.queries == [
+        {"text": "员工申请年假需要在 OA 提交申请。", "namespace": "hyde", "cache_enabled": False}
+    ]
     assert repository.vector_calls == [{"query_vector": [0.1, 0.2], "kb_ids": [2], "top_k": 20}]
     assert [hit.chunk_id for hit in result.hits] == [11, 10, 12]
     assert result.hits[0].score == (1 / 62) + (1 / 61)

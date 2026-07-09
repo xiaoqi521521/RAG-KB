@@ -49,7 +49,7 @@ class EmbeddingConfig(BaseSettings):
         dimension: 向量维度，必须与建库和查询使用的模型维度一致。
         batch_size: 单次调用 Embedding API 的文本数量。
         cache_version: 缓存版本号，用于模型或切分策略变更后的缓存隔离。
-        cache_ttl_seconds: Redis 缓存过期时间。
+        cache_ttl_seconds: 文档向量 Redis 缓存过期时间。
         max_retries: provider 临时失败时允许的最大尝试次数。
     """
 
@@ -149,15 +149,22 @@ class EmbeddingService:
         self.config = config or EmbeddingConfig()
         self.codec = EmbeddingVectorCodec(self.config.dimension)
 
-    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(
+        self,
+        texts: list[str],
+        *,
+        namespace: str = "doc",
+        cache_enabled: bool = True,
+    ) -> list[list[float]]:
         """批量向量化文本列表，返回与输入顺序完全一致的向量列表。"""
         if not texts:
             return []
 
         # 第一步：标准化文本并构造缓存 key，后续所有命中和 miss 都按 key 聚合。
         started_at = time.perf_counter()
+        effective_cache_enabled = cache_enabled and namespace != "query"
         normalized_texts = [_normalize_text(text) for text in texts]
-        cache_keys = [self.build_cache_key(text) for text in normalized_texts]
+        cache_keys = [self.build_cache_key(text, namespace=namespace) for text in normalized_texts]
 
         vectors_by_index: dict[int, list[float]] = {}
         miss_by_key: dict[str, str] = {}
@@ -167,13 +174,12 @@ class EmbeddingService:
         cache_miss_count = 0
 
         # 第二步：读取 Redis 缓存，命中结果先按原始下标暂存。
-        cached_values = await self._read_cache(cache_keys)
-        for index, (text, cache_key, cached_value) in enumerate(
-            zip(normalized_texts, cache_keys, cached_values, strict=True)
-        ):
+        cached_values = await self._read_cache(cache_keys) if effective_cache_enabled else [None] * len(cache_keys)
+        for index, (text, cache_key, cached_value) in enumerate(zip(normalized_texts, cache_keys, cached_values, strict=True)):
             key_indices.setdefault(cache_key, []).append(index)
             if cached_value is None:
-                cache_miss_count += 1
+                if effective_cache_enabled:
+                    cache_miss_count += 1
                 miss_by_key.setdefault(cache_key, text)
                 continue
 
@@ -205,7 +211,8 @@ class EmbeddingService:
                 for cache_key, vector in zip(batch_keys, batch_vectors, strict=True):
                     for original_index in key_indices[cache_key]:
                         vectors_by_index[original_index] = vector
-                    await self._write_cache(cache_key, vector)
+                    if effective_cache_enabled:
+                        await self._write_cache(cache_key, vector, ttl_seconds=self._cache_ttl(namespace))
 
         # 第四步：按输入顺序组装最终结果，防止缓存命中和 API miss 打乱 chunk 对应关系。
         try:
@@ -215,29 +222,43 @@ class EmbeddingService:
 
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         cache_hit_rate = cache_hit_count / len(texts) * 100
-        logger.info(
-            "Embedding completed: texts=%s cache_hits=%s cache_misses=%s cache_hit_rate=%.2f%% dirty_cache=%s api_batches=%s elapsed_ms=%.2f api_elapsed_ms=%.2f token_usage_unavailable=%s",
-            len(texts),
-            cache_hit_count,
-            cache_miss_count,
-            cache_hit_rate,
-            dirty_cache_count,
-            api_batch_count,
-            elapsed_ms,
-            api_elapsed_ms,
-            True,
-        )
+        if effective_cache_enabled:
+            logger.info(
+                "Embedding completed: namespace=%s texts=%s cache_hits=%s cache_misses=%s cache_hit_rate=%.2f%% dirty_cache=%s api_batches=%s elapsed_ms=%.2f api_elapsed_ms=%.2f token_usage_unavailable=%s",
+                namespace,
+                len(texts),
+                cache_hit_count,
+                cache_miss_count,
+                cache_hit_rate,
+                dirty_cache_count,
+                api_batch_count,
+                elapsed_ms,
+                api_elapsed_ms,
+                True,
+            )
         return vectors
 
-    async def embed_query(self, text: str) -> list[float]:
+    async def embed_query(
+        self,
+        text: str,
+        *,
+        namespace: str = "query",
+        cache_enabled: bool = False,
+    ) -> list[float]:
         """向量化单条查询文本，返回可用于 PGVector 检索的向量。"""
-        vectors = await self.embed_documents([text])
+        vectors = await self.embed_documents([text], namespace=namespace, cache_enabled=cache_enabled)
         return vectors[0]
 
-    def build_cache_key(self, normalized_text: str) -> str:
+    def build_cache_key(self, normalized_text: str, *, namespace: str = "doc") -> str:
         """根据缓存版本和文本内容构造短且稳定的 Redis key。"""
         digest = hashlib.md5(normalized_text.encode("utf-8")).hexdigest()
-        return f"emb:{self.config.cache_version}:{digest}"
+        if namespace == "doc":
+            return f"rag:emb:doc:{self.config.cache_version}:{digest}"
+        return f"rag:emb:{namespace}:{digest}"
+
+    def _cache_ttl(self, namespace: str) -> int:
+        """按缓存用途选择 TTL。"""
+        return self.config.cache_ttl_seconds
 
     async def _read_cache(self, keys: list[str]) -> list[str | bytes | None]:
         """批量读取 Redis 缓存，失败时整体降级为全部 miss。"""
@@ -252,10 +273,10 @@ class EmbeddingService:
             logger.warning("Embedding cache read failed, downgrade to full miss: error=%s", exc)
             return [None] * len(keys)
 
-    async def _write_cache(self, key: str, vector: list[float]) -> None:
+    async def _write_cache(self, key: str, vector: list[float], *, ttl_seconds: int) -> None:
         """写入 Redis 缓存并设置 TTL，写失败只记录日志。"""
         try:
-            await self.redis.setex(key, self.config.cache_ttl_seconds, self.codec.dumps(vector))
+            await self.redis.setex(key, ttl_seconds, self.codec.dumps(vector))
         except Exception as exc:  # noqa: BLE001
             # 写缓存失败不影响已拿到的 provider 结果，避免让加速层变成可靠性瓶颈。
             logger.warning("Embedding cache write failed: key=%s error=%s", key, exc)

@@ -54,7 +54,7 @@ class SourceCitation(BaseModel):
         chunk_index: chunk 在文档中的序号。
         page_number: 来源页码；非分页文档为 None。
         section_title: 来源章节标题；无法识别章节时为 None。
-        score: 最终检索排序分；混合检索阶段为 RRF 分数，不是相似度百分比。
+        score: 最终排序分；v4 精排成功时为 Reranker 分数，精排降级时为 RRF 分数。
     """
 
     document_id: int

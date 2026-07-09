@@ -21,12 +21,14 @@ class FakePipeline:
 class FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
+        self.pipeline_calls = 0
         self.set_calls: list[tuple[str, int, str]] = []
         self.deleted_keys: list[str] = []
         self.fail_setex = False
         self.fail_delete = False
 
     def pipeline(self) -> FakePipeline:
+        self.pipeline_calls += 1
         return FakePipeline(self)
 
     async def setex(self, key: str, ttl: int, value: str) -> None:
@@ -111,6 +113,7 @@ def test_embed_documents_uses_cache_and_preserves_order():
     )
 
     cached_key = service.build_cache_key("员工每年享有 5 天带薪年假。")
+    assert cached_key.startswith("rag:emb:doc:v1:")
     redis_client.store[cached_key] = service.codec.dumps(_vector(0.1))
 
     result = asyncio_run(
@@ -150,6 +153,7 @@ def test_embed_documents_logs_cache_hit_rate(caplog):
             )
         )
 
+    assert "namespace=doc" in caplog.text
     assert "cache_hit_rate=66.67%" in caplog.text
 
 
@@ -186,15 +190,35 @@ def test_embed_documents_batches_miss_texts_by_configured_batch_size():
     assert embeddings.calls == [["t1", "t2"], ["t3", "t4"], ["t5"]]
 
 
-def test_embed_query_reuses_document_flow():
-    service, embeddings, _ = _build_service(
+def test_embed_query_does_not_use_cache_or_write_completion_log(caplog):
+    service, embeddings, redis_client = _build_service(
         embedding_map={("query text",): [_vector(0.9)]}
     )
 
-    result = asyncio_run(service.embed_query("query text"))
+    with caplog.at_level(logging.INFO, logger="app.services.embedding"):
+        result = asyncio_run(service.embed_query("query text"))
 
     assert result == _vector(0.9)
     assert embeddings.calls == [["query text"]]
+    assert redis_client.pipeline_calls == 0
+    assert redis_client.store == {}
+    assert redis_client.set_calls == []
+    assert "Embedding completed" not in caplog.text
+
+
+def test_embed_query_can_disable_cache_for_hyde_namespace(caplog):
+    service, embeddings, redis_client = _build_service(
+        embedding_map={("hyde text",): [_vector(0.6)]}
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.services.embedding"):
+        result = asyncio_run(service.embed_query("hyde text", namespace="hyde", cache_enabled=False))
+
+    assert result == _vector(0.6)
+    assert embeddings.calls == [["hyde text"]]
+    assert redis_client.store == {}
+    assert redis_client.set_calls == []
+    assert "Embedding completed" not in caplog.text
 
 
 def test_embed_documents_raises_on_incomplete_provider_result():
