@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import time
-from typing import Any, Protocol
+from typing import Any, Awaitable, Protocol
 
 import httpx
 import redis.asyncio as redis
@@ -35,11 +35,21 @@ class EmbeddingCacheError(EmbeddingError):
 
 
 class EmbeddingClient(Protocol):
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
-        ...
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]: ...
 
-    async def aembed_query(self, text: str) -> list[float]:
-        ...
+    async def aembed_query(self, text: str) -> list[float]: ...
+
+
+class UsageAwareEmbeddingClient(Protocol):
+    async def aembed_documents_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int | None]: ...
+
+
+class EmbeddingTokenRecorder(Protocol):
+    def record_embedding_tokens(
+        self, *, tokens: int, source: str = "provider"
+    ) -> Awaitable[None]: ...
 
 
 class EmbeddingConfig(BaseSettings):
@@ -140,14 +150,16 @@ class EmbeddingService:
 
     def __init__(
         self,
-        embeddings: EmbeddingClient | OpenAIEmbeddings,
+        embeddings: EmbeddingClient | UsageAwareEmbeddingClient | OpenAIEmbeddings,
         redis_client: redis.Redis,
         config: EmbeddingConfig | None = None,
+        token_metrics: EmbeddingTokenRecorder | None = None,
     ) -> None:
         self.embeddings = embeddings
         self.redis = redis_client
         self.config = config or EmbeddingConfig()
         self.codec = EmbeddingVectorCodec(self.config.dimension)
+        self.token_metrics = token_metrics
 
     async def embed_documents(
         self,
@@ -174,8 +186,14 @@ class EmbeddingService:
         cache_miss_count = 0
 
         # 第二步：读取 Redis 缓存，命中结果先按原始下标暂存。
-        cached_values = await self._read_cache(cache_keys) if effective_cache_enabled else [None] * len(cache_keys)
-        for index, (text, cache_key, cached_value) in enumerate(zip(normalized_texts, cache_keys, cached_values, strict=True)):
+        cached_values = (
+            await self._read_cache(cache_keys)
+            if effective_cache_enabled
+            else [None] * len(cache_keys)
+        )
+        for index, (text, cache_key, cached_value) in enumerate(
+            zip(normalized_texts, cache_keys, cached_values, strict=True)
+        ):
             key_indices.setdefault(cache_key, []).append(index)
             if cached_value is None:
                 if effective_cache_enabled:
@@ -189,13 +207,16 @@ class EmbeddingService:
             except EmbeddingCacheError as exc:
                 # 单个 key 损坏不应拖垮整批任务，删除脏 key 后按 miss 重新生成。
                 dirty_cache_count += 1
-                logger.warning("Embedding cache is dirty, fallback to API: key=%s error=%s", cache_key, exc)
+                logger.warning(
+                    "Embedding cache is dirty, fallback to API: key=%s error=%s", cache_key, exc
+                )
                 await self._delete_dirty_key(cache_key)
                 cache_miss_count += 1
                 miss_by_key.setdefault(cache_key, text)
 
         # 第三步：只对未命中的唯一文本调用 provider，再把结果复制回所有原始下标。
         api_batch_count = 0
+        usage_unavailable_batches = 0
         api_elapsed_ms = 0.0
         if miss_by_key:
             miss_items = list(miss_by_key.items())
@@ -205,14 +226,24 @@ class EmbeddingService:
                 batch_texts = [item[1] for item in batch]
 
                 batch_started_at = time.perf_counter()
-                batch_vectors = await self._embed_batch_with_retry(batch_texts)
+                batch_vectors, batch_tokens = await self._embed_batch_with_retry(batch_texts)
                 api_elapsed_ms += (time.perf_counter() - batch_started_at) * 1000
+
+                if batch_tokens is None:
+                    usage_unavailable_batches += 1
+                elif self.token_metrics is not None:
+                    await self.token_metrics.record_embedding_tokens(
+                        tokens=batch_tokens,
+                        source="provider",
+                    )
 
                 for cache_key, vector in zip(batch_keys, batch_vectors, strict=True):
                     for original_index in key_indices[cache_key]:
                         vectors_by_index[original_index] = vector
                     if effective_cache_enabled:
-                        await self._write_cache(cache_key, vector, ttl_seconds=self._cache_ttl(namespace))
+                        await self._write_cache(
+                            cache_key, vector, ttl_seconds=self._cache_ttl(namespace)
+                        )
 
         # 第四步：按输入顺序组装最终结果，防止缓存命中和 API miss 打乱 chunk 对应关系。
         try:
@@ -220,11 +251,19 @@ class EmbeddingService:
         except KeyError as exc:
             raise EmbeddingProviderError("embedding result is incomplete") from exc
 
+        if usage_unavailable_batches > 0:
+            # provider 或兼容客户端未返回 usage 时不伪造精确 token。
+            logger.info(
+                "Embedding token usage unavailable: embedding_token_usage_unavailable=true namespace=%s api_batches=%s",
+                namespace,
+                usage_unavailable_batches,
+            )
+
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         cache_hit_rate = cache_hit_count / len(texts) * 100
         if effective_cache_enabled:
             logger.info(
-                "Embedding completed: namespace=%s texts=%s cache_hits=%s cache_misses=%s cache_hit_rate=%.2f%% dirty_cache=%s api_batches=%s elapsed_ms=%.2f api_elapsed_ms=%.2f token_usage_unavailable=%s",
+                "Embedding completed: namespace=%s texts=%s cache_hits=%s cache_misses=%s cache_hit_rate=%.2f%% dirty_cache=%s api_batches=%s elapsed_ms=%.2f api_elapsed_ms=%.2f",
                 namespace,
                 len(texts),
                 cache_hit_count,
@@ -234,7 +273,6 @@ class EmbeddingService:
                 api_batch_count,
                 elapsed_ms,
                 api_elapsed_ms,
-                True,
             )
         return vectors
 
@@ -246,7 +284,9 @@ class EmbeddingService:
         cache_enabled: bool = False,
     ) -> list[float]:
         """向量化单条查询文本，返回可用于 PGVector 检索的向量。"""
-        vectors = await self.embed_documents([text], namespace=namespace, cache_enabled=cache_enabled)
+        vectors = await self.embed_documents(
+            [text], namespace=namespace, cache_enabled=cache_enabled
+        )
         return vectors[0]
 
     def build_cache_key(self, normalized_text: str, *, namespace: str = "doc") -> str:
@@ -288,7 +328,9 @@ class EmbeddingService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Embedding dirty cache delete failed: key=%s error=%s", key, exc)
 
-    async def _embed_batch_with_retry(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_batch_with_retry(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int | None]:
         """带重试调用 provider，并校验返回数量和向量维度。"""
         try:
             async for attempt in AsyncRetrying(
@@ -298,9 +340,18 @@ class EmbeddingService:
                 reraise=True,
             ):
                 with attempt:
-                    vectors = await self.embeddings.aembed_documents(texts)
+                    usage_method = getattr(
+                        self.embeddings,
+                        "aembed_documents_with_usage",
+                        None,
+                    )
+                    if callable(usage_method):
+                        vectors, total_tokens = await usage_method(texts)
+                    else:
+                        vectors = await self.embeddings.aembed_documents(texts)  # type: ignore[union-attr]
+                        total_tokens = None
                     self._validate_batch_result(texts, vectors)
-                    return vectors
+                    return vectors, total_tokens
         except EmbeddingProviderError:
             raise
         except Exception as exc:  # noqa: BLE001

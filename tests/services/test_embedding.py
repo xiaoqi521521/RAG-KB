@@ -5,6 +5,7 @@ import logging
 import pytest
 from pydantic import ValidationError
 
+
 class FakePipeline:
     def __init__(self, redis_client: "FakeRedis") -> None:
         self.redis_client = redis_client
@@ -64,6 +65,27 @@ class FakeEmbeddings:
     async def aembed_query(self, text: str) -> list[float]:
         result = await self.aembed_documents([text])
         return result[0]
+
+
+class FakeUsageAwareEmbeddings:
+    def __init__(self, vectors: list[list[float]], total_tokens: int | None) -> None:
+        self.vectors = vectors
+        self.total_tokens = total_tokens
+        self.calls: list[list[str]] = []
+
+    async def aembed_documents_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int | None]:
+        self.calls.append(list(texts))
+        return self.vectors, self.total_tokens
+
+
+class FakeTokenMetrics:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str]] = []
+
+    async def record_embedding_tokens(self, *, tokens: int, source: str = "provider") -> None:
+        self.calls.append((tokens, source))
 
 
 def _build_service(
@@ -129,7 +151,11 @@ def test_embed_documents_uses_cache_and_preserves_order():
     assert result == [_vector(0.1), _vector(0.2), _vector(0.1)]
     assert embeddings.calls == [["报销单据需在费用发生后 30 天内提交。"]]
     assert redis_client.set_calls == [
-        (service.build_cache_key("报销单据需在费用发生后 30 天内提交。"), 604800, service.codec.dumps(_vector(0.2)))
+        (
+            service.build_cache_key("报销单据需在费用发生后 30 天内提交。"),
+            604800,
+            service.codec.dumps(_vector(0.2)),
+        )
     ]
 
 
@@ -204,6 +230,7 @@ def test_embed_query_does_not_use_cache_or_write_completion_log(caplog):
     assert redis_client.store == {}
     assert redis_client.set_calls == []
     assert "Embedding completed" not in caplog.text
+    assert "embedding_token_usage_unavailable=true namespace=query" in caplog.text
 
 
 def test_embed_query_can_disable_cache_for_hyde_namespace(caplog):
@@ -212,7 +239,9 @@ def test_embed_query_can_disable_cache_for_hyde_namespace(caplog):
     )
 
     with caplog.at_level(logging.INFO, logger="app.services.embedding"):
-        result = asyncio_run(service.embed_query("hyde text", namespace="hyde", cache_enabled=False))
+        result = asyncio_run(
+            service.embed_query("hyde text", namespace="hyde", cache_enabled=False)
+        )
 
     assert result == _vector(0.6)
     assert embeddings.calls == [["hyde text"]]
@@ -221,12 +250,30 @@ def test_embed_query_can_disable_cache_for_hyde_namespace(caplog):
     assert "Embedding completed" not in caplog.text
 
 
+def test_embed_query_records_provider_token_usage(caplog):
+    from app.services.embedding import EmbeddingService
+
+    embeddings = FakeUsageAwareEmbeddings([_vector(0.7)], total_tokens=37)
+    token_metrics = FakeTokenMetrics()
+    service = EmbeddingService(
+        embeddings,
+        FakeRedis(),
+        token_metrics=token_metrics,
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.services.embedding"):
+        result = asyncio_run(service.embed_query("query with usage"))
+
+    assert result == _vector(0.7)
+    assert embeddings.calls == [["query with usage"]]
+    assert token_metrics.calls == [(37, "provider")]
+    assert "embedding_token_usage_unavailable=true" not in caplog.text
+
+
 def test_embed_documents_raises_on_incomplete_provider_result():
     from app.services.embedding import EmbeddingProviderError
 
-    service, embeddings, _ = _build_service(
-        embedding_map={("a", "b"): [_vector(0.1)]}
-    )
+    service, embeddings, _ = _build_service(embedding_map={("a", "b"): [_vector(0.1)]})
 
     with pytest.raises(EmbeddingProviderError, match="count mismatch"):
         asyncio_run(service.embed_documents(["a", "b"]))
@@ -274,13 +321,11 @@ def test_embed_batch_uses_fixed_exponential_wait_strategy(monkeypatch):
             return FakeAttempt()
 
     monkeypatch.setattr("app.services.embedding.AsyncRetrying", FakeAsyncRetrying)
-    service, _, _ = _build_service(
-        embedding_map={("retry wait",): [_vector(0.4)]}
-    )
+    service, _, _ = _build_service(embedding_map={("retry wait",): [_vector(0.4)]})
 
     result = asyncio_run(service._embed_batch_with_retry(["retry wait"]))
 
-    assert result == [_vector(0.4)]
+    assert result == ([_vector(0.4)], None)
     assert isinstance(captured_kwargs["wait"], wait_exponential)
 
 

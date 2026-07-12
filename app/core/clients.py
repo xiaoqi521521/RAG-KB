@@ -2,10 +2,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 import redis.asyncio as redis
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from minio import Minio
+from openai import AsyncOpenAI
 
 from app.core.config import Settings
+from app.integrations.openai_embeddings import OpenAICompatibleEmbeddings
 
 _clients: dict[str, Any] = {}
 
@@ -31,14 +33,17 @@ async def init_clients(settings: Settings) -> None:
 
     embedding_api_key = settings.embedding_api_key or settings.dashscope_api_key
     if embedding_api_key:
-        _clients["embeddings"] = OpenAIEmbeddings(
-            model=settings.embedding_model,
+        embedding_openai_client = AsyncOpenAI(
             api_key=embedding_api_key,
             base_url=settings.embedding_base_url,
             timeout=settings.embedding_timeout_seconds,
-            # DashScope OpenAI-compatible Embedding 只接受 str/list[str]，
-            # 关闭 LangChain 默认的 token id 分片，避免发送 list[list[int]]。
-            check_embedding_ctx_length=False,
+            # 业务服务已经统一负责重试，避免 SDK 与服务层叠加重试。
+            max_retries=0,
+        )
+        _clients["embedding_openai_client"] = embedding_openai_client
+        _clients["embeddings"] = OpenAICompatibleEmbeddings(
+            embeddings_api=embedding_openai_client.embeddings,
+            model=settings.embedding_model,
         )
 
 
@@ -46,6 +51,9 @@ async def close_clients() -> None:
     redis_client = _clients.get("redis")
     if redis_client is not None:
         await redis_client.aclose()
+    embedding_openai_client = _clients.get("embedding_openai_client")
+    if embedding_openai_client is not None:
+        await embedding_openai_client.close()
     _clients.clear()
 
 
@@ -64,7 +72,7 @@ def get_chat_model() -> ChatOpenAI:
         raise RuntimeError("Chat model client is not configured") from exc
 
 
-def get_embeddings() -> OpenAIEmbeddings:
+def get_embeddings() -> OpenAICompatibleEmbeddings:
     try:
         return _clients["embeddings"]
     except KeyError as exc:

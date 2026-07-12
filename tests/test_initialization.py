@@ -71,9 +71,13 @@ async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monk
         def __init__(self, **kwargs):
             chat_kwargs.update(kwargs)
 
-    class StubOpenAIEmbeddings:
+    class StubAsyncOpenAI:
         def __init__(self, **kwargs):
             embedding_kwargs.update(kwargs)
+            self.embeddings = object()
+
+        async def close(self):
+            return None
 
     class StubMinio:
         def __init__(self, **kwargs):
@@ -87,7 +91,7 @@ async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monk
     monkeypatch.setattr(clients, "redis", StubRedisModule)
     monkeypatch.setattr(clients, "Minio", StubMinio)
     monkeypatch.setattr(clients, "ChatOpenAI", StubChatOpenAI)
-    monkeypatch.setattr(clients, "OpenAIEmbeddings", StubOpenAIEmbeddings)
+    monkeypatch.setattr(clients, "AsyncOpenAI", StubAsyncOpenAI)
 
     settings = Settings(
         _env_file=None,
@@ -109,7 +113,8 @@ async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monk
     assert chat_kwargs["base_url"] == "https://llm.example.test/v1"
     assert embedding_kwargs["api_key"] == "embedding-key"
     assert embedding_kwargs["base_url"] == "https://embedding.example.test/v1"
-    assert embedding_kwargs["check_embedding_ctx_length"] is False
+    assert embedding_kwargs["max_retries"] == 0
+    assert clients.get_embeddings().model == settings.embedding_model
 
     await clients.close_clients()
 
@@ -159,6 +164,59 @@ def test_fastapi_health_endpoint(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "UP"}
+
+
+@pytest.mark.asyncio
+async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
+    from fastapi import FastAPI
+
+    from app import main
+
+    calls: list[str] = []
+    fake_provider = object()
+    fake_meter = object()
+    fake_token_metrics = object()
+
+    class Provider:
+        def get_meter(self, name: str):
+            assert name == "rag-kb.token-metrics"
+            return fake_meter
+
+    provider = Provider()
+
+    async def fake_init_clients(settings):
+        calls.append("init_clients")
+
+    async def fake_close_clients():
+        calls.append("close_clients")
+
+    def fake_init_metrics(settings):
+        calls.append("init_metrics")
+        return provider
+
+    def fake_shutdown_metrics(value):
+        assert value is provider
+        calls.append("shutdown_metrics")
+
+    def fake_token_metrics_factory(*, redis_client, meter):
+        assert redis_client is fake_provider
+        assert meter is fake_meter
+        return fake_token_metrics
+
+    monkeypatch.setattr(main, "configure_logging", lambda settings: None)
+    monkeypatch.setattr(main, "init_clients", fake_init_clients)
+    monkeypatch.setattr(main, "close_clients", fake_close_clients)
+    monkeypatch.setattr(main, "init_metrics", fake_init_metrics)
+    monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
+    monkeypatch.setattr(main, "get_redis", lambda: fake_provider)
+    monkeypatch.setattr(main, "TokenMetrics", fake_token_metrics_factory)
+
+    app = FastAPI()
+    async with main.lifespan(app):
+        assert app.state.token_metrics is fake_token_metrics
+        assert app.state.meter_provider is provider
+
+    assert calls == ["init_clients", "init_metrics", "shutdown_metrics", "close_clients"]
 
 
 def test_start_runs_uvicorn_with_application_entrypoint(monkeypatch):

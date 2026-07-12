@@ -6,9 +6,12 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.router import api_router
 from app.core.clients import close_clients, init_clients
+from app.core.clients import get_redis
 from app.core.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import configure_logging
+from app.core.telemetry import init_metrics, shutdown_metrics
+from app.services.token_metrics import TokenMetrics
 
 
 @asynccontextmanager
@@ -16,8 +19,15 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings)
     await init_clients(settings)
-    yield
-    await close_clients()
+    meter_provider = init_metrics(settings)
+    meter = meter_provider.get_meter("rag-kb.token-metrics") if meter_provider is not None else None
+    app.state.meter_provider = meter_provider
+    app.state.token_metrics = TokenMetrics(redis_client=get_redis(), meter=meter)
+    try:
+        yield
+    finally:
+        shutdown_metrics(meter_provider)
+        await close_clients()
 
 
 def create_app() -> FastAPI:

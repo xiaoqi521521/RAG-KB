@@ -14,6 +14,7 @@ from app.repositories.chunks import ChunkRepository, ChunkSearchHit
 from app.schemas.rag import RagQueryResponse
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.source_builder import SourceBuilder
+from app.services.token_metrics import TokenMetrics, record_generation_usage
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class RagQueryService:
         chunk_repository: ChunkRepository,
         source_builder: SourceBuilder,
         chat_model: Any,
+        token_metrics: TokenMetrics,
         settings: Settings,
     ) -> None:
         """初始化查询服务依赖。
@@ -59,6 +61,7 @@ class RagQueryService:
         self.chunk_repository = chunk_repository
         self.source_builder = source_builder
         self.chat_model = chat_model
+        self.token_metrics = token_metrics
         self.settings = settings
 
     async def query(
@@ -86,7 +89,9 @@ class RagQueryService:
         hits = await self._retrieve_hits(query_vector, kb_ids)
 
         if not hits:
-            logger.info("RAG query refused: reason=no_hits user_id=%s kb_ids=%s", user.user_id, kb_ids)
+            logger.info(
+                "RAG query refused: reason=no_hits user_id=%s kb_ids=%s", user.user_id, kb_ids
+            )
             return self._refusal_response(started_at)
 
         context, sources = self.source_builder.build(
@@ -128,7 +133,9 @@ class RagQueryService:
                 self._elapsed_ms(started_at),
                 exc,
             )
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用") from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用"
+            ) from exc
         except RuntimeError as exc:
             logger.warning(
                 "RAG query embedding dependency failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
@@ -137,12 +144,18 @@ class RagQueryService:
                 self._elapsed_ms(started_at),
                 exc,
             )
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用") from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用"
+            ) from exc
 
-        logger.debug("RAG embedding completed: elapsed_ms=%s", self._elapsed_ms(embedding_started_at))
+        logger.debug(
+            "RAG embedding completed: elapsed_ms=%s", self._elapsed_ms(embedding_started_at)
+        )
         return query_vector
 
-    async def _retrieve_hits(self, query_vector: list[float], kb_ids: list[int]) -> list[ChunkSearchHit]:
+    async def _retrieve_hits(
+        self, query_vector: list[float], kb_ids: list[int]
+    ) -> list[ChunkSearchHit]:
         """执行向量检索，返回已按分数排序的 chunk 命中列表。"""
         retrieval_started_at = time.perf_counter()
         try:
@@ -153,7 +166,9 @@ class RagQueryService:
             )
         except SQLAlchemyError as exc:
             logger.exception("RAG retrieval failed: kb_ids=%s", kb_ids)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="检索服务暂时不可用") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="检索服务暂时不可用"
+            ) from exc
 
         logger.debug(
             "RAG retrieval completed: hit_count=%s elapsed_ms=%s",
@@ -186,14 +201,28 @@ class RagQueryService:
                 self._elapsed_ms(generation_started_at),
                 exc,
             )
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用") from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用"
+            ) from exc
+
+        await record_generation_usage(
+            recorder=self.token_metrics,
+            response=response,
+            pipeline="v1",
+        )
 
         content = getattr(response, "content", None)
         if not isinstance(content, str) or not content.strip():
-            logger.warning("RAG generation returned empty content: user_id=%s kb_ids=%s", user.user_id, kb_ids)
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用")
+            logger.warning(
+                "RAG generation returned empty content: user_id=%s kb_ids=%s", user.user_id, kb_ids
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用"
+            )
 
-        logger.debug("RAG generation completed: elapsed_ms=%s", self._elapsed_ms(generation_started_at))
+        logger.debug(
+            "RAG generation completed: elapsed_ms=%s", self._elapsed_ms(generation_started_at)
+        )
         return content.strip()
 
     def _refusal_response(self, started_at: float) -> RagQueryResponse:

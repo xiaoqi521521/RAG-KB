@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
@@ -29,6 +29,7 @@ from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.reranker import RerankerService
 from app.services.source_builder import SourceBuilder
 from app.services.ts_query_builder import TsQueryBuilder
+from app.services.token_metrics import TokenMetrics
 
 router = APIRouter()
 
@@ -45,9 +46,15 @@ class RagQueryPipeline(Protocol):
     ) -> RagQueryResponse: ...
 
 
+def get_token_metrics(request: Request) -> TokenMetrics:
+    """从应用状态获取单例 TokenMetrics。"""
+    return request.app.state.token_metrics
+
+
 def get_rag_query_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    token_metrics: TokenMetrics = Depends(get_token_metrics),
 ) -> RagQueryPipeline:
     """根据配置构建 RAG 查询服务及其依赖。
 
@@ -67,7 +74,12 @@ def get_rag_query_service(
         max_retries=settings.embedding_max_retries,
     )
     chunk_repository = ChunkRepository(session)
-    embedding_service = EmbeddingService(get_embeddings(), get_redis(), embedding_config)
+    embedding_service = EmbeddingService(
+        get_embeddings(),
+        get_redis(),
+        embedding_config,
+        token_metrics=token_metrics,
+    )
     source_builder = SourceBuilder(max_context_chars=settings.rag_context_max_tokens * 4)
     chat_model = get_chat_model()
 
@@ -77,6 +89,7 @@ def get_rag_query_service(
             chunk_repository=chunk_repository,
             source_builder=source_builder,
             chat_model=chat_model,
+            token_metrics=token_metrics,
             settings=settings,
         )
 
@@ -92,6 +105,7 @@ def get_rag_query_service(
             retriever=hybrid_retriever,
             source_builder=source_builder,
             chat_model=chat_model,
+            token_metrics=token_metrics,
             settings=settings,
         )
 
@@ -115,6 +129,7 @@ def get_rag_query_service(
             retriever=enhanced_retriever,
             source_builder=source_builder,
             chat_model=chat_model,
+            token_metrics=token_metrics,
             settings=settings,
         )
 
@@ -126,9 +141,13 @@ def get_rag_query_service(
                 top_n=settings.reranker_top_n,
             ),
             confidence_filter=ConfidenceFilter(min_score=settings.rag_min_score),
-            context_trimmer=ContextTrimmer(),
+            context_trimmer=ContextTrimmer(
+                max_context_tokens=settings.rag_context_max_tokens,
+                token_metrics=token_metrics,
+            ),
             source_builder=source_builder,
             chat_model=chat_model,
+            token_metrics=token_metrics,
             settings=settings,
         )
 

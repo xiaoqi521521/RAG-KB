@@ -86,13 +86,31 @@ class FakeSourceBuilder:
 
 
 class FakeChatModel:
-    def __init__(self, content: object = "需要通过本地测试。[参考1]") -> None:
+    def __init__(
+        self,
+        content: object = "需要通过本地测试。[参考1]",
+        completion_tokens: int | None = None,
+    ) -> None:
         self.content = content
+        self.completion_tokens = completion_tokens
         self.messages: list[object] | None = None
 
     async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
         self.messages = messages
-        return SimpleNamespace(content=self.content)
+        usage_metadata = (
+            {"output_tokens": self.completion_tokens}
+            if self.completion_tokens is not None
+            else None
+        )
+        return SimpleNamespace(content=self.content, usage_metadata=usage_metadata)
+
+
+class FakeTokenMetrics:
+    def __init__(self) -> None:
+        self.generation_tokens: list[int] = []
+
+    async def record_generation_tokens(self, *, tokens: int, source: str = "provider") -> None:
+        self.generation_tokens.append(tokens)
 
 
 @dataclass
@@ -106,21 +124,35 @@ def _service(
     *,
     hits: list[ChunkSearchHit],
     chat_content: object = "需要通过本地测试。[参考1]",
+    completion_tokens: int | None = None,
     min_score: float = 0.5,
     return_top_n: int = 5,
-) -> tuple[RagQueryService, FakeEmbeddingService, FakeChunkRepository, FakeSourceBuilder, FakeChatModel]:
+) -> tuple[
+    RagQueryService, FakeEmbeddingService, FakeChunkRepository, FakeSourceBuilder, FakeChatModel
+]:
     embedding = FakeEmbeddingService()
     chunks = FakeChunkRepository(hits)
     source_builder = FakeSourceBuilder()
-    chat = FakeChatModel(chat_content)
+    chat = FakeChatModel(chat_content, completion_tokens)
+    token_metrics = FakeTokenMetrics()
     service = RagQueryService(
         embedding_service=embedding,
         chunk_repository=chunks,
         source_builder=source_builder,
         chat_model=chat,
+        token_metrics=token_metrics,
         settings=FakeSettings(rag_min_score=min_score, rag_return_top_n=return_top_n),
     )
     return service, embedding, chunks, source_builder, chat
+
+
+@pytest.mark.asyncio
+async def test_query_records_generation_tokens_from_model_usage() -> None:
+    service, _, _, _, _ = _service(hits=[_hit()], completion_tokens=88)
+
+    await service.query(question="代码提交规范？", kb_ids=[2], user=_user())
+
+    assert service.token_metrics.generation_tokens == [88]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -33,9 +34,24 @@ class FakeRagQueryService:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def query(self, *, question: str, kb_ids: list[int], user: CurrentUser) -> RagQueryResponse:
+    async def query(
+        self, *, question: str, kb_ids: list[int], user: CurrentUser
+    ) -> RagQueryResponse:
         self.calls.append({"question": question, "kb_ids": kb_ids, "user_id": user.user_id})
-        return RagQueryResponse(answer="需要通过本地测试。[参考1]", sources=[], hit_count=1, latency_ms=12)
+        return RagQueryResponse(
+            answer="需要通过本地测试。[参考1]", sources=[], hit_count=1, latency_ms=12
+        )
+
+
+class FakeTokenMetrics:
+    async def record_embedding_tokens(self, *, tokens: int, source: str = "provider") -> None:
+        return None
+
+    async def record_generation_tokens(self, *, tokens: int, source: str = "provider") -> None:
+        return None
+
+    async def record_context_tokens(self, *, tokens: int, pipeline: str = "v4") -> None:
+        return None
 
 
 @dataclass
@@ -103,28 +119,45 @@ def test_query_endpoint_stops_before_service_when_permission_denied() -> None:
     assert rag_service.calls == []
 
 
-def test_dependency_builder_can_select_basic_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dependency_builder_can_select_basic_query_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.api.routes import rag
 
     monkeypatch.setattr(rag, "get_embeddings", lambda: object())
     monkeypatch.setattr(rag, "get_redis", lambda: object())
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
 
-    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v1"))
+    token_metrics = FakeTokenMetrics()
+    service = rag.get_rag_query_service(
+        session=object(),
+        settings=FakeSettings(rag_query_pipeline="v1"),
+        token_metrics=token_metrics,
+    )
 
     assert isinstance(service, RagQueryService)
+    assert service.token_metrics is token_metrics
+    assert service.embedding_service.token_metrics is token_metrics
 
 
-def test_dependency_builder_can_select_hybrid_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dependency_builder_can_select_hybrid_query_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.api.routes import rag
 
     monkeypatch.setattr(rag, "get_embeddings", lambda: object())
     monkeypatch.setattr(rag, "get_redis", lambda: object())
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
 
-    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v2"))
+    token_metrics = FakeTokenMetrics()
+    service = rag.get_rag_query_service(
+        session=object(),
+        settings=FakeSettings(rag_query_pipeline="v2"),
+        token_metrics=token_metrics,
+    )
 
     assert isinstance(service, RagQueryServiceV2)
+    assert service.token_metrics is token_metrics
 
 
 def test_dependency_builder_can_select_hyde_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -134,21 +167,37 @@ def test_dependency_builder_can_select_hyde_query_pipeline(monkeypatch: pytest.M
     monkeypatch.setattr(rag, "get_redis", lambda: object())
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
 
-    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v3"))
+    token_metrics = FakeTokenMetrics()
+    service = rag.get_rag_query_service(
+        session=object(),
+        settings=FakeSettings(rag_query_pipeline="v3"),
+        token_metrics=token_metrics,
+    )
 
     assert isinstance(service, RagQueryServiceV3)
+    assert service.token_metrics is token_metrics
 
 
-def test_dependency_builder_can_select_reranker_query_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dependency_builder_can_select_reranker_query_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.api.routes import rag
 
     monkeypatch.setattr(rag, "get_embeddings", lambda: object())
     monkeypatch.setattr(rag, "get_redis", lambda: object())
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
 
-    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v4"))
+    token_metrics = FakeTokenMetrics()
+    service = rag.get_rag_query_service(
+        session=object(),
+        settings=FakeSettings(rag_query_pipeline="v4"),
+        token_metrics=token_metrics,
+    )
 
     assert isinstance(service, RagQueryServiceV4)
+    assert service.token_metrics is token_metrics
+    assert service.context_trimmer.token_metrics is token_metrics
+    assert service.context_trimmer.max_context_tokens == 3000
 
 
 def test_dependency_builder_does_not_construct_reranker_for_hyde_pipeline(
@@ -164,6 +213,21 @@ def test_dependency_builder_does_not_construct_reranker_for_hyde_pipeline(
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
     monkeypatch.setattr(rag, "DashScopeRerankerClient", fail_if_constructed)
 
-    service = rag.get_rag_query_service(session=object(), settings=FakeSettings(rag_query_pipeline="v3"))
+    service = rag.get_rag_query_service(
+        session=object(),
+        settings=FakeSettings(rag_query_pipeline="v3"),
+        token_metrics=FakeTokenMetrics(),
+    )
 
     assert isinstance(service, RagQueryServiceV3)
+
+
+def test_get_token_metrics_reads_application_state() -> None:
+    from app.api.routes import rag
+
+    token_metrics = FakeTokenMetrics()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(token_metrics=token_metrics))
+    )
+
+    assert rag.get_token_metrics(request) is token_metrics

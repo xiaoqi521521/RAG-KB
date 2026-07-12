@@ -74,7 +74,7 @@ class FakeContextTrimmer:
         self.hits = hits
         self.calls: list[list[ChunkSearchHit]] = []
 
-    def trim(self, hits: list[ChunkSearchHit]) -> list[ChunkSearchHit]:
+    async def trim(self, hits: list[ChunkSearchHit]) -> list[ChunkSearchHit]:
         self.calls.append(hits)
         return self.hits
 
@@ -112,13 +112,31 @@ class FakeSourceBuilder:
 
 
 class FakeChatModel:
-    def __init__(self, content: object = "需要先运行测试。[参考1]") -> None:
+    def __init__(
+        self,
+        content: object = "需要先运行测试。[参考1]",
+        completion_tokens: int | None = None,
+    ) -> None:
         self.content = content
+        self.completion_tokens = completion_tokens
         self.messages: list[object] | None = None
 
     async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
         self.messages = messages
-        return SimpleNamespace(content=self.content)
+        usage_metadata = (
+            {"output_tokens": self.completion_tokens}
+            if self.completion_tokens is not None
+            else None
+        )
+        return SimpleNamespace(content=self.content, usage_metadata=usage_metadata)
+
+
+class FakeTokenMetrics:
+    def __init__(self) -> None:
+        self.generation_tokens: list[int] = []
+
+    async def record_generation_tokens(self, *, tokens: int, source: str = "provider") -> None:
+        self.generation_tokens.append(tokens)
 
 
 @dataclass
@@ -146,6 +164,8 @@ def _service(
     trimmed_hits: list[ChunkSearchHit] | None = None,
     source_context: str = "[参考1]\nchunk 12 content",
     chat_content: object = "需要先运行测试。[参考1]",
+    completion_tokens: int | None = None,
+    return_top_n: int = 5,
 ) -> tuple[
     RagQueryServiceV4,
     FakeRetriever,
@@ -157,10 +177,15 @@ def _service(
 ]:
     retriever = FakeRetriever(retrieve_hits)
     reranker = FakeReranker(rerank_result)
-    confidence_filter = FakeConfidenceFilter(filtered_hits if filtered_hits is not None else rerank_result.hits)
-    context_trimmer = FakeContextTrimmer(trimmed_hits if trimmed_hits is not None else confidence_filter.hits)
+    confidence_filter = FakeConfidenceFilter(
+        filtered_hits if filtered_hits is not None else rerank_result.hits
+    )
+    context_trimmer = FakeContextTrimmer(
+        trimmed_hits if trimmed_hits is not None else confidence_filter.hits
+    )
     source_builder = FakeSourceBuilder(context=source_context)
-    chat = FakeChatModel(chat_content)
+    chat = FakeChatModel(chat_content, completion_tokens)
+    token_metrics = FakeTokenMetrics()
     service = RagQueryServiceV4(
         retriever=retriever,
         reranker=reranker,
@@ -168,9 +193,23 @@ def _service(
         context_trimmer=context_trimmer,
         source_builder=source_builder,
         chat_model=chat,
-        settings=FakeSettings(),
+        token_metrics=token_metrics,
+        settings=FakeSettings(rag_return_top_n=return_top_n),
     )
     return service, retriever, reranker, confidence_filter, context_trimmer, source_builder, chat
+
+
+@pytest.mark.asyncio
+async def test_query_records_generation_tokens_from_model_usage() -> None:
+    service, _, _, _, _, _, _ = _service(
+        retrieve_hits=[_hit(10), _hit(11), _hit(12)],
+        rerank_result=_rerank_result(hits=[_hit(12, 0.91)]),
+        completion_tokens=88,
+    )
+
+    await service.query(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert service.token_metrics.generation_tokens == [88]
 
 
 @pytest.mark.asyncio
@@ -178,10 +217,12 @@ async def test_query_reranks_filters_trims_then_generates_answer() -> None:
     retrieve_hits = [_hit(10), _hit(11), _hit(12)]
     reranked_hits = [_hit(12, 0.91), _hit(10, 0.82)]
     filtered_hits = [_hit(12, 0.91)]
-    service, retriever, reranker, confidence_filter, context_trimmer, source_builder, chat = _service(
-        retrieve_hits=retrieve_hits,
-        rerank_result=_rerank_result(hits=reranked_hits),
-        filtered_hits=filtered_hits,
+    service, retriever, reranker, confidence_filter, context_trimmer, source_builder, chat = (
+        _service(
+            retrieve_hits=retrieve_hits,
+            rerank_result=_rerank_result(hits=reranked_hits),
+            filtered_hits=filtered_hits,
+        )
     )
 
     response = await service.query(question=" commit rule? ", kb_ids=[2], user=_user())
@@ -195,6 +236,23 @@ async def test_query_reranks_filters_trims_then_generates_answer() -> None:
     assert source_builder.calls[0]["hits"] == filtered_hits
     assert chat.messages is not None
     assert chat.messages[1].content == "commit rule?"
+
+
+@pytest.mark.asyncio
+async def test_query_limits_candidates_before_context_token_trimming() -> None:
+    retrieve_hits = [_hit(10), _hit(11), _hit(12)]
+    reranked_hits = [_hit(12, 0.91), _hit(11, 0.86), _hit(10, 0.82)]
+    service, _, _, _, context_trimmer, source_builder, _ = _service(
+        retrieve_hits=retrieve_hits,
+        rerank_result=_rerank_result(hits=reranked_hits),
+        trimmed_hits=reranked_hits[:2],
+        return_top_n=2,
+    )
+
+    await service.query(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert context_trimmer.calls == [reranked_hits[:2]]
+    assert source_builder.calls[0]["hits"] == reranked_hits[:2]
 
 
 @pytest.mark.asyncio
@@ -215,7 +273,9 @@ async def test_query_skips_confidence_filter_when_reranker_degraded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_query_skips_confidence_filter_when_reranker_was_not_called_for_few_candidates() -> None:
+async def test_query_skips_confidence_filter_when_reranker_was_not_called_for_few_candidates() -> (
+    None
+):
     retrieve_hits = [_hit(10, 0.03), _hit(11, 0.02)]
     skipped_result = RerankResult(
         hits=retrieve_hits,
@@ -255,6 +315,23 @@ async def test_query_returns_refusal_without_reranking_when_retriever_has_no_hit
     assert reranker.calls == []
     assert confidence_filter.calls == []
     assert context_trimmer.calls == []
+    assert source_builder.calls == []
+    assert chat.messages is None
+
+
+@pytest.mark.asyncio
+async def test_query_returns_refusal_when_context_trimmer_returns_no_hits() -> None:
+    service, _, _, _, context_trimmer, source_builder, chat = _service(
+        retrieve_hits=[_hit(10), _hit(11), _hit(12)],
+        rerank_result=_rerank_result(hits=[_hit(12, 0.91)]),
+        trimmed_hits=[],
+    )
+
+    response = await service.query(question="unknown?", kb_ids=[2], user=_user())
+
+    assert response.answer == RAG_REFUSAL_ANSWER
+    assert response.sources == []
+    assert context_trimmer.calls == [[_hit(12, 0.91)]]
     assert source_builder.calls == []
     assert chat.messages is None
 
