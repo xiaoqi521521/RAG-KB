@@ -13,6 +13,7 @@ from app.services.enhanced_retriever import EnhancedRetrieveResult
 from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.reranker import RerankResult
 from app.services.rag_query_v4 import RagQueryServiceV4
+from app.services.source_builder import SourceBuilder
 
 
 def _user() -> CurrentUser:
@@ -97,6 +98,7 @@ class FakeSourceBuilder:
             self.context,
             [
                 SourceCitation(
+                    reference_index=reference_index,
                     document_id=hit.doc_id,
                     document_name=hit.document_name,
                     kb_id=hit.kb_id,
@@ -104,11 +106,19 @@ class FakeSourceBuilder:
                     chunk_index=hit.chunk_index,
                     page_number=hit.page_num,
                     section_title=hit.section_title,
+                    excerpt=hit.content[:200],
                     score=hit.score,
                 )
-                for hit in hits[:return_top_n]
+                for reference_index, hit in enumerate(hits[:return_top_n], start=1)
             ],
         )
+
+    def select_cited_sources(
+        self,
+        answer: str,
+        available_sources: list[SourceCitation],
+    ) -> list[SourceCitation]:
+        return available_sources
 
 
 class FakeChatModel:
@@ -363,3 +373,32 @@ async def test_query_raises_503_when_chat_returns_blank_answer() -> None:
         await service.query(question="commit rule?", kb_ids=[2], user=_user())
 
     assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_query_uses_v4_prompt_and_returns_only_answer_citations() -> None:
+    retrieve_hits = [_hit(10), _hit(11), _hit(12)]
+    reranked_hits = [_hit(10, 0.91), _hit(11, 0.86)]
+    retriever = FakeRetriever(retrieve_hits)
+    reranker = FakeReranker(_rerank_result(hits=reranked_hits))
+    confidence_filter = FakeConfidenceFilter(reranked_hits)
+    context_trimmer = FakeContextTrimmer(reranked_hits)
+    chat = FakeChatModel("第二条内容有效（来源：[参考2]）。")
+    service = RagQueryServiceV4(
+        retriever=retriever,
+        reranker=reranker,
+        confidence_filter=confidence_filter,
+        context_trimmer=context_trimmer,
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=chat,
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=2),
+    )
+
+    response = await service.query(question="哪条内容有效？", kb_ids=[2], user=_user())
+
+    assert [source.chunk_id for source in response.sources] == [11]
+    assert response.sources[0].reference_index == 2
+    assert response.hit_count == 1
+    assert chat.messages is not None
+    assert "每条事实后都要标注来源" in chat.messages[0].content

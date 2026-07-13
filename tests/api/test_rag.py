@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
-from app.schemas.rag import RagQueryResponse
+from app.schemas.rag import RagQueryResponse, SourceCitation
 from app.services.rag_query import RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
 from app.services.rag_query_v3 import RagQueryServiceV3
@@ -39,7 +39,23 @@ class FakeRagQueryService:
     ) -> RagQueryResponse:
         self.calls.append({"question": question, "kb_ids": kb_ids, "user_id": user.user_id})
         return RagQueryResponse(
-            answer="需要通过本地测试。[参考1]", sources=[], hit_count=1, latency_ms=12
+            answer="需要通过本地测试。[参考1]",
+            sources=[
+                SourceCitation(
+                    reference_index=1,
+                    document_id=1,
+                    document_name="研发规范.md",
+                    kb_id=2,
+                    chunk_id=10,
+                    chunk_index=3,
+                    page_number=None,
+                    section_title="代码提交",
+                    excerpt="代码提交前必须通过本地测试。",
+                    score=0.91,
+                )
+            ],
+            hit_count=1,
+            latency_ms=12,
         )
 
 
@@ -100,6 +116,8 @@ def test_query_endpoint_checks_unique_kb_read_permissions_before_service_call() 
 
     assert response.status_code == 200
     assert response.json()["data"]["answer"] == "需要通过本地测试。[参考1]"
+    assert response.json()["data"]["sources"][0]["reference_index"] == 1
+    assert response.json()["data"]["sources"][0]["excerpt"] == "代码提交前必须通过本地测试。"
     assert permission_service.read_checks == [2, 3]
     assert rag_service.calls == [{"question": "代码提交规范？", "kb_ids": [2, 3], "user_id": 1}]
 

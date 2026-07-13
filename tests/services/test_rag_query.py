@@ -71,6 +71,7 @@ class FakeSourceBuilder:
             "[参考1]\n内容：代码提交前必须通过本地测试。",
             [
                 SourceCitation(
+                    reference_index=reference_index,
                     document_id=1,
                     document_name="研发规范.md",
                     kb_id=2,
@@ -78,9 +79,10 @@ class FakeSourceBuilder:
                     chunk_index=3,
                     page_number=None,
                     section_title="代码提交",
+                    excerpt=hit.content[:200],
                     score=hit.score,
                 )
-                for hit in selected_hits
+                for reference_index, hit in enumerate(selected_hits, start=1)
             ],
         )
 

@@ -62,6 +62,7 @@ class FakeSourceBuilder:
             "[ref1]\nRun local tests before committing code.",
             [
                 SourceCitation(
+                    reference_index=reference_index,
                     document_id=1,
                     document_name="dev-guide.md",
                     kb_id=2,
@@ -69,9 +70,10 @@ class FakeSourceBuilder:
                     chunk_index=3,
                     page_number=None,
                     section_title="Commit",
+                    excerpt=hit.content[:200],
                     score=hit.score,
                 )
-                for hit in selected_hits
+                for reference_index, hit in enumerate(selected_hits, start=1)
             ],
         )
 

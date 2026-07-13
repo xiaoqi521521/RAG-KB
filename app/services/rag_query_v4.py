@@ -16,7 +16,8 @@ from app.services.confidence_filter import ConfidenceFilter
 from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingError
 from app.services.enhanced_retriever import EnhancedRetrieveResult, EnhancedRetriever
-from app.services.rag_query import RAG_REFUSAL_ANSWER, SYSTEM_PROMPT_TEMPLATE
+from app.services.rag_prompt import build_v4_system_prompt
+from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.reranker import RerankerService
 from app.services.source_builder import SourceBuilder
 from app.services.token_metrics import TokenMetrics, record_generation_usage
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class RagQueryServiceV4:
-    """HyDE 增强 + Reranker 精排 RAG 查询服务。"""
+    """编排 HyDE、Reranker、Token 裁剪和精确引用的 V4 查询服务。"""
 
     def __init__(
         self,
@@ -89,7 +90,16 @@ class RagQueryServiceV4:
             )
             return self._refusal_response(started_at)
 
-        answer = await self._generate_answer(normalized_question, context, user, kb_ids)
+        answer = await self._generate_answer(
+            normalized_question,
+            context,
+            len(sources),
+            user,
+            kb_ids,
+        )
+        cited_sources = self.source_builder.select_cited_sources(answer, sources)
+        if cited_sources:
+            sources = cited_sources
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
             "RAG v4 query completed: user_id=%s kb_ids=%s hit_count=%s latency_ms=%s",
@@ -193,12 +203,16 @@ class RagQueryServiceV4:
         self,
         question: str,
         context: str,
+        reference_count: int,
         user: CurrentUser,
         kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(context=context)
+        system_prompt = build_v4_system_prompt(
+            context,
+            reference_count=reference_count,
+        )
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=question),

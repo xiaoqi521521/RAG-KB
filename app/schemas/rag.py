@@ -47,6 +47,7 @@ class SourceCitation(BaseModel):
     """回答引用来源，供前端展示和后续溯源。
 
     Args:
+        reference_index: 回答中 `[参考N]` 对应的 1-based 编号。
         document_id: 来源文档 ID。
         document_name: 来源文档名称。
         kb_id: 来源知识库 ID。
@@ -54,9 +55,11 @@ class SourceCitation(BaseModel):
         chunk_index: chunk 在文档中的序号。
         page_number: 来源页码；非分页文档为 None。
         section_title: 来源章节标题；无法识别章节时为 None。
+        excerpt: 实际进入 Prompt 的来源内容摘要。
         score: 最终排序分；v4 精排成功时为 Reranker 分数，精排降级时为 RRF 分数。
     """
 
+    reference_index: int
     document_id: int
     document_name: str
     kb_id: int
@@ -64,6 +67,7 @@ class SourceCitation(BaseModel):
     chunk_index: int
     page_number: int | None
     section_title: str | None
+    excerpt: str
     score: float
 
 

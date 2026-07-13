@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.repositories.chunks import ChunkSearchHit
 from app.schemas.rag import SourceCitation
+from app.services.citation_parser import CitationParser
 
 
 class SourceBuilder:
@@ -14,6 +15,7 @@ class SourceBuilder:
             max_context_chars: 允许进入 Prompt 的最大近似字符数。
         """
         self.max_context_chars = max(0, max_context_chars)
+        self.citation_parser = CitationParser()
 
     def build(
         self,
@@ -44,22 +46,47 @@ class SourceBuilder:
             if remaining <= 0:
                 break
 
-            block = f"{prefix}{hit.content}{suffix}"
+            included_content = hit.content
+            block = f"{prefix}{included_content}{suffix}"
             if len(block) > remaining:
                 content_budget = remaining - len(prefix) - len(suffix)
                 if content_budget <= 0:
                     break
                 # 基础阶段只做近似字符预算；精确 token 裁剪留给后续上下文裁剪阶段。
-                block = f"{prefix}{hit.content[:content_budget]}{suffix}"
+                included_content = hit.content[:content_budget]
+                block = f"{prefix}{included_content}{suffix}"
 
             context_parts.append(block)
-            sources.append(self._to_source(hit))
+            sources.append(self._to_source(reference_index, hit, included_content))
             used_chars += len(block)
 
             if used_chars >= self.max_context_chars:
                 break
 
         return "\n".join(context_parts).strip(), sources
+
+    def select_cited_sources(
+        self,
+        answer: str,
+        available_sources: list[SourceCitation],
+    ) -> list[SourceCitation]:
+        """返回回答中有效引用对应的来源，并保持引用首次出现顺序。
+
+        Args:
+            answer: 模型生成且保留引用标记的回答。
+            available_sources: 本次实际进入 Prompt 的全部来源。
+
+        Returns:
+            能够映射到本次参考内容的引用来源。
+        """
+        source_by_index = {
+            source.reference_index: source for source in available_sources
+        }
+        return [
+            source_by_index[index]
+            for index in self.citation_parser.extract_indices(answer)
+            if index in source_by_index
+        ]
 
     def _format_prefix(self, reference_index: int, hit: ChunkSearchHit) -> str:
         """格式化单个参考片段的元数据前缀，返回可拼接 chunk 内容的文本。"""
@@ -75,9 +102,15 @@ class SourceBuilder:
             "内容：\n"
         )
 
-    def _to_source(self, hit: ChunkSearchHit) -> SourceCitation:
+    def _to_source(
+        self,
+        reference_index: int,
+        hit: ChunkSearchHit,
+        included_content: str,
+    ) -> SourceCitation:
         """将 chunk 命中转换为 API 响应中的引用来源 DTO。"""
         return SourceCitation(
+            reference_index=reference_index,
             document_id=hit.doc_id,
             document_name=hit.document_name,
             kb_id=hit.kb_id,
@@ -85,5 +118,6 @@ class SourceBuilder:
             chunk_index=hit.chunk_index,
             page_number=hit.page_num,
             section_title=hit.section_title,
+            excerpt=included_content[:200],
             score=hit.score,
         )

@@ -40,8 +40,11 @@ def test_build_context_and_sources_with_reference_numbers() -> None:
     assert "页码：不适用" in context
     assert sources[0].chunk_id == 10
     assert sources[0].document_id == 1
+    assert sources[0].reference_index == 1
+    assert sources[0].excerpt == "代码提交前必须通过本地测试。"
     assert sources[0].page_number is None
     assert sources[1].chunk_id == 11
+    assert sources[1].reference_index == 2
 
 
 def test_build_limits_sources_to_return_top_n() -> None:
@@ -67,3 +70,29 @@ def test_build_truncates_context_by_character_budget() -> None:
 
     assert len(context) <= 120
     assert sources[0].chunk_id == 10
+    assert sources[0].excerpt in context
+    assert len(sources[0].excerpt) < len("很长的制度内容" * 30)
+
+
+def test_select_cited_sources_returns_valid_sources_in_answer_order() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+    _, available_sources = builder.build(
+        [_hit(chunk_id=10), _hit(chunk_id=11), _hit(chunk_id=12)],
+        return_top_n=3,
+    )
+
+    selected = builder.select_cited_sources(
+        "先执行检查（来源：[参考2][参考1]）。",
+        available_sources,
+    )
+
+    assert [source.reference_index for source in selected] == [2, 1]
+    assert [source.chunk_id for source in selected] == [11, 10]
+
+
+def test_build_limits_source_excerpt_to_200_characters() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+
+    _, sources = builder.build([_hit(content="制" * 250)], return_top_n=1)
+
+    assert sources[0].excerpt == "制" * 200
