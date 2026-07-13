@@ -76,8 +76,8 @@ class RagQueryResponse(BaseModel):
 
     Args:
         answer: 生成答案或固定拒答文案。
-        sources: 实际进入 Prompt 的引用来源列表。
-        hit_count: 实际进入 Prompt 的引用 chunk 数量，与 sources 数量一致。
+        sources: 最终返回给调用方的引用来源列表。
+        hit_count: 最终引用来源数量，与 sources 数量一致。
         latency_ms: 本次查询总耗时，单位毫秒。
     """
 
