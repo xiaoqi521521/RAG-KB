@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.repositories.chunks import ChunkSearchHit
-from app.services.source_builder import SourceBuilder
+from app.services.source_builder import CitationSelectionStatus, SourceBuilder
 
 
 def _hit(
@@ -74,20 +74,86 @@ def test_build_truncates_context_by_character_budget() -> None:
     assert len(sources[0].excerpt) < len("很长的制度内容" * 30)
 
 
-def test_select_cited_sources_returns_valid_sources_in_answer_order() -> None:
+def test_resolve_citations_returns_valid_sources_in_answer_order() -> None:
     builder = SourceBuilder(max_context_chars=1000)
     _, available_sources = builder.build(
         [_hit(chunk_id=10), _hit(chunk_id=11), _hit(chunk_id=12)],
         return_top_n=3,
     )
 
-    selected = builder.select_cited_sources(
+    result = builder.resolve_citations(
         "先执行检查（来源：[参考2][参考1]）。",
         available_sources,
     )
 
-    assert [source.reference_index for source in selected] == [2, 1]
-    assert [source.chunk_id for source in selected] == [11, 10]
+    assert result.status is CitationSelectionStatus.EXACT
+    assert [source.reference_index for source in result.sources] == [2, 1]
+    assert [source.chunk_id for source in result.sources] == [11, 10]
+
+
+def test_resolve_citations_returns_all_sources_when_answer_has_no_markers() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+    _, available_sources = builder.build(
+        [_hit(chunk_id=10), _hit(chunk_id=11)],
+        return_top_n=2,
+    )
+
+    result = builder.resolve_citations("需要先完成审批流程。", available_sources)
+
+    assert result.status is CitationSelectionStatus.FALLBACK_ALL
+    assert result.sources == available_sources
+    assert result.referenced_count == 0
+    assert result.valid_count == 0
+    assert result.invalid_count == 0
+
+
+def test_resolve_citations_ignores_invalid_indices_when_valid_sources_exist() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+    _, available_sources = builder.build(
+        [_hit(chunk_id=10), _hit(chunk_id=11)],
+        return_top_n=2,
+    )
+
+    result = builder.resolve_citations(
+        "第二条有效（来源：[参考2][参考999]）。",
+        available_sources,
+    )
+
+    assert result.status is CitationSelectionStatus.EXACT
+    assert [source.reference_index for source in result.sources] == [2]
+    assert result.referenced_count == 2
+    assert result.valid_count == 1
+    assert result.invalid_count == 1
+
+
+def test_resolve_citations_returns_empty_when_all_indices_are_invalid() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+    _, available_sources = builder.build([_hit(chunk_id=10)], return_top_n=1)
+
+    result = builder.resolve_citations("不存在的来源[参考0][参考999]。", available_sources)
+
+    assert result.status is CitationSelectionStatus.INVALID
+    assert result.sources == []
+    assert result.referenced_count == 2
+    assert result.valid_count == 0
+    assert result.invalid_count == 2
+
+
+def test_resolve_citations_treats_oversized_reference_number_as_invalid() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+    _, available_sources = builder.build([_hit(chunk_id=10)], return_top_n=1)
+    oversized_index = "9" * 5000
+
+    result = builder.resolve_citations(
+        f"引用编号异常[参考{oversized_index}]。",
+        available_sources,
+    )
+
+    assert result.status is CitationSelectionStatus.INVALID
+    assert result.sources == []
+    assert result.referenced_count == 1
+    assert result.valid_count == 0
+    assert result.invalid_count == 1
 
 
 def test_build_limits_source_excerpt_to_200_characters() -> None:

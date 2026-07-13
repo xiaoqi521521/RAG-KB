@@ -13,7 +13,11 @@ from app.services.enhanced_retriever import EnhancedRetrieveResult
 from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.reranker import RerankResult
 from app.services.rag_query_v4 import RagQueryServiceV4
-from app.services.source_builder import SourceBuilder
+from app.services.source_builder import (
+    CitationSelectionResult,
+    CitationSelectionStatus,
+    SourceBuilder,
+)
 
 
 def _user() -> CurrentUser:
@@ -113,12 +117,18 @@ class FakeSourceBuilder:
             ],
         )
 
-    def select_cited_sources(
+    def resolve_citations(
         self,
         answer: str,
         available_sources: list[SourceCitation],
-    ) -> list[SourceCitation]:
-        return available_sources
+    ) -> CitationSelectionResult:
+        return CitationSelectionResult(
+            status=CitationSelectionStatus.FALLBACK_ALL,
+            sources=available_sources,
+            referenced_count=0,
+            valid_count=0,
+            invalid_count=0,
+        )
 
 
 class FakeChatModel:
@@ -130,8 +140,10 @@ class FakeChatModel:
         self.content = content
         self.completion_tokens = completion_tokens
         self.messages: list[object] | None = None
+        self.call_count = 0
 
     async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
+        self.call_count += 1
         self.messages = messages
         usage_metadata = (
             {"output_tokens": self.completion_tokens}
@@ -402,3 +414,91 @@ async def test_query_uses_v4_prompt_and_returns_only_answer_citations() -> None:
     assert response.hit_count == 1
     assert chat.messages is not None
     assert "每条事实后都要标注来源" in chat.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_query_returns_empty_sources_when_all_answer_citations_are_invalid(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hits = [_hit(10, 0.91), _hit(11, 0.86)]
+    chat = FakeChatModel("原回答保持可用（来源：[参考99]）。")
+    service = RagQueryServiceV4(
+        retriever=FakeRetriever(hits),
+        reranker=FakeReranker(_rerank_result(hits=hits)),
+        confidence_filter=FakeConfidenceFilter(hits),
+        context_trimmer=FakeContextTrimmer(hits),
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=chat,
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=2),
+    )
+
+    with caplog.at_level("INFO", logger="app.services.rag_query_v4"):
+        response = await service.query(question="哪条内容有效？", kb_ids=[2], user=_user())
+
+    assert response.answer == "原回答保持可用（来源：[参考99]）。"
+    assert response.sources == []
+    assert response.hit_count == 0
+    assert "citation_status=invalid" in caplog.text
+    assert "valid_count=0" in caplog.text
+    assert "invalid_count=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_query_normalizes_explicit_model_refusal_to_fixed_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hits = [_hit(10, 0.91)]
+    service = RagQueryServiceV4(
+        retriever=FakeRetriever(hits),
+        reranker=FakeReranker(_rerank_result(hits=hits)),
+        confidence_filter=FakeConfidenceFilter(hits),
+        context_trimmer=FakeContextTrimmer(hits),
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=FakeChatModel("抱歉，在知识库中未找到相关内容。"),
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=1),
+    )
+
+    with caplog.at_level("INFO", logger="app.services.rag_query_v4"):
+        response = await service.query(question="未知制度？", kb_ids=[2], user=_user())
+
+    assert response.answer == RAG_REFUSAL_ANSWER
+    assert response.sources == []
+    assert response.hit_count == 0
+    assert "citation_status=refusal" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected_reference_indices"),
+    [
+        ("需要先完成审批流程。", [1, 2]),
+        ("审批流程见制度（来源：[参考1]），但办理时限未找到相关内容。", [1]),
+    ],
+)
+async def test_query_preserves_normal_answers_with_fallback_or_partial_missing_information(
+    answer: str,
+    expected_reference_indices: list[int],
+) -> None:
+    hits = [_hit(10, 0.91), _hit(11, 0.86)]
+    retriever = FakeRetriever(hits)
+    chat = FakeChatModel(answer)
+    service = RagQueryServiceV4(
+        retriever=retriever,
+        reranker=FakeReranker(_rerank_result(hits=hits)),
+        confidence_filter=FakeConfidenceFilter(hits),
+        context_trimmer=FakeContextTrimmer(hits),
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=chat,
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=2),
+    )
+
+    response = await service.query(question="审批规则？", kb_ids=[2], user=_user())
+
+    assert response.answer == answer
+    assert [source.reference_index for source in response.sources] == expected_reference_indices
+    assert response.hit_count == len(expected_reference_indices)
+    assert len(retriever.calls) == 1
+    assert chat.call_count == 1

@@ -8,6 +8,18 @@ class CitationParser:
 
     _citation_pattern = re.compile(r"\[\s*参考\s*(\d+)\s*\]")
 
+    def extract_reference_numbers(self, answer: str) -> list[str]:
+        """提取规范化后的数字文本，避免超长编号触发整数转换异常。"""
+        numbers: list[str] = []
+        seen: set[str] = set()
+        for match in self._citation_pattern.finditer(answer):
+            number = match.group(1).lstrip("0") or "0"
+            if number in seen:
+                continue
+            seen.add(number)
+            numbers.append(number)
+        return numbers
+
     def extract_indices(self, answer: str) -> list[int]:
         """提取 1-based 参考编号，按首次出现顺序去重。
 
@@ -18,11 +30,10 @@ class CitationParser:
             回答中出现的参考编号列表。
         """
         indices: list[int] = []
-        seen: set[int] = set()
-        for match in self._citation_pattern.finditer(answer):
-            index = int(match.group(1))
-            if index in seen:
+        for number in self.extract_reference_numbers(answer):
+            try:
+                indices.append(int(number))
+            except ValueError:
+                # 超长数字仍是引用标记，但无法安全转换为 Python int。
                 continue
-            seen.add(index)
-            indices.append(index)
         return indices

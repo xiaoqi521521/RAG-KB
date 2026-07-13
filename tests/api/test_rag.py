@@ -11,7 +11,7 @@ from app.core.context import CurrentUser
 from app.repositories.chunks import ChunkSearchHit
 from app.schemas.rag import RagQueryResponse, SourceCitation
 from app.services.enhanced_retriever import EnhancedRetrieveResult
-from app.services.rag_query import RagQueryService
+from app.services.rag_query import RAG_REFUSAL_ANSWER, RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
 from app.services.rag_query_v3 import RagQueryServiceV3
 from app.services.rag_query_v4 import RagQueryServiceV4
@@ -255,7 +255,21 @@ def test_get_token_metrics_reads_application_state() -> None:
     assert rag.get_token_metrics(request) is token_metrics
 
 
-def test_query_endpoint_returns_sources_selected_from_v4_answer_citations() -> None:
+@pytest.mark.parametrize(
+    ("model_answer", "expected_answer", "expected_chunk_ids"),
+    [
+        ("第二条内容有效（来源：[参考2]）。", "第二条内容有效（来源：[参考2]）。", [11]),
+        ("两条内容都需要参考。", "两条内容都需要参考。", [10, 11]),
+        ("第二条有效（来源：[参考2][参考99]）。", "第二条有效（来源：[参考2][参考99]）。", [11]),
+        ("引用编号错误（来源：[参考99]）。", "引用编号错误（来源：[参考99]）。", []),
+        ("在知识库中未找到相关内容。", RAG_REFUSAL_ANSWER, []),
+    ],
+)
+def test_query_endpoint_returns_v4_citation_and_refusal_outcomes(
+    model_answer: str,
+    expected_answer: str,
+    expected_chunk_ids: list[int],
+) -> None:
     hits = [
         ChunkSearchHit(
             chunk_id=10,
@@ -319,7 +333,7 @@ def test_query_endpoint_returns_sources_selected_from_v4_answer_citations() -> N
     class ChatModel:
         async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
             return SimpleNamespace(
-                content="第二条内容有效（来源：[参考2]）。",
+                content=model_answer,
                 usage_metadata=None,
             )
 
@@ -341,6 +355,8 @@ def test_query_endpoint_returns_sources_selected_from_v4_answer_citations() -> N
         )
 
     assert response.status_code == 200
-    assert response.json()["data"]["hit_count"] == 1
-    assert response.json()["data"]["sources"][0]["chunk_id"] == 11
-    assert response.json()["data"]["sources"][0]["reference_index"] == 2
+    assert response.json()["data"]["answer"] == expected_answer
+    assert response.json()["data"]["hit_count"] == len(expected_chunk_ids)
+    assert [source["chunk_id"] for source in response.json()["data"]["sources"]] == (
+        expected_chunk_ids
+    )

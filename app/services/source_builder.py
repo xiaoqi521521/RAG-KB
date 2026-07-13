@@ -1,8 +1,34 @@
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
+from enum import StrEnum
+
 from app.repositories.chunks import ChunkSearchHit
 from app.schemas.rag import SourceCitation
 from app.services.citation_parser import CitationParser
+
+logger = logging.getLogger(__name__)
+
+
+class CitationSelectionStatus(StrEnum):
+    """引用来源选择状态，用于区分精确引用和可用性兜底。"""
+
+    EXACT = "exact"
+    FALLBACK_ALL = "fallback_all"
+    INVALID = "invalid"
+    REFUSAL = "refusal"
+
+
+@dataclass(frozen=True)
+class CitationSelectionResult:
+    """回答引用解析后的来源选择结果和数量统计。"""
+
+    status: CitationSelectionStatus
+    sources: list[SourceCitation]
+    referenced_count: int
+    valid_count: int
+    invalid_count: int
 
 
 class SourceBuilder:
@@ -65,28 +91,60 @@ class SourceBuilder:
 
         return "\n".join(context_parts).strip(), sources
 
-    def select_cited_sources(
+    def resolve_citations(
         self,
         answer: str,
         available_sources: list[SourceCitation],
-    ) -> list[SourceCitation]:
-        """返回回答中有效引用对应的来源，并保持引用首次出现顺序。
+    ) -> CitationSelectionResult:
+        """解析回答引用并选择来源；完全未标注时返回全部实际参考内容。
 
         Args:
             answer: 模型生成且保留引用标记的回答。
             available_sources: 本次实际进入 Prompt 的全部来源。
 
         Returns:
-            能够映射到本次参考内容的引用来源。
+            引用选择状态、最终来源和有效性计数。
         """
+        try:
+            referenced_numbers = self.citation_parser.extract_reference_numbers(answer)
+        except Exception as exc:  # noqa: BLE001
+            # 引用后处理不能成为主查询故障点；异常时保留全部已授权参考内容。
+            logger.warning("Citation parsing failed: error_type=%s", type(exc).__name__)
+            return CitationSelectionResult(
+                status=CitationSelectionStatus.FALLBACK_ALL,
+                sources=available_sources,
+                referenced_count=0,
+                valid_count=0,
+                invalid_count=0,
+            )
+        if not referenced_numbers:
+            return CitationSelectionResult(
+                status=CitationSelectionStatus.FALLBACK_ALL,
+                sources=available_sources,
+                referenced_count=0,
+                valid_count=0,
+                invalid_count=0,
+            )
+
         source_by_index = {
-            source.reference_index: source for source in available_sources
+            str(source.reference_index): source for source in available_sources
         }
-        return [
-            source_by_index[index]
-            for index in self.citation_parser.extract_indices(answer)
-            if index in source_by_index
+        sources = [
+            source_by_index[number]
+            for number in referenced_numbers
+            if number in source_by_index
         ]
+        return CitationSelectionResult(
+            status=(
+                CitationSelectionStatus.EXACT
+                if sources
+                else CitationSelectionStatus.INVALID
+            ),
+            sources=sources,
+            referenced_count=len(referenced_numbers),
+            valid_count=len(sources),
+            invalid_count=len(referenced_numbers) - len(sources),
+        )
 
     def _format_prefix(self, reference_index: int, hit: ChunkSearchHit) -> str:
         """格式化单个参考片段的元数据前缀，返回可拼接 chunk 内容的文本。"""

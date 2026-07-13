@@ -17,9 +17,9 @@ from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingError
 from app.services.enhanced_retriever import EnhancedRetrieveResult, EnhancedRetriever
 from app.services.rag_prompt import build_v4_system_prompt
-from app.services.rag_query import RAG_REFUSAL_ANSWER
+from app.services.rag_query import RAG_REFUSAL_ANSWER, RAG_REFUSAL_MARKER
 from app.services.reranker import RerankerService
-from app.services.source_builder import SourceBuilder
+from app.services.source_builder import CitationSelectionStatus, SourceBuilder
 from app.services.token_metrics import TokenMetrics, record_generation_usage
 
 logger = logging.getLogger(__name__)
@@ -97,9 +97,32 @@ class RagQueryServiceV4:
             user,
             kb_ids,
         )
-        cited_sources = self.source_builder.select_cited_sources(answer, sources)
-        if cited_sources:
-            sources = cited_sources
+        if self._is_explicit_refusal(answer):
+            logger.info(
+                (
+                    "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
+                    "referenced_count=0 valid_count=0 invalid_count=0"
+                ),
+                user.user_id,
+                kb_ids,
+                CitationSelectionStatus.REFUSAL,
+            )
+            return self._refusal_response(started_at)
+
+        citation_result = self.source_builder.resolve_citations(answer, sources)
+        sources = citation_result.sources
+        logger.info(
+            (
+                "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
+                "referenced_count=%s valid_count=%s invalid_count=%s"
+            ),
+            user.user_id,
+            kb_ids,
+            citation_result.status,
+            citation_result.referenced_count,
+            citation_result.valid_count,
+            citation_result.invalid_count,
+        )
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
             "RAG v4 query completed: user_id=%s kb_ids=%s hit_count=%s latency_ms=%s",
@@ -252,6 +275,18 @@ class RagQueryServiceV4:
             "RAG v4 generation completed: elapsed_ms=%s", self._elapsed_ms(generation_started_at)
         )
         return content.strip()
+
+    def _is_explicit_refusal(self, answer: str) -> bool:
+        """仅识别完整拒答，避免把局部信息缺失误判为整体拒答。"""
+        normalized = answer.strip().rstrip("。.!！?？")
+        for prefix in ("很抱歉", "抱歉"):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix) :].lstrip("，,。.!！?？ ")
+                break
+        return normalized in {
+            RAG_REFUSAL_MARKER,
+            RAG_REFUSAL_ANSWER.rstrip("。.!！?？"),
+        }
 
     def _refusal_response(self, started_at: float) -> RagQueryResponse:
         """构建固定拒答响应，返回空引用并记录真实耗时。"""
