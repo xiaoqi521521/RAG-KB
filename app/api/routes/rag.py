@@ -19,6 +19,8 @@ from app.services.confidence_filter import ConfidenceFilter
 from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingConfig, EmbeddingService
 from app.services.enhanced_retriever import EnhancedRetriever
+from app.services.faithfulness_evaluator import FaithfulnessEvaluator
+from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.hybrid_retriever import HybridRetriever
 from app.services.permissions import PermissionService
 from app.services.query_rewriter import QueryRewriter
@@ -51,10 +53,16 @@ def get_token_metrics(request: Request) -> TokenMetrics:
     return request.app.state.token_metrics
 
 
+def get_faithfulness_metrics(request: Request) -> FaithfulnessMetrics:
+    """从应用状态获取单例忠实性评估指标记录器。"""
+    return request.app.state.faithfulness_metrics
+
+
 def get_rag_query_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
+    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
 ) -> RagQueryPipeline:
     """根据配置构建 RAG 查询服务及其依赖。
 
@@ -149,6 +157,13 @@ def get_rag_query_service(
             chat_model=chat_model,
             token_metrics=token_metrics,
             settings=settings,
+            faithfulness_evaluator=FaithfulnessEvaluator(
+                chat_model=chat_model,
+                token_metrics=token_metrics,
+                sampling_rate=settings.rag_faithfulness_sample_rate,
+                timeout_seconds=settings.rag_faithfulness_timeout_seconds,
+                metrics=faithfulness_metrics,
+            ),
         )
 
     raise ValueError("rag_query_pipeline must be 'v1', 'v2', 'v3' or 'v4'")

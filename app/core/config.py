@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     rag_rrf_k: int = 60
     rag_query_pipeline: str = "v2"
     rag_context_max_tokens: int = 3000
+    rag_faithfulness_sample_rate: float = Field(default=0.2, ge=0, le=1)
+    rag_faithfulness_timeout_seconds: float = Field(default=5.0, gt=0)
 
     max_upload_file_size_mb: int = 50
     max_upload_request_size_mb: int = 100

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -16,6 +17,7 @@ from app.services.confidence_filter import ConfidenceFilter
 from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingError
 from app.services.enhanced_retriever import EnhancedRetrieveResult, EnhancedRetriever
+from app.services.faithfulness_evaluator import FaithfulnessEvaluator, FaithfulnessStatus
 from app.services.rag_prompt import build_v4_system_prompt
 from app.services.rag_query import RAG_REFUSAL_ANSWER, RAG_REFUSAL_MARKER
 from app.services.reranker import RerankerService
@@ -39,6 +41,7 @@ class RagQueryServiceV4:
         chat_model: Any,
         token_metrics: TokenMetrics,
         settings: Settings,
+        faithfulness_evaluator: FaithfulnessEvaluator | None = None,
     ) -> None:
         """初始化 v4 查询服务依赖。"""
         self.retriever = retriever
@@ -49,6 +52,7 @@ class RagQueryServiceV4:
         self.chat_model = chat_model
         self.token_metrics = token_metrics
         self.settings = settings
+        self.faithfulness_evaluator = faithfulness_evaluator
 
     async def query(
         self,
@@ -122,6 +126,13 @@ class RagQueryServiceV4:
             citation_result.referenced_count,
             citation_result.valid_count,
             citation_result.invalid_count,
+        )
+        self._schedule_faithfulness_observation(
+            question=normalized_question,
+            answer=answer,
+            context=context,
+            user=user,
+            kb_ids=kb_ids,
         )
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
@@ -275,6 +286,85 @@ class RagQueryServiceV4:
             "RAG v4 generation completed: elapsed_ms=%s", self._elapsed_ms(generation_started_at)
         )
         return content.strip()
+
+    def _schedule_faithfulness_observation(
+        self,
+        *,
+        question: str,
+        answer: str,
+        context: str,
+        user: CurrentUser,
+        kb_ids: list[int],
+    ) -> None:
+        """在后台记录忠实性评估，避免质量观测增加用户响应延迟。"""
+        if self.faithfulness_evaluator is None:
+            return
+
+        task = asyncio.create_task(
+            self._observe_faithfulness(
+                question=question,
+                answer=answer,
+                context=context,
+                user=user,
+                kb_ids=kb_ids,
+            ),
+            name="rag-faithfulness-evaluation",
+        )
+        task.add_done_callback(self._log_faithfulness_task_failure)
+
+    async def _observe_faithfulness(
+        self,
+        *,
+        question: str,
+        answer: str,
+        context: str,
+        user: CurrentUser,
+        kb_ids: list[int],
+    ) -> None:
+        """记录正常回答的忠实性观测，任何异常均不得影响查询响应。"""
+        if self.faithfulness_evaluator is None:
+            return
+
+        try:
+            result = await self.faithfulness_evaluator.evaluate(
+                question=question,
+                answer=answer,
+                context=context,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "RAG v4 faithfulness evaluation failed: user_id=%s kb_ids=%s error_type=%s",
+                user.user_id,
+                kb_ids,
+                type(exc).__name__,
+            )
+            return
+
+        log_level = logging.WARNING if result.status is FaithfulnessStatus.UNFAITHFUL else logging.INFO
+        logger.log(
+            log_level,
+            (
+                "RAG v4 faithfulness evaluated: user_id=%s kb_ids=%s status=%s score=%s "
+                "elapsed_ms=%s sampled=%s"
+            ),
+            user.user_id,
+            kb_ids,
+            result.status.value,
+            result.score,
+            result.elapsed_ms,
+            result.sampled,
+        )
+
+    def _log_faithfulness_task_failure(self, task: asyncio.Task[None]) -> None:
+        """兜底记录后台任务未被内部隔离的异常，避免未检索异常告警。"""
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            logger.warning(
+                "RAG v4 faithfulness task failed: error_type=%s",
+                type(exception).__name__,
+            )
 
     def _is_explicit_refusal(self, answer: str) -> bool:
         """仅识别完整拒答，避免把局部信息缺失误判为整体拒答。"""

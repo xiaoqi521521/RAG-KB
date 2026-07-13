@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.telemetry import init_metrics, shutdown_metrics
+from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.token_metrics import TokenMetrics
 
 
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
     meter = meter_provider.get_meter("rag-kb.token-metrics") if meter_provider is not None else None
     app.state.meter_provider = meter_provider
     app.state.token_metrics = TokenMetrics(redis_client=get_redis(), meter=meter)
+    app.state.faithfulness_metrics = FaithfulnessMetrics(meter=meter)
     try:
         yield
     finally:

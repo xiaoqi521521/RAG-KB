@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from app.core.context import CurrentUser
 from app.repositories.chunks import ChunkSearchHit
 from app.schemas.rag import SourceCitation
 from app.services.enhanced_retriever import EnhancedRetrieveResult
+from app.services.faithfulness_evaluator import FaithfulnessResult, FaithfulnessStatus
 from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.reranker import RerankResult
 from app.services.rag_query_v4 import RagQueryServiceV4
@@ -161,6 +163,16 @@ class FakeTokenMetrics:
         self.generation_tokens.append(tokens)
 
 
+class FakeFaithfulnessEvaluator:
+    def __init__(self, result: FaithfulnessResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, str]] = []
+
+    async def evaluate(self, *, question: str, answer: str, context: str) -> FaithfulnessResult:
+        self.calls.append({"question": question, "answer": answer, "context": context})
+        return self.result
+
+
 @dataclass
 class FakeSettings:
     rag_return_top_n: int = 5
@@ -188,6 +200,7 @@ def _service(
     chat_content: object = "需要先运行测试。[参考1]",
     completion_tokens: int | None = None,
     return_top_n: int = 5,
+    faithfulness_evaluator: FakeFaithfulnessEvaluator | None = None,
 ) -> tuple[
     RagQueryServiceV4,
     FakeRetriever,
@@ -217,6 +230,7 @@ def _service(
         chat_model=chat,
         token_metrics=token_metrics,
         settings=FakeSettings(rag_return_top_n=return_top_n),
+        faithfulness_evaluator=faithfulness_evaluator,
     )
     return service, retriever, reranker, confidence_filter, context_trimmer, source_builder, chat
 
@@ -467,6 +481,98 @@ async def test_query_normalizes_explicit_model_refusal_to_fixed_response(
     assert response.sources == []
     assert response.hit_count == 0
     assert "citation_status=refusal" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_query_observes_unfaithful_answer_without_changing_public_response() -> None:
+    evaluator = FakeFaithfulnessEvaluator(
+        FaithfulnessResult(
+            status=FaithfulnessStatus.UNFAITHFUL,
+            score=0.2,
+            reason="参考内容没有支持该结论",
+            elapsed_ms=4,
+            sampled=True,
+        )
+    )
+    service, _, _, _, _, _, _ = _service(
+        retrieve_hits=[_hit(10)],
+        rerank_result=_rerank_result(hits=[_hit(10, 0.91)]),
+        faithfulness_evaluator=evaluator,
+    )
+
+    response = await service.query(question="commit rule?", kb_ids=[2], user=_user())
+    await asyncio.sleep(0)
+
+    assert response.answer == "需要先运行测试。[参考1]"
+    assert [source.chunk_id for source in response.sources] == [10]
+    assert response.hit_count == 1
+    assert evaluator.calls == [
+        {
+            "question": "commit rule?",
+            "answer": "需要先运行测试。[参考1]",
+            "context": "[参考1]\nchunk 12 content",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_query_returns_before_faithfulness_observation_completes() -> None:
+    class BlockingEvaluator:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def evaluate(self, *, question: str, answer: str, context: str) -> FaithfulnessResult:
+            self.started.set()
+            await self.release.wait()
+            return FaithfulnessResult(
+                status=FaithfulnessStatus.FAITHFUL,
+                score=1.0,
+                reason=None,
+                elapsed_ms=1,
+                sampled=True,
+            )
+
+    evaluator = BlockingEvaluator()
+    service, _, _, _, _, _, _ = _service(
+        retrieve_hits=[_hit(10)],
+        rerank_result=_rerank_result(hits=[_hit(10, 0.91)]),
+        faithfulness_evaluator=evaluator,  # type: ignore[arg-type]
+    )
+
+    response = await asyncio.wait_for(
+        service.query(question="commit rule?", kb_ids=[2], user=_user()),
+        timeout=0.1,
+    )
+    await asyncio.wait_for(evaluator.started.wait(), timeout=0.1)
+    evaluator.release.set()
+    await asyncio.sleep(0)
+
+    assert response.answer == "需要先运行测试。[参考1]"
+
+
+@pytest.mark.asyncio
+async def test_query_does_not_observe_explicit_refusal() -> None:
+    evaluator = FakeFaithfulnessEvaluator(
+        FaithfulnessResult(
+            status=FaithfulnessStatus.FAITHFUL,
+            score=1.0,
+            reason=None,
+            elapsed_ms=4,
+            sampled=True,
+        )
+    )
+    service, _, _, _, _, _, _ = _service(
+        retrieve_hits=[_hit(10)],
+        rerank_result=_rerank_result(hits=[_hit(10, 0.91)]),
+        chat_content="在知识库中未找到相关内容。",
+        faithfulness_evaluator=evaluator,
+    )
+
+    response = await service.query(question="unknown?", kb_ids=[2], user=_user())
+
+    assert response.answer == RAG_REFUSAL_ANSWER
+    assert evaluator.calls == []
 
 
 @pytest.mark.asyncio

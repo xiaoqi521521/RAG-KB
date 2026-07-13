@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 def test_settings_env_file_uses_project_root_path():
@@ -32,8 +33,32 @@ def test_settings_loads_required_rag_defaults():
     assert settings.rag_vector_top_k == 20
     assert settings.reranker_model == "qwen3-rerank"
     assert settings.reranker_timeout_ms == 800
+    assert settings.rag_faithfulness_sample_rate == 0.2
+    assert settings.rag_faithfulness_timeout_seconds == 5
     assert settings.max_upload_file_size_mb == 50
     assert settings.max_upload_request_size_mb == 100
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rag_faithfulness_sample_rate", -0.1),
+        ("rag_faithfulness_sample_rate", 1.1),
+        ("rag_faithfulness_timeout_seconds", 0),
+    ],
+)
+def test_settings_rejects_invalid_faithfulness_evaluation_config(field: str, value: float) -> None:
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            secret_key="test-secret",
+            database_url="postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
+            sync_database_url="postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
+            reranker_endpoint="https://example.test/rerank",
+            **{field: value},
+        )
 
 
 def test_configure_logging_suppresses_verbose_http_client_logs():
@@ -176,6 +201,7 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
     fake_provider = object()
     fake_meter = object()
     fake_token_metrics = object()
+    fake_faithfulness_metrics = object()
 
     class Provider:
         def get_meter(self, name: str):
@@ -203,6 +229,10 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
         assert meter is fake_meter
         return fake_token_metrics
 
+    def fake_faithfulness_metrics_factory(*, meter):
+        assert meter is fake_meter
+        return fake_faithfulness_metrics
+
     monkeypatch.setattr(main, "configure_logging", lambda settings: None)
     monkeypatch.setattr(main, "init_clients", fake_init_clients)
     monkeypatch.setattr(main, "close_clients", fake_close_clients)
@@ -210,10 +240,12 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
     monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
     monkeypatch.setattr(main, "get_redis", lambda: fake_provider)
     monkeypatch.setattr(main, "TokenMetrics", fake_token_metrics_factory)
+    monkeypatch.setattr(main, "FaithfulnessMetrics", fake_faithfulness_metrics_factory)
 
     app = FastAPI()
     async with main.lifespan(app):
         assert app.state.token_metrics is fake_token_metrics
+        assert app.state.faithfulness_metrics is fake_faithfulness_metrics
         assert app.state.meter_provider is provider
 
     assert calls == ["init_clients", "init_metrics", "shutdown_metrics", "close_clients"]

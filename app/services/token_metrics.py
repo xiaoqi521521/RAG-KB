@@ -49,13 +49,14 @@ async def record_generation_usage(
     recorder: GenerationTokenRecorder,
     response: Any,
     pipeline: str,
+    source: str = "provider",
 ) -> None:
     """记录模型生成 token；provider 未返回 usage 时只写可观测日志。"""
     tokens = extract_generation_tokens(response)
     if tokens is None:
         logger.info("generation_token_usage_unavailable=true pipeline=%s", pipeline)
         return
-    await recorder.record_generation_tokens(tokens=tokens)
+    await recorder.record_generation_tokens(tokens=tokens, source=source)
 
 
 class TokenMetrics:
