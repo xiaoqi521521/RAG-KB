@@ -33,6 +33,7 @@ def test_settings_loads_required_rag_defaults():
     assert settings.rag_vector_top_k == 20
     assert settings.reranker_model == "qwen3-rerank"
     assert settings.reranker_timeout_ms == 800
+    assert settings.rag_query_pipeline == "v4"
     assert settings.rag_faithfulness_sample_rate == 0.2
     assert settings.rag_faithfulness_timeout_seconds == 5
     assert settings.max_upload_file_size_mb == 50
