@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RagQueryRequest(BaseModel):
@@ -85,3 +88,34 @@ class RagQueryResponse(BaseModel):
     sources: list[SourceCitation]
     hit_count: int
     latency_ms: int
+
+
+class ChatSessionResponse(BaseModel):
+    """面向前端的对话会话记录。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    user_id: int
+    kb_ids: str
+    title: str | None
+    message_count: int
+    created_at: datetime
+    last_active_at: datetime
+    is_deleted: bool
+
+
+class ChatMessageResponse(BaseModel):
+    """面向前端的对话消息记录。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    session_id: str
+    role: str
+    content: str
+    sources: dict[str, Any] | list[dict[str, Any]] | None
+    token_count: int | None
+    latency_ms: int | None
+    feedback: int | None
+    created_at: datetime

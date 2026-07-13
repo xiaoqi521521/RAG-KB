@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -12,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import Settings
 from app.core.context import CurrentUser
 from app.repositories.chunks import ChunkSearchHit
-from app.schemas.rag import RagQueryResponse
+from app.schemas.rag import RagQueryResponse, SourceCitation
 from app.services.confidence_filter import ConfidenceFilter
 from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingError
@@ -25,6 +26,14 @@ from app.services.source_builder import CitationSelectionStatus, SourceBuilder
 from app.services.token_metrics import TokenMetrics, record_generation_usage
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedRagContext:
+    """V4 检索完成后可供回答模型使用的参考内容。"""
+
+    context: str
+    sources: list[SourceCitation]
 
 
 class RagQueryServiceV4:
@@ -66,74 +75,31 @@ class RagQueryServiceV4:
         normalized_question = question.strip()
         logger.info("RAG v4 query started: user_id=%s kb_ids=%s", user.user_id, kb_ids)
 
-        retrieve_result = await self._retrieve_hits(normalized_question, kb_ids, user, started_at)
-        if not retrieve_result.hits:
-            logger.info(
-                "RAG v4 query refused: reason=no_hits user_id=%s kb_ids=%s", user.user_id, kb_ids
-            )
-            return self._refusal_response(started_at)
-
-        hits = await self._prepare_context_hits(normalized_question, retrieve_result.hits)
-        if not hits:
-            logger.info(
-                "RAG v4 query refused: reason=no_context_hits user_id=%s kb_ids=%s",
-                user.user_id,
-                kb_ids,
-            )
-            return self._refusal_response(started_at)
-
-        context, sources = self.source_builder.build(
-            hits,
-            return_top_n=self.settings.rag_return_top_n,
+        prepared_context = await self.prepare_context(
+            question=normalized_question,
+            kb_ids=kb_ids,
+            user=user,
+            started_at=started_at,
         )
-        if not context or not sources:
-            logger.info(
-                "RAG v4 query refused: reason=empty_context user_id=%s kb_ids=%s",
-                user.user_id,
-                kb_ids,
-            )
+        if prepared_context is None:
             return self._refusal_response(started_at)
 
         answer = await self._generate_answer(
             normalized_question,
-            context,
-            len(sources),
+            prepared_context,
             user,
             kb_ids,
         )
-        if self._is_explicit_refusal(answer):
-            logger.info(
-                (
-                    "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
-                    "referenced_count=0 valid_count=0 invalid_count=0"
-                ),
-                user.user_id,
-                kb_ids,
-                CitationSelectionStatus.REFUSAL,
-            )
-            return self._refusal_response(started_at)
-
-        citation_result = self.source_builder.resolve_citations(answer, sources)
-        sources = citation_result.sources
-        logger.info(
-            (
-                "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
-                "referenced_count=%s valid_count=%s invalid_count=%s"
-            ),
-            user.user_id,
-            kb_ids,
-            citation_result.status,
-            citation_result.referenced_count,
-            citation_result.valid_count,
-            citation_result.invalid_count,
-        )
-        self._schedule_faithfulness_observation(
+        sources = self.finalize_answer(
             question=normalized_question,
             answer=answer,
-            context=context,
+            prepared_context=prepared_context,
             user=user,
             kb_ids=kb_ids,
         )
+        if sources is None:
+            return self._refusal_response(started_at)
+
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
             "RAG v4 query completed: user_id=%s kb_ids=%s hit_count=%s latency_ms=%s",
@@ -148,6 +114,90 @@ class RagQueryServiceV4:
             hit_count=len(sources),
             latency_ms=latency_ms,
         )
+
+    def finalize_answer(
+        self,
+        *,
+        question: str,
+        answer: str,
+        prepared_context: PreparedRagContext,
+        user: CurrentUser,
+        kb_ids: list[int],
+    ) -> list[SourceCitation] | None:
+        """解析回答引用并触发忠实性观测，拒答时返回 None。"""
+        if self._is_explicit_refusal(answer):
+            logger.info(
+                (
+                    "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
+                    "referenced_count=0 valid_count=0 invalid_count=0"
+                ),
+                user.user_id,
+                kb_ids,
+                CitationSelectionStatus.REFUSAL,
+            )
+            return None
+
+        citation_result = self.source_builder.resolve_citations(answer, prepared_context.sources)
+        sources = citation_result.sources
+        logger.info(
+            (
+                "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
+                "referenced_count=%s valid_count=%s invalid_count=%s"
+            ),
+            user.user_id,
+            kb_ids,
+            citation_result.status,
+            citation_result.referenced_count,
+            citation_result.valid_count,
+            citation_result.invalid_count,
+        )
+        self._schedule_faithfulness_observation(
+            question=question,
+            answer=answer,
+            context=prepared_context.context,
+            user=user,
+            kb_ids=kb_ids,
+        )
+        return sources
+
+    async def prepare_context(
+        self,
+        *,
+        question: str,
+        kb_ids: list[int],
+        user: CurrentUser,
+        started_at: float,
+    ) -> PreparedRagContext | None:
+        """准备本次回答的参考内容，供同步和流式链路共同使用。"""
+        retrieve_result = await self._retrieve_hits(question, kb_ids, user, started_at)
+        if not retrieve_result.hits:
+            logger.info(
+                "RAG v4 query refused: reason=no_hits user_id=%s kb_ids=%s", user.user_id, kb_ids
+            )
+            return None
+
+        hits = await self._prepare_context_hits(question, retrieve_result.hits)
+        if not hits:
+            logger.info(
+                "RAG v4 query refused: reason=no_context_hits user_id=%s kb_ids=%s",
+                user.user_id,
+                kb_ids,
+            )
+            return None
+
+        context, sources = self.source_builder.build(
+            hits,
+            return_top_n=self.settings.rag_return_top_n,
+        )
+        if not context or not sources:
+            logger.info(
+                "RAG v4 query refused: reason=empty_context user_id=%s kb_ids=%s",
+                user.user_id,
+                kb_ids,
+            )
+            return None
+
+        return PreparedRagContext(context=context, sources=sources)
 
     async def _prepare_context_hits(
         self,
@@ -236,21 +286,13 @@ class RagQueryServiceV4:
     async def _generate_answer(
         self,
         question: str,
-        context: str,
-        reference_count: int,
+        prepared_context: PreparedRagContext,
         user: CurrentUser,
         kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
-        system_prompt = build_v4_system_prompt(
-            context,
-            reference_count=reference_count,
-        )
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=question),
-        ]
+        messages = self.build_generation_messages(question=question, prepared_context=prepared_context)
         try:
             response = await self.chat_model.ainvoke(messages)
         except Exception as exc:  # noqa: BLE001
@@ -286,6 +328,24 @@ class RagQueryServiceV4:
             "RAG v4 generation completed: elapsed_ms=%s", self._elapsed_ms(generation_started_at)
         )
         return content.strip()
+
+    def build_generation_messages(
+        self,
+        *,
+        question: str,
+        prepared_context: PreparedRagContext,
+        history: list[object] | None = None,
+    ) -> list[object]:
+        """组装回答模型消息，流式链路可在系统消息后注入对话历史。"""
+        system_prompt = build_v4_system_prompt(
+            prepared_context.context,
+            reference_count=len(prepared_context.sources),
+        )
+        return [
+            SystemMessage(content=system_prompt),
+            *(history or []),
+            HumanMessage(content=question),
+        ]
 
     def _schedule_faithfulness_observation(
         self,
