@@ -8,11 +8,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
+from app.repositories.chunks import ChunkSearchHit
 from app.schemas.rag import RagQueryResponse, SourceCitation
+from app.services.enhanced_retriever import EnhancedRetrieveResult
 from app.services.rag_query import RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
 from app.services.rag_query_v3 import RagQueryServiceV3
 from app.services.rag_query_v4 import RagQueryServiceV4
+from app.services.reranker import RerankResult
+from app.services.source_builder import SourceBuilder
 
 
 def _user() -> CurrentUser:
@@ -249,3 +253,94 @@ def test_get_token_metrics_reads_application_state() -> None:
     )
 
     assert rag.get_token_metrics(request) is token_metrics
+
+
+def test_query_endpoint_returns_sources_selected_from_v4_answer_citations() -> None:
+    hits = [
+        ChunkSearchHit(
+            chunk_id=10,
+            doc_id=1,
+            document_name="研发规范.md",
+            kb_id=2,
+            chunk_index=1,
+            content="第一条内容。",
+            page_num=None,
+            section_title="代码提交",
+            score=0.91,
+        ),
+        ChunkSearchHit(
+            chunk_id=11,
+            doc_id=1,
+            document_name="研发规范.md",
+            kb_id=2,
+            chunk_index=2,
+            content="第二条内容。",
+            page_num=None,
+            section_title="代码提交",
+            score=0.86,
+        ),
+    ]
+
+    class Retriever:
+        async def retrieve(self, *, question: str, kb_ids: list[int]) -> EnhancedRetrieveResult:
+            return EnhancedRetrieveResult(
+                hits=hits,
+                original_count=2,
+                hyde_count=0,
+                merged_count=2,
+                degraded_reasons=(),
+            )
+
+    class Reranker:
+        async def rerank(
+            self,
+            *,
+            question: str,
+            candidates: list[ChunkSearchHit],
+        ) -> RerankResult:
+            return RerankResult(
+                hits=candidates,
+                degraded=False,
+                degraded_reason=None,
+                input_count=2,
+                output_count=2,
+                elapsed_ms=1,
+                total_tokens=10,
+            )
+
+    class ConfidenceFilter:
+        def filter(self, candidates: list[ChunkSearchHit]) -> list[ChunkSearchHit]:
+            return candidates
+
+    class ContextTrimmer:
+        async def trim(self, candidates: list[ChunkSearchHit]) -> list[ChunkSearchHit]:
+            return candidates
+
+    class ChatModel:
+        async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
+            return SimpleNamespace(
+                content="第二条内容有效（来源：[参考2]）。",
+                usage_metadata=None,
+            )
+
+    service = RagQueryServiceV4(
+        retriever=Retriever(),
+        reranker=Reranker(),
+        confidence_filter=ConfidenceFilter(),
+        context_trimmer=ContextTrimmer(),
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=ChatModel(),
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_query_pipeline="v4", rag_return_top_n=2),
+    )
+
+    with _client(FakePermissionService(), service) as client:
+        response = client.post(
+            "/api/v1/rag/query",
+            json={"question": "哪条内容有效？", "kb_ids": [2]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["hit_count"] == 1
+    assert response.json()["data"]["sources"][0]["chunk_id"] == 11
+    assert response.json()["data"]["sources"][0]["reference_index"] == 2
