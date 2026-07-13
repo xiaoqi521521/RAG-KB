@@ -237,3 +237,17 @@ uv run mypy app
 ```
 
 如果项目尚未配置对应工具，不要假装验证已通过。应说明当前缺少哪类验证，并优先补齐最小可运行测试。
+
+## Agent skills
+
+### Issue tracker
+
+Issues、Specs 和 Tickets 使用本地 Markdown，存放于 `.scratch/`。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认五阶段标签。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+采用 single-context：根目录 `CONTEXT.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
