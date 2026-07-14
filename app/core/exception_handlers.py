@@ -86,7 +86,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     Returns:
         包含通用服务器内部错误消息的 JSONResponse。
     """
-    logger.exception("未处理的请求异常：method=%s url=%s", request.method, request.url)
+    logger.exception("未处理的请求异常：method=%s error_type=%s", request.method, type(exc).__name__)
     return JSONResponse(
         status_code=500,
         content=_response_content(500, "服务器内部错误"),

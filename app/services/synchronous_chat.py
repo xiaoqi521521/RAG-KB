@@ -52,7 +52,7 @@ class SynchronousChatService(ChatSessionRuntime):
                     user=user,
                 )
         except TimeoutError as exc:
-            logger.warning("Synchronous chat timed out: user_id=%s", user.user_id)
+            logger.warning("Synchronous chat timed out")
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail="生成超时，请稍后重试",
@@ -95,13 +95,11 @@ class SynchronousChatService(ChatSessionRuntime):
         messages = rag_service.build_generation_messages(
             question=question,
             prepared_context=prepared_context,
-            history=await self._load_history(active_session_id),
+            history=await self._load_history(active_session_id, user),
         )
         response = await self._generate_answer(
             rag_service=rag_service,
             messages=messages,
-            user=user,
-            kb_ids=kb_ids,
         )
         answer = response.content.strip()
         sources = rag_service.finalize_answer(
@@ -129,6 +127,7 @@ class SynchronousChatService(ChatSessionRuntime):
             sources=source_data,
             token_count=extract_generation_tokens(response) or 0,
             latency_ms=latency_ms,
+            user=user,
         )
         return ChatQueryResponse(
             session_id=active_session_id,
@@ -143,14 +142,12 @@ class SynchronousChatService(ChatSessionRuntime):
         *,
         rag_service: RagQueryServiceV4,
         messages: list[object],
-        user: CurrentUser,
-        kb_ids: list[int],
     ) -> Any:
         """调用模型并保持 V4 同步查询的失败语义。"""
         try:
             response = await rag_service.chat_model.ainvoke(messages)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Synchronous chat generation failed: user_id=%s kb_ids=%s", user.user_id, kb_ids)
+            logger.warning("Synchronous chat generation failed")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="生成服务暂时不可用",
@@ -163,7 +160,7 @@ class SynchronousChatService(ChatSessionRuntime):
         )
         content = getattr(response, "content", None)
         if not isinstance(content, str) or not content.strip():
-            logger.warning("Synchronous chat generation returned empty content: user_id=%s", user.user_id)
+            logger.warning("Synchronous chat generation returned empty content")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="生成服务暂时不可用",

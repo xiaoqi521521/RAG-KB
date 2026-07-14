@@ -36,7 +36,7 @@ class MinioStorageService:
             )
 
         await asyncio.to_thread(_upload)
-        logger.info("[MinIO] 上传成功：path=%s", object_key)
+        logger.info("[MinIO] 上传成功")
         return object_key
 
     async def download(self, object_key: str) -> bytes:
@@ -54,7 +54,7 @@ class MinioStorageService:
                 response.release_conn()
 
         content = await asyncio.to_thread(_download)
-        logger.info("[MinIO] 下载成功：path=%s", object_key)
+        logger.info("[MinIO] 下载成功")
         return content
 
     async def delete(self, object_key: str) -> None:
@@ -68,9 +68,9 @@ class MinioStorageService:
 
         try:
             await asyncio.to_thread(_delete)
-            logger.info("[MinIO] 删除成功：path=%s", object_key)
+            logger.info("[MinIO] 删除成功")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[MinIO] 删除失败：path=%s，error=%s", object_key, exc)
+            logger.warning("[MinIO] 删除失败：error_type=%s", type(exc).__name__)
 
     def _ensure_bucket_exists(self) -> None:
         exists = self.client.bucket_exists(self.bucket)

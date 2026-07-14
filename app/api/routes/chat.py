@@ -177,10 +177,11 @@ async def list_chat_sessions(
 @router.get("/sessions/{session_id}/messages")
 async def list_chat_messages(
     session_id: str,
+    user: CurrentUser = Depends(get_current_user),
     session_service: ChatSessionService = Depends(get_chat_session_service),
 ) -> ApiResponse[list[ChatMessageResponse]]:
-    """按时间正序返回会话消息，当前阶段不增加会话归属校验。"""
-    messages = await session_service.list_messages(session_id)
+    """按时间正序返回当前用户拥有的会话消息。"""
+    messages = await session_service.list_messages(session_id, user)
     return ApiResponse.ok([ChatMessageResponse.model_validate(message) for message in messages])
 
 

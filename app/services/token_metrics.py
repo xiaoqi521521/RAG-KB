@@ -163,10 +163,9 @@ class TokenMetrics:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Redis token metric write failed: user_id=%s field=%s error=%s",
-                user.user_id,
+                "Redis token metric write failed: field=%s error_type=%s",
                 redis_field,
-                exc,
+                type(exc).__name__,
             )
 
 

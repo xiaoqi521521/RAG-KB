@@ -4,7 +4,7 @@ from fastapi import HTTPException, UploadFile, status
 
 from app.core.context import CurrentUser
 from app.integrations.minio import MinioStorageService
-from app.models import DocumentStatus, KbDocument, KnowledgeBase, PermissionSubjectType
+from app.models import DocumentStatus, KbDocument, KnowledgeBase
 from app.repositories.chunks import ChunkRepository
 from app.repositories.documents import DocumentRepository
 from app.repositories.index_tasks import IndexTaskRepository
@@ -60,32 +60,6 @@ class KnowledgeBaseService:
         )
         await self.permission_repository.create_admin_permission(knowledge_base.id, user.user_id)
         return knowledge_base
-
-    async def list_accessible(self, user: CurrentUser) -> list[KnowledgeBase]:
-        """查询当前用户可访问的知识库列表。"""
-        if user.is_admin:
-            return await self.knowledge_base_repository.list_not_deleted()
-
-        permissions_by_kb: dict[int, str] = {}
-        for permission in await self.permission_repository.list_by_subject(
-            PermissionSubjectType.DEPARTMENT.value,
-            user.department_id,
-        ):
-            permissions_by_kb[permission.kb_id] = permission.permission
-
-        for permission in await self.permission_repository.list_by_subject(
-            PermissionSubjectType.USER.value,
-            str(user.user_id),
-        ):
-            current = permissions_by_kb.get(permission.kb_id)
-            if current is None or permission.permission == "ADMIN":
-                permissions_by_kb[permission.kb_id] = permission.permission
-
-        public_kbs = await self.knowledge_base_repository.list_public()
-        explicit_kbs = await self.knowledge_base_repository.list_by_ids(permissions_by_kb.keys())
-        merged = {kb.id: kb for kb in explicit_kbs}
-        merged.update({kb.id: kb for kb in public_kbs})
-        return list(merged.values())
 
     async def upload_document(self, kb_id: int, file: UploadFile, user: CurrentUser) -> KbDocument:
         """上传原始文件、创建文档记录，并提交异步索引任务。"""

@@ -103,6 +103,9 @@ class FakeSynchronousChatService:
 
 
 class FakeChatSessionService:
+    def __init__(self) -> None:
+        self.message_calls: list[tuple[str, int]] = []
+
     async def list_sessions(self, user: CurrentUser) -> list[SimpleNamespace]:
         return [
             SimpleNamespace(
@@ -117,7 +120,8 @@ class FakeChatSessionService:
             )
         ]
 
-    async def list_messages(self, session_id: str) -> list[SimpleNamespace]:
+    async def list_messages(self, session_id: str, user: CurrentUser) -> list[SimpleNamespace]:
+        self.message_calls.append((session_id, user.user_id))
         return [
             SimpleNamespace(
                 id=1,
@@ -239,10 +243,11 @@ def test_stream_endpoint_checks_each_kb_before_starting_stream() -> None:
 
 
 def test_session_read_endpoints_return_existing_conversation_in_display_order() -> None:
+    session_service = FakeChatSessionService()
     with _client(
         FakePermissionService(),
         FakeStreamingChatService(),
-        FakeChatSessionService(),
+        session_service,
     ) as client:
         sessions = client.get("/api/v1/chat/sessions")
         messages = client.get("/api/v1/chat/sessions/session-1/messages")
@@ -264,3 +269,4 @@ def test_session_read_endpoints_return_existing_conversation_in_display_order() 
             "created_at": "2026-01-01T00:00:00",
         }
     ]
+    assert session_service.message_calls == [("session-1", 1)]

@@ -73,7 +73,7 @@ class InMemorySynchronousChatService(SynchronousChatService):
     async def _get_or_create_session(self, **kwargs: object) -> str:
         return "session-1"
 
-    async def _load_history(self, session_id: str) -> list[object]:
+    async def _load_history(self, session_id: str, user: CurrentUser) -> list[object]:
         return self.history
 
     async def _save_turn(self, **kwargs: object) -> None:

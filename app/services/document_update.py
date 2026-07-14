@@ -102,15 +102,7 @@ class DocumentUpdateService:
                 await self.storage_service.delete(new_minio_path)
             raise
 
-        logger.info(
-            "[DocumentUpdate] 文档内容替换任务已提交：kb_id=%s doc_id=%s task_id=%s current_path=%s new_path=%s user_id=%s",
-            kb_id,
-            doc_id,
-            task_id,
-            old_minio_path,
-            new_minio_path,
-            user.user_id,
-        )
+        logger.info("[DocumentUpdate] 文档内容替换任务已提交")
         return self._submitted_response(
             document,
             task_id,
@@ -137,12 +129,7 @@ class DocumentUpdateService:
                 await self.document_repository.mark_failed(doc_id, str(exc))
             raise
 
-        logger.info(
-            "[DocumentUpdate] 强制重建索引已提交：kb_id=%s doc_id=%s task_id=%s",
-            kb_id,
-            doc_id,
-            task_id,
-        )
+        logger.info("[DocumentUpdate] 强制重建索引已提交")
         return self._submitted_response(
             document,
             task_id,

@@ -153,20 +153,18 @@ def get_knowledge_base_service(
 @router.get("")
 async def list_knowledge_bases(
     user: CurrentUser = Depends(get_current_user),
-    kb_service: KnowledgeBaseService = Depends(get_knowledge_base_service),
     permission_service: PermissionService = Depends(get_permission_service),
 ) -> ApiResponse[list[KnowledgeBaseItem]]:
     """查询当前用户可访问的知识库列表。
 
     Args:
         user: 当前认证用户上下文。
-        kb_service: 知识库业务服务，用于获取用户可见知识库。
         permission_service: 权限服务，用于补充用户在每个知识库上的最高权限。
 
     Returns:
         包含知识库基础信息和当前用户权限级别的统一响应。
     """
-    knowledge_bases = await kb_service.list_accessible(user)
+    knowledge_bases = await permission_service.list_accessible(user)
     items: list[KnowledgeBaseItem] = []
     for knowledge_base in knowledge_bases:
         # 管理员天然拥有管理权限；普通用户需要从权限关系中计算最高权限。

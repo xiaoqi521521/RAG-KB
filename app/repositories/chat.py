@@ -13,26 +13,42 @@ class ChatRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_session(self, session_id: str) -> ChatSession | None:
-        """按会话标识读取会话。"""
-        return await self.session.get(ChatSession, session_id)
+    async def get_active_session_for_user(self, session_id: str, user_id: int) -> ChatSession | None:
+        """读取指定用户仍可用的对话会话。"""
+        result = await self.session.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_id,
+                ChatSession.user_id == user_id,
+                ChatSession.is_deleted.is_(False),
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def add_session(self, chat_session: ChatSession) -> None:
         """加入新会话并刷新主键。"""
         self.session.add(chat_session)
         await self.session.flush()
 
-    async def add_turn(
+    async def add_turn_for_user(
         self,
         *,
         session_id: str,
+        user_id: int,
         question: str,
         answer: str,
         sources: list[dict[str, object]],
         token_count: int,
         latency_ms: int,
-    ) -> None:
-        """保存完整问答轮次，并同步更新已存在会话的统计字段。"""
+    ) -> bool:
+        """为会话所有者保存完整问答轮次。
+
+        Returns:
+            会话归属当前用户时返回 True，否则不写入并返回 False。
+        """
+        chat_session = await self.get_active_session_for_user(session_id, user_id)
+        if chat_session is None:
+            return False
+
         self.session.add_all(
             [
                 ChatMessage(
@@ -51,15 +67,14 @@ class ChatRepository:
             ]
         )
 
-        chat_session = await self.get_session(session_id)
-        if chat_session is not None:
-            now = shanghai_now_naive()
-            chat_session.message_count += 2
-            chat_session.last_active_at = now
-            if chat_session.title is None and question:
-                chat_session.title = question[:50]
+        now = shanghai_now_naive()
+        chat_session.message_count += 2
+        chat_session.last_active_at = now
+        if chat_session.title is None and question:
+            chat_session.title = question[:50]
 
         await self.session.flush()
+        return True
 
     async def touch_session(self, chat_session: ChatSession) -> None:
         """更新会话最近活跃时间。"""
@@ -75,11 +90,16 @@ class ChatRepository:
         )
         return list(result.scalars())
 
-    async def list_messages(self, session_id: str) -> list[ChatMessage]:
-        """按创建时间正序读取会话消息。"""
+    async def list_messages_for_user(self, session_id: str, user_id: int) -> list[ChatMessage]:
+        """按创建时间正序读取当前用户会话的消息。"""
         result = await self.session.execute(
             select(ChatMessage)
-            .where(ChatMessage.session_id == session_id)
+            .join(ChatSession, ChatMessage.session_id == ChatSession.id)
+            .where(
+                ChatMessage.session_id == session_id,
+                ChatSession.user_id == user_id,
+                ChatSession.is_deleted.is_(False),
+            )
             .order_by(ChatMessage.created_at.asc())
         )
         return list(result.scalars())

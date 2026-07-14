@@ -57,12 +57,12 @@ class StreamingChatService(ChatSessionRuntime):
                 ):
                     yield event
         except TimeoutError:
-            logger.warning("Streaming chat timed out: user_id=%s", user.user_id)
+            logger.warning("Streaming chat timed out")
             yield SseEvent(event="error", data='{"message":"生成超时，请稍后重试"}')
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
-            logger.exception("Streaming chat failed: user_id=%s", user.user_id)
+            logger.exception("Streaming chat failed")
             yield SseEvent(event="error", data='{"message":"请求处理失败，请稍后重试"}')
 
     async def _stream_success(
@@ -113,7 +113,7 @@ class StreamingChatService(ChatSessionRuntime):
         messages = rag_service.build_generation_messages(
             question=question,
             prepared_context=prepared_context,
-            history=await self._load_history(active_session_id),
+            history=await self._load_history(active_session_id, user),
         )
         answer_parts: list[str] = []
         full_message: Any = None
@@ -164,6 +164,7 @@ class StreamingChatService(ChatSessionRuntime):
             sources=source_data,
             token_count=token_count,
             latency_ms=latency_ms,
+            user=user,
         )
         yield SseEvent(
             event="done",

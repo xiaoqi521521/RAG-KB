@@ -43,6 +43,7 @@ class ChatSessionRuntime:
         sources: list[dict[str, object]],
         token_count: int,
         latency_ms: int,
+        user: CurrentUser,
     ) -> None:
         """使用独立事务保存已完成的问答轮次。"""
         async with self.session_factory() as session:
@@ -54,14 +55,15 @@ class ChatSessionRuntime:
                 sources=sources,
                 token_count=token_count,
                 latency_ms=latency_ms,
+                user=user,
             )
             await session.commit()
 
-    async def _load_history(self, session_id: str) -> list[object]:
+    async def _load_history(self, session_id: str, user: CurrentUser) -> list[object]:
         """从完整存储中截取最近五轮，并转换为模型消息。"""
         async with self.session_factory() as session:
             service = ChatSessionService(ChatRepository(session))
-            history = await service.get_history(session_id)
+            history = await service.get_history(session_id, user)
 
         return [
             HumanMessage(content=message.content)

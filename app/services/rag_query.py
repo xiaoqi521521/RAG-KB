@@ -84,27 +84,24 @@ class RagQueryService:
         """
         started_at = time.perf_counter()
         normalized_question = question.strip()
-        logger.info("RAG query started: user_id=%s kb_ids=%s", user.user_id, kb_ids)
+        logger.info("RAG query started: kb_count=%s", len(kb_ids))
 
-        query_vector = await self._embed_question(normalized_question, user, kb_ids, started_at)
+        query_vector = await self._embed_question(normalized_question, started_at)
         hits = await self._retrieve_hits(query_vector, kb_ids)
 
         if not hits:
-            logger.info(
-                "RAG query refused: reason=no_hits user_id=%s kb_ids=%s", user.user_id, kb_ids
-            )
+            logger.info("RAG query refused: reason=no_hits kb_count=%s", len(kb_ids))
             return self._refusal_response(started_at)
 
         context, sources = self.source_builder.build(
             hits,
             return_top_n=self.settings.rag_return_top_n,
         )
-        answer = await self._generate_answer(normalized_question, context, user, kb_ids)
+        answer = await self._generate_answer(normalized_question, context)
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
-            "RAG query completed: user_id=%s kb_ids=%s hit_count=%s latency_ms=%s",
-            user.user_id,
-            kb_ids,
+            "RAG query completed: kb_count=%s hit_count=%s latency_ms=%s",
+            len(kb_ids),
             len(sources),
             latency_ms,
         )
@@ -118,8 +115,6 @@ class RagQueryService:
     async def _embed_question(
         self,
         question: str,
-        user: CurrentUser,
-        kb_ids: list[int],
         started_at: float,
     ) -> list[float]:
         """向量化用户问题，返回可用于 PGVector 检索的向量。"""
@@ -128,22 +123,18 @@ class RagQueryService:
             query_vector = await self.embedding_service.embed_query(question)
         except EmbeddingError as exc:
             logger.warning(
-                "RAG query embedding failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
-                user.user_id,
-                kb_ids,
+                "RAG query embedding failed: elapsed_ms=%s error_type=%s",
                 self._elapsed_ms(started_at),
-                exc,
+                type(exc).__name__,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用"
             ) from exc
         except RuntimeError as exc:
             logger.warning(
-                "RAG query embedding dependency failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
-                user.user_id,
-                kb_ids,
+                "RAG query embedding dependency failed: elapsed_ms=%s error_type=%s",
                 self._elapsed_ms(started_at),
-                exc,
+                type(exc).__name__,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用"
@@ -166,7 +157,7 @@ class RagQueryService:
                 top_k=self.settings.rag_vector_top_k,
             )
         except SQLAlchemyError as exc:
-            logger.exception("RAG retrieval failed: kb_ids=%s", kb_ids)
+            logger.exception("RAG retrieval failed")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="检索服务暂时不可用"
             ) from exc
@@ -182,8 +173,6 @@ class RagQueryService:
         self,
         question: str,
         context: str,
-        user: CurrentUser,
-        kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
@@ -196,11 +185,9 @@ class RagQueryService:
             response = await self.chat_model.ainvoke(messages)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "RAG generation failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
-                user.user_id,
-                kb_ids,
+                "RAG generation failed: elapsed_ms=%s error_type=%s",
                 self._elapsed_ms(generation_started_at),
-                exc,
+                type(exc).__name__,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用"
@@ -214,9 +201,7 @@ class RagQueryService:
 
         content = getattr(response, "content", None)
         if not isinstance(content, str) or not content.strip():
-            logger.warning(
-                "RAG generation returned empty content: user_id=%s kb_ids=%s", user.user_id, kb_ids
-            )
+            logger.warning("RAG generation returned empty content")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用"
             )

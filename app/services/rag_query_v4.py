@@ -73,7 +73,7 @@ class RagQueryServiceV4:
         """执行 v4 RAG 查询并返回回答、引用和耗时统计。"""
         started_at = time.perf_counter()
         normalized_question = question.strip()
-        logger.info("RAG v4 query started: user_id=%s kb_ids=%s", user.user_id, kb_ids)
+        logger.info("RAG v4 query started: kb_count=%s", len(kb_ids))
 
         prepared_context = await self.prepare_context(
             question=normalized_question,
@@ -87,8 +87,6 @@ class RagQueryServiceV4:
         answer = await self._generate_answer(
             normalized_question,
             prepared_context,
-            user,
-            kb_ids,
         )
         sources = self.finalize_answer(
             question=normalized_question,
@@ -102,9 +100,8 @@ class RagQueryServiceV4:
 
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
-            "RAG v4 query completed: user_id=%s kb_ids=%s hit_count=%s latency_ms=%s",
-            user.user_id,
-            kb_ids,
+            "RAG v4 query completed: kb_count=%s hit_count=%s latency_ms=%s",
+            len(kb_ids),
             len(sources),
             latency_ms,
         )
@@ -128,11 +125,9 @@ class RagQueryServiceV4:
         if self._is_explicit_refusal(answer):
             logger.info(
                 (
-                    "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
+                    "RAG v4 citations resolved: citation_status=%s "
                     "referenced_count=0 valid_count=0 invalid_count=0"
                 ),
-                user.user_id,
-                kb_ids,
                 CitationSelectionStatus.REFUSAL,
             )
             return None
@@ -141,11 +136,9 @@ class RagQueryServiceV4:
         sources = citation_result.sources
         logger.info(
             (
-                "RAG v4 citations resolved: user_id=%s kb_ids=%s citation_status=%s "
+                "RAG v4 citations resolved: citation_status=%s "
                 "referenced_count=%s valid_count=%s invalid_count=%s"
             ),
-            user.user_id,
-            kb_ids,
             citation_result.status,
             citation_result.referenced_count,
             citation_result.valid_count,
@@ -155,8 +148,6 @@ class RagQueryServiceV4:
             question=question,
             answer=answer,
             context=prepared_context.context,
-            user=user,
-            kb_ids=kb_ids,
         )
         return sources
 
@@ -169,19 +160,18 @@ class RagQueryServiceV4:
         started_at: float,
     ) -> PreparedRagContext | None:
         """准备本次回答的参考内容，供同步和流式链路共同使用。"""
-        retrieve_result = await self._retrieve_hits(question, kb_ids, user, started_at)
+        retrieve_result = await self._retrieve_hits(question, kb_ids, started_at)
         if not retrieve_result.hits:
             logger.info(
-                "RAG v4 query refused: reason=no_hits user_id=%s kb_ids=%s", user.user_id, kb_ids
+                "RAG v4 query refused: reason=no_hits kb_count=%s", len(kb_ids)
             )
             return None
 
         hits = await self._prepare_context_hits(question, retrieve_result.hits)
         if not hits:
             logger.info(
-                "RAG v4 query refused: reason=no_context_hits user_id=%s kb_ids=%s",
-                user.user_id,
-                kb_ids,
+                "RAG v4 query refused: reason=no_context_hits kb_count=%s",
+                len(kb_ids),
             )
             return None
 
@@ -191,9 +181,8 @@ class RagQueryServiceV4:
         )
         if not context or not sources:
             logger.info(
-                "RAG v4 query refused: reason=empty_context user_id=%s kb_ids=%s",
-                user.user_id,
-                kb_ids,
+                "RAG v4 query refused: reason=empty_context kb_count=%s",
+                len(kb_ids),
             )
             return None
 
@@ -235,7 +224,6 @@ class RagQueryServiceV4:
         self,
         question: str,
         kb_ids: list[int],
-        user: CurrentUser,
         started_at: float,
     ) -> EnhancedRetrieveResult:
         """执行增强检索，沿用 v3 的关键异常语义。"""
@@ -244,28 +232,24 @@ class RagQueryServiceV4:
             result = await self.retriever.retrieve(question=question, kb_ids=kb_ids)
         except EmbeddingError as exc:
             logger.warning(
-                "RAG v4 query embedding failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
-                user.user_id,
-                kb_ids,
+                "RAG v4 query embedding failed: elapsed_ms=%s error_type=%s",
                 self._elapsed_ms(started_at),
-                exc,
+                type(exc).__name__,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用"
             ) from exc
         except RuntimeError as exc:
             logger.warning(
-                "RAG v4 query embedding dependency failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
-                user.user_id,
-                kb_ids,
+                "RAG v4 query embedding dependency failed: elapsed_ms=%s error_type=%s",
                 self._elapsed_ms(started_at),
-                exc,
+                type(exc).__name__,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="向量化服务暂时不可用"
             ) from exc
         except SQLAlchemyError as exc:
-            logger.exception("RAG v4 retrieval failed: kb_ids=%s", kb_ids)
+            logger.exception("RAG v4 retrieval failed")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="检索服务暂时不可用"
             ) from exc
@@ -287,8 +271,6 @@ class RagQueryServiceV4:
         self,
         question: str,
         prepared_context: PreparedRagContext,
-        user: CurrentUser,
-        kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
@@ -297,11 +279,9 @@ class RagQueryServiceV4:
             response = await self.chat_model.ainvoke(messages)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "RAG v4 generation failed: user_id=%s kb_ids=%s elapsed_ms=%s error=%s",
-                user.user_id,
-                kb_ids,
+                "RAG v4 generation failed: elapsed_ms=%s error_type=%s",
                 self._elapsed_ms(generation_started_at),
-                exc,
+                type(exc).__name__,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用"
@@ -315,11 +295,7 @@ class RagQueryServiceV4:
 
         content = getattr(response, "content", None)
         if not isinstance(content, str) or not content.strip():
-            logger.warning(
-                "RAG v4 generation returned empty content: user_id=%s kb_ids=%s",
-                user.user_id,
-                kb_ids,
-            )
+            logger.warning("RAG v4 generation returned empty content")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="生成服务暂时不可用"
             )
@@ -353,8 +329,6 @@ class RagQueryServiceV4:
         question: str,
         answer: str,
         context: str,
-        user: CurrentUser,
-        kb_ids: list[int],
     ) -> None:
         """在后台记录忠实性评估，避免质量观测增加用户响应延迟。"""
         if self.faithfulness_evaluator is None:
@@ -365,8 +339,6 @@ class RagQueryServiceV4:
                 question=question,
                 answer=answer,
                 context=context,
-                user=user,
-                kb_ids=kb_ids,
             ),
             name="rag-faithfulness-evaluation",
         )
@@ -378,8 +350,6 @@ class RagQueryServiceV4:
         question: str,
         answer: str,
         context: str,
-        user: CurrentUser,
-        kb_ids: list[int],
     ) -> None:
         """记录正常回答的忠实性观测，任何异常均不得影响查询响应。"""
         if self.faithfulness_evaluator is None:
@@ -393,9 +363,7 @@ class RagQueryServiceV4:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "RAG v4 faithfulness evaluation failed: user_id=%s kb_ids=%s error_type=%s",
-                user.user_id,
-                kb_ids,
+                "RAG v4 faithfulness evaluation failed: error_type=%s",
                 type(exc).__name__,
             )
             return
@@ -404,11 +372,9 @@ class RagQueryServiceV4:
         logger.log(
             log_level,
             (
-                "RAG v4 faithfulness evaluated: user_id=%s kb_ids=%s status=%s score=%s "
+                "RAG v4 faithfulness evaluated: status=%s score=%s "
                 "elapsed_ms=%s sampled=%s"
             ),
-            user.user_id,
-            kb_ids,
             result.status.value,
             result.score,
             result.elapsed_ms,
