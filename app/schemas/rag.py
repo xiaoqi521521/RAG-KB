@@ -12,7 +12,7 @@ class RagQueryRequest(BaseModel):
     Args:
         question: 用户问题，进入服务层前会去除首尾空白。
         kb_ids: 需要查询的知识库 ID 列表，会去重并保持首次出现顺序。
-        session_id: 可选会话 ID；当前阶段不读取或写入会话历史。
+        session_id: 可选会话 ID；由具体入口决定是否读取或写入会话历史。
     """
 
     question: str = Field(min_length=1, max_length=2000)
@@ -88,6 +88,16 @@ class RagQueryResponse(BaseModel):
     sources: list[SourceCitation]
     hit_count: int
     latency_ms: int
+
+
+class ChatQueryResponse(RagQueryResponse):
+    """会话化同步问答响应。
+
+    Args:
+        session_id: 本轮使用的会话 ID，前端应在后续追问时原样传回。
+    """
+
+    session_id: str
 
 
 class ChatSessionResponse(BaseModel):

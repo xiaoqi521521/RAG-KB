@@ -16,12 +16,13 @@ from app.core.database import AsyncSessionLocal
 from app.core.database import get_db
 from app.repositories.chat import ChatRepository
 from app.schemas.common import ApiResponse
-from app.schemas.rag import ChatMessageResponse, ChatSessionResponse
+from app.schemas.rag import ChatMessageResponse, ChatQueryResponse, ChatSessionResponse, RagQueryRequest
 from app.services.chat_sessions import ChatSessionService
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.permissions import PermissionService
 from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.streaming_chat import SseEvent, StreamingChatService
+from app.services.synchronous_chat import SynchronousChatService
 from app.services.token_metrics import TokenMetrics
 
 router = APIRouter()
@@ -38,6 +39,19 @@ class StreamingChatPipeline(Protocol):
         session_id: str | None,
         user: CurrentUser,
     ) -> AsyncIterator[SseEvent]: ...
+
+
+class SynchronousChatPipeline(Protocol):
+    """路由层依赖的同步会话问答协议。"""
+
+    async def query(
+        self,
+        *,
+        question: str,
+        kb_ids: list[int],
+        session_id: str | None,
+        user: CurrentUser,
+    ) -> ChatQueryResponse: ...
 
 
 def get_streaming_chat_service(
@@ -65,11 +79,58 @@ def get_streaming_chat_service(
     )
 
 
+def get_synchronous_chat_service(
+    settings: Settings = Depends(get_settings),
+    token_metrics: TokenMetrics = Depends(get_token_metrics),
+    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
+) -> SynchronousChatPipeline:
+    """组装使用独立数据库会话的同步问答服务。"""
+
+    def build_rag_service(session: AsyncSession) -> RagQueryServiceV4:
+        rag_service = get_rag_query_service(
+            session=session,
+            settings=settings,
+            token_metrics=token_metrics,
+            faithfulness_metrics=faithfulness_metrics,
+        )
+        if not isinstance(rag_service, RagQueryServiceV4):
+            raise RuntimeError("同步会话问答仅支持 rag_query_pipeline=v4")
+        return rag_service
+
+    return SynchronousChatService(
+        session_factory=AsyncSessionLocal,
+        rag_service_factory=build_rag_service,
+        timeout_seconds=settings.chat_stream_timeout_seconds,
+    )
+
+
 def get_chat_session_service(
     session: AsyncSession = Depends(get_db),
 ) -> ChatSessionService:
     """构建请求级会话读取服务。"""
     return ChatSessionService(ChatRepository(session))
+
+
+@router.post("")
+async def query_chat(
+    request: RagQueryRequest,
+    user: CurrentUser = Depends(get_current_user),
+    permission_service: PermissionService = Depends(get_permission_service),
+    synchronous_service: SynchronousChatPipeline = Depends(get_synchronous_chat_service),
+) -> ApiResponse[ChatQueryResponse]:
+    """执行会话化同步问答并返回完整答案。"""
+    # 权限校验必须在创建会话和检索前完成，避免无权范围留下会话记录。
+    for kb_id in request.kb_ids:
+        await permission_service.require_read(kb_id, user)
+
+    return ApiResponse.ok(
+        await synchronous_service.query(
+            question=request.question,
+            kb_ids=request.kb_ids,
+            session_id=request.session_id,
+            user=user,
+        )
+    )
 
 
 @router.get("/stream", response_class=StreamingResponse)
