@@ -25,3 +25,4 @@
 
 - 2026-07-15：正式评估复用现有回答模型、Embedding 客户端和 RAGAS 适配器，使用同一次 V4 执行的实际回答与参考内容保存四项独立分数；扩展历史报告的独立样本数、平均值和固定拒答率。
 - 验证：Ticket 05 专项测试 36 passed；评估及直接依赖组合回归 77 passed；`uv run pytest -q`（314 passed）；`uv run ruff check .`（通过）。`uv run mypy app` 仍报告 13 个既有问题，均不位于本 Ticket 修改文件。
+- Code Review：将固定拒答常量移至中立核心模块，避免评估仓储反向依赖查询服务；修复后全量测试仍为 314 passed。

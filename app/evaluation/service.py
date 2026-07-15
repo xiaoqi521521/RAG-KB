@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
 from app.core.context import CurrentUser
+from app.core.rag import RAG_REFUSAL_ANSWER
 from app.core.time import shanghai_now_naive
 from app.evaluation.metrics import calculate_retrieval_metrics
 from app.evaluation.ragas_evaluator import (
@@ -16,7 +17,6 @@ from app.evaluation.ragas_evaluator import (
 )
 from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
 from app.repositories.evaluations import EvaluationReport, EvaluationRepository
-from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.rag_query_v4 import RagExecution
 
 logger = logging.getLogger(__name__)

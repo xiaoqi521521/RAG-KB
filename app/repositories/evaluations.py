@@ -8,6 +8,7 @@ from sqlalchemy import Float, case, cast, func, select, update
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rag import RAG_REFUSAL_ANSWER
 from app.models import (
     DocChunk,
     DocumentStatus,
@@ -17,7 +18,6 @@ from app.models import (
     EvalResultStatus,
     KbDocument,
 )
-from app.services.rag_query import RAG_REFUSAL_ANSWER
 
 
 @dataclass(frozen=True)

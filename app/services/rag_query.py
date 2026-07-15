@@ -10,6 +10,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import Settings
 from app.core.context import CurrentUser
+from app.core.rag import RAG_REFUSAL_ANSWER
+from app.core.rag import RAG_REFUSAL_MARKER as RAG_REFUSAL_MARKER
 from app.repositories.chunks import ChunkRepository, ChunkSearchHit
 from app.schemas.rag import RagQueryResponse
 from app.services.embedding import EmbeddingError, EmbeddingService
@@ -17,9 +19,6 @@ from app.services.source_builder import SourceBuilder
 from app.services.token_metrics import TokenMetrics, record_generation_usage
 
 logger = logging.getLogger(__name__)
-
-RAG_REFUSAL_MARKER = "在知识库中未找到相关内容"
-RAG_REFUSAL_ANSWER = "在知识库中未找到相关内容。请确认问题是否与所选知识库相关，或尝试换一种问法。"
 
 SYSTEM_PROMPT_TEMPLATE = """你是企业内部知识库的智能助手。你的任务是只根据【参考内容】回答员工问题。
 
