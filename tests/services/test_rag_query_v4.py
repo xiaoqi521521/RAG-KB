@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +16,7 @@ from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.reranker import RerankResult
 from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.source_builder import (
+    BuiltSourceContext,
     CitationSelectionResult,
     CitationSelectionStatus,
     SourceBuilder,
@@ -117,6 +118,19 @@ class FakeSourceBuilder:
                 )
                 for reference_index, hit in enumerate(hits[:return_top_n], start=1)
             ],
+        )
+
+    def build_context(
+        self,
+        hits: list[ChunkSearchHit],
+        *,
+        return_top_n: int,
+    ) -> BuiltSourceContext:
+        context, sources = self.build(hits, return_top_n=return_top_n)
+        return BuiltSourceContext(
+            context=context,
+            sources=sources,
+            reference_contexts=[hit.content for hit in hits[: len(sources)]],
         )
 
     def resolve_citations(
@@ -608,3 +622,143 @@ async def test_query_preserves_normal_answers_with_fallback_or_partial_missing_i
     assert response.hit_count == len(expected_reference_indices)
     assert len(retriever.calls) == 1
     assert chat.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_returns_public_response_and_internal_rag_evidence_once() -> None:
+    reranked_hits = [_hit(12, 0.91), _hit(11, 0.86), _hit(10, 0.82)]
+    evaluator = FakeFaithfulnessEvaluator(
+        FaithfulnessResult(
+            status=FaithfulnessStatus.FAITHFUL,
+            score=1.0,
+            reason=None,
+            elapsed_ms=1,
+            sampled=True,
+        )
+    )
+    retriever = FakeRetriever([_hit(10), _hit(11), _hit(12)])
+    reranker = FakeReranker(_rerank_result(hits=reranked_hits))
+    chat = FakeChatModel("需要先运行测试。[参考1]")
+    service = RagQueryServiceV4(
+        retriever=retriever,
+        reranker=reranker,
+        confidence_filter=FakeConfidenceFilter(reranked_hits),
+        context_trimmer=FakeContextTrimmer(reranked_hits[:2]),
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=chat,
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=2),
+        faithfulness_evaluator=evaluator,
+    )
+
+    execution = await service.execute(question="commit rule?", kb_ids=[2], user=_user())
+    await asyncio.sleep(0)
+
+    assert execution.public_response.answer == "需要先运行测试。[参考1]"
+    assert [source.chunk_id for source in execution.public_response.sources] == [12]
+    assert execution.reranked_hits == reranked_hits
+    assert execution.reference_contexts == ["chunk 12 content", "chunk 11 content"]
+    assert execution.reranker_degraded is False
+    assert execution.degraded_reason is None
+    assert execution.explicit_refusal is False
+    assert len(retriever.calls) == 1
+    assert len(reranker.calls) == 1
+    assert chat.call_count == 1
+    assert evaluator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_preserves_reranker_degradation_for_formal_evaluation() -> None:
+    degraded_hits = [_hit(10, 0.03), _hit(11, 0.02)]
+    service, _, _, _, _, _, _ = _service(
+        retrieve_hits=[*degraded_hits, _hit(12, 0.01)],
+        rerank_result=_rerank_result(hits=degraded_hits, degraded=True),
+    )
+
+    execution = await service.execute(question="commit rule?", kb_ids=[2], user=_user())
+
+    assert execution.public_response.answer == "需要先运行测试。[参考1]"
+    assert execution.reranked_hits == degraded_hits
+    assert execution.reranker_degraded is True
+    assert execution.degraded_reason == "reranker_timeout"
+    assert execution.explicit_refusal is False
+
+
+@pytest.mark.asyncio
+async def test_execute_exposes_only_reference_text_injected_after_character_truncation() -> None:
+    full_content = "制度正文" * 100
+    hit = replace(_hit(10, 0.91), content=full_content)
+    service = RagQueryServiceV4(
+        retriever=FakeRetriever([hit]),
+        reranker=FakeReranker(_rerank_result(hits=[hit])),
+        confidence_filter=FakeConfidenceFilter([hit]),
+        context_trimmer=FakeContextTrimmer([hit]),
+        source_builder=SourceBuilder(max_context_chars=120),
+        chat_model=FakeChatModel("按制度执行。[参考1]"),
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=1),
+    )
+
+    execution = await service.execute(question="如何执行？", kb_ids=[2], user=_user())
+
+    assert len(execution.reference_contexts) == 1
+    assert 0 < len(execution.reference_contexts[0]) < len(full_content)
+    assert execution.reference_contexts[0] in execution.prompt_context
+    assert full_content not in execution.prompt_context
+
+
+@pytest.mark.asyncio
+async def test_execute_preserves_internal_evidence_when_model_explicitly_refuses() -> None:
+    hits = [_hit(10, 0.91)]
+    evaluator = FakeFaithfulnessEvaluator(
+        FaithfulnessResult(
+            status=FaithfulnessStatus.FAITHFUL,
+            score=1.0,
+            reason=None,
+            elapsed_ms=1,
+            sampled=True,
+        )
+    )
+    service = RagQueryServiceV4(
+        retriever=FakeRetriever(hits),
+        reranker=FakeReranker(_rerank_result(hits=hits)),
+        confidence_filter=FakeConfidenceFilter(hits),
+        context_trimmer=FakeContextTrimmer(hits),
+        source_builder=SourceBuilder(max_context_chars=1000),
+        chat_model=FakeChatModel("在知识库中未找到相关内容。"),
+        token_metrics=FakeTokenMetrics(),
+        settings=FakeSettings(rag_return_top_n=1),
+        faithfulness_evaluator=evaluator,
+    )
+
+    execution = await service.execute(question="未知制度？", kb_ids=[2], user=_user())
+    await asyncio.sleep(0)
+
+    assert execution.public_response.answer == RAG_REFUSAL_ANSWER
+    assert execution.public_response.sources == []
+    assert execution.reranked_hits == hits
+    assert execution.reference_contexts == ["chunk 10 content"]
+    assert execution.prompt_context
+    assert execution.explicit_refusal is True
+    assert evaluator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_preserves_rerank_diagnostics_when_context_trimming_refuses() -> None:
+    reranked_hits = [_hit(10, 0.03), _hit(11, 0.02)]
+    service, _, _, _, _, _, chat = _service(
+        retrieve_hits=[*reranked_hits, _hit(12, 0.01)],
+        rerank_result=_rerank_result(hits=reranked_hits, degraded=True),
+        trimmed_hits=[],
+    )
+
+    execution = await service.execute(question="未知制度？", kb_ids=[2], user=_user())
+
+    assert execution.public_response.answer == RAG_REFUSAL_ANSWER
+    assert execution.reranked_hits == reranked_hits
+    assert execution.reference_contexts == []
+    assert execution.prompt_context == ""
+    assert execution.reranker_degraded is True
+    assert execution.degraded_reason == "reranker_timeout"
+    assert execution.explicit_refusal is True
+    assert chat.messages is None

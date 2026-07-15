@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -34,6 +34,33 @@ class PreparedRagContext:
 
     context: str
     sources: list[SourceCitation]
+    reranked_hits: list[ChunkSearchHit] = field(default_factory=list)
+    reference_contexts: list[str] = field(default_factory=list)
+    reranker_degraded: bool = False
+    degraded_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PreparedRagHits:
+    """精排结果及经过过滤、裁剪后可进入参考内容的候选。"""
+
+    reranked_hits: list[ChunkSearchHit]
+    context_hits: list[ChunkSearchHit]
+    reranker_degraded: bool
+    degraded_reason: str | None
+
+
+@dataclass(frozen=True)
+class RagExecution:
+    """一次 V4 执行产生的公开响应和内部评估证据。"""
+
+    public_response: RagQueryResponse
+    reranked_hits: list[ChunkSearchHit]
+    reference_contexts: list[str]
+    prompt_context: str
+    reranker_degraded: bool
+    degraded_reason: str | None
+    explicit_refusal: bool
 
 
 class RagQueryServiceV4:
@@ -71,32 +98,46 @@ class RagQueryServiceV4:
         user: CurrentUser,
     ) -> RagQueryResponse:
         """执行 v4 RAG 查询并返回回答、引用和耗时统计。"""
+        execution = await self.execute(question=question, kb_ids=kb_ids, user=user)
+        if not execution.explicit_refusal:
+            self._schedule_faithfulness_observation(
+                question=question.strip(),
+                answer=execution.public_response.answer,
+                context=execution.prompt_context,
+            )
+        return execution.public_response
+
+    async def execute(
+        self,
+        *,
+        question: str,
+        kb_ids: list[int],
+        user: CurrentUser,
+    ) -> RagExecution:
+        """执行一次 V4 RAG，并返回公开响应和内部评估证据。"""
         started_at = time.perf_counter()
         normalized_question = question.strip()
         logger.info("RAG v4 query started: kb_count=%s", len(kb_ids))
 
-        prepared_context = await self.prepare_context(
+        prepared_context = await self._prepare_execution_context(
             question=normalized_question,
             kb_ids=kb_ids,
             user=user,
             started_at=started_at,
         )
-        if prepared_context is None:
-            return self._refusal_response(started_at)
+        if not prepared_context.context or not prepared_context.sources:
+            return self._refusal_execution(started_at, prepared_context)
 
         answer = await self._generate_answer(
             normalized_question,
             prepared_context,
         )
-        sources = self.finalize_answer(
-            question=normalized_question,
+        sources = self._resolve_answer_sources(
             answer=answer,
             prepared_context=prepared_context,
-            user=user,
-            kb_ids=kb_ids,
         )
         if sources is None:
-            return self._refusal_response(started_at)
+            return self._refusal_execution(started_at, prepared_context)
 
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
@@ -105,11 +146,19 @@ class RagQueryServiceV4:
             len(sources),
             latency_ms,
         )
-        return RagQueryResponse(
-            answer=answer,
-            sources=sources,
-            hit_count=len(sources),
-            latency_ms=latency_ms,
+        return RagExecution(
+            public_response=RagQueryResponse(
+                answer=answer,
+                sources=sources,
+                hit_count=len(sources),
+                latency_ms=latency_ms,
+            ),
+            reranked_hits=prepared_context.reranked_hits,
+            reference_contexts=prepared_context.reference_contexts,
+            prompt_context=prepared_context.context,
+            reranker_degraded=prepared_context.reranker_degraded,
+            degraded_reason=prepared_context.degraded_reason,
+            explicit_refusal=False,
         )
 
     def finalize_answer(
@@ -122,6 +171,25 @@ class RagQueryServiceV4:
         kb_ids: list[int],
     ) -> list[SourceCitation] | None:
         """解析回答引用并触发忠实性观测，拒答时返回 None。"""
+        sources = self._resolve_answer_sources(
+            answer=answer,
+            prepared_context=prepared_context,
+        )
+        if sources is not None:
+            self._schedule_faithfulness_observation(
+                question=question,
+                answer=answer,
+                context=prepared_context.context,
+            )
+        return sources
+
+    def _resolve_answer_sources(
+        self,
+        *,
+        answer: str,
+        prepared_context: PreparedRagContext,
+    ) -> list[SourceCitation] | None:
+        """按模型回答解析最终引用，明确拒答时返回 None。"""
         if self._is_explicit_refusal(answer):
             logger.info(
                 (
@@ -144,11 +212,6 @@ class RagQueryServiceV4:
             citation_result.valid_count,
             citation_result.invalid_count,
         )
-        self._schedule_faithfulness_observation(
-            question=question,
-            answer=answer,
-            context=prepared_context.context,
-        )
         return sources
 
     async def prepare_context(
@@ -160,39 +223,77 @@ class RagQueryServiceV4:
         started_at: float,
     ) -> PreparedRagContext | None:
         """准备本次回答的参考内容，供同步和流式链路共同使用。"""
+        prepared_context = await self._prepare_execution_context(
+            question=question,
+            kb_ids=kb_ids,
+            user=user,
+            started_at=started_at,
+        )
+        if not prepared_context.context or not prepared_context.sources:
+            return None
+        return prepared_context
+
+    async def _prepare_execution_context(
+        self,
+        *,
+        question: str,
+        kb_ids: list[int],
+        user: CurrentUser,
+        started_at: float,
+    ) -> PreparedRagContext:
+        """准备生成上下文，并保留拒答前已经形成的精排诊断。"""
         retrieve_result = await self._retrieve_hits(question, kb_ids, started_at)
         if not retrieve_result.hits:
             logger.info(
                 "RAG v4 query refused: reason=no_hits kb_count=%s", len(kb_ids)
             )
-            return None
+            return PreparedRagContext(context="", sources=[])
 
-        hits = await self._prepare_context_hits(question, retrieve_result.hits)
-        if not hits:
+        prepared_hits = await self._prepare_context_hits(question, retrieve_result.hits)
+        if not prepared_hits.context_hits:
             logger.info(
                 "RAG v4 query refused: reason=no_context_hits kb_count=%s",
                 len(kb_ids),
             )
-            return None
+            return PreparedRagContext(
+                context="",
+                sources=[],
+                reranked_hits=prepared_hits.reranked_hits,
+                reranker_degraded=prepared_hits.reranker_degraded,
+                degraded_reason=prepared_hits.degraded_reason,
+            )
 
-        context, sources = self.source_builder.build(
-            hits,
+        built_context = self.source_builder.build_context(
+            prepared_hits.context_hits,
             return_top_n=self.settings.rag_return_top_n,
         )
-        if not context or not sources:
+        if not built_context.context or not built_context.sources:
             logger.info(
                 "RAG v4 query refused: reason=empty_context kb_count=%s",
                 len(kb_ids),
             )
-            return None
+            return PreparedRagContext(
+                context="",
+                sources=[],
+                reranked_hits=prepared_hits.reranked_hits,
+                reranker_degraded=prepared_hits.reranker_degraded,
+                degraded_reason=prepared_hits.degraded_reason,
+            )
 
-        return PreparedRagContext(context=context, sources=sources)
+        return PreparedRagContext(
+            context=built_context.context,
+            sources=built_context.sources,
+            reranked_hits=prepared_hits.reranked_hits,
+            reference_contexts=built_context.reference_contexts,
+            reranker_degraded=prepared_hits.reranker_degraded,
+            degraded_reason=prepared_hits.degraded_reason,
+        )
 
     async def _prepare_context_hits(
         self,
         question: str,
         candidates: list[ChunkSearchHit],
-    ) -> list[ChunkSearchHit]:
+    ) -> PreparedRagHits:
         """执行精排、成功态过滤和上下文裁剪占位。"""
         rerank_result = await self.reranker.rerank(question=question, candidates=candidates)
         hits = rerank_result.hits
@@ -218,7 +319,13 @@ class RagQueryServiceV4:
         )
         # 裁剪器只统计最终允许进入 SourceBuilder 的候选，确保 Context Token 与引用口径一致。
         context_candidates = hits[: self.settings.rag_return_top_n]
-        return await self.context_trimmer.trim(context_candidates)
+        context_hits = await self.context_trimmer.trim(context_candidates)
+        return PreparedRagHits(
+            reranked_hits=rerank_result.hits,
+            context_hits=context_hits,
+            reranker_degraded=rerank_result.degraded,
+            degraded_reason=rerank_result.degraded_reason,
+        )
 
     async def _retrieve_hits(
         self,
@@ -411,6 +518,22 @@ class RagQueryServiceV4:
             sources=[],
             hit_count=0,
             latency_ms=self._elapsed_ms(started_at),
+        )
+
+    def _refusal_execution(
+        self,
+        started_at: float,
+        prepared_context: PreparedRagContext | None = None,
+    ) -> RagExecution:
+        """构建拒答执行结果，并保留已经形成的内部检索证据。"""
+        return RagExecution(
+            public_response=self._refusal_response(started_at),
+            reranked_hits=prepared_context.reranked_hits if prepared_context else [],
+            reference_contexts=prepared_context.reference_contexts if prepared_context else [],
+            prompt_context=prepared_context.context if prepared_context else "",
+            reranker_degraded=(prepared_context.reranker_degraded if prepared_context else False),
+            degraded_reason=prepared_context.degraded_reason if prepared_context else None,
+            explicit_refusal=True,
         )
 
     def _elapsed_ms(self, started_at: float) -> int:

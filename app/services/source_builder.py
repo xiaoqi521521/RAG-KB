@@ -31,6 +31,15 @@ class CitationSelectionResult:
     invalid_count: int
 
 
+@dataclass(frozen=True)
+class BuiltSourceContext:
+    """实际进入回答模型的参考内容及其来源。"""
+
+    context: str
+    sources: list[SourceCitation]
+    reference_contexts: list[str]
+
+
 class SourceBuilder:
     """构建 RAG 生成阶段使用的参考上下文和引用来源。"""
 
@@ -58,11 +67,22 @@ class SourceBuilder:
         Returns:
             二元组，第一个元素为 Prompt 上下文文本，第二个元素为与参考编号一致的来源列表。
         """
+        built_context = self.build_context(hits, return_top_n=return_top_n)
+        return built_context.context, built_context.sources
+
+    def build_context(
+        self,
+        hits: list[ChunkSearchHit],
+        *,
+        return_top_n: int,
+    ) -> BuiltSourceContext:
+        """构建 Prompt 上下文，并保留实际注入的逐条正文。"""
         if return_top_n <= 0 or self.max_context_chars <= 0:
-            return "", []
+            return BuiltSourceContext(context="", sources=[], reference_contexts=[])
 
         context_parts: list[str] = []
         sources: list[SourceCitation] = []
+        reference_contexts: list[str] = []
         used_chars = 0
 
         for reference_index, hit in enumerate(hits[:return_top_n], start=1):
@@ -84,12 +104,17 @@ class SourceBuilder:
 
             context_parts.append(block)
             sources.append(self._to_source(reference_index, hit, included_content))
+            reference_contexts.append(included_content)
             used_chars += len(block)
 
             if used_chars >= self.max_context_chars:
                 break
 
-        return "\n".join(context_parts).strip(), sources
+        return BuiltSourceContext(
+            context="\n".join(context_parts).strip(),
+            sources=sources,
+            reference_contexts=reference_contexts,
+        )
 
     def resolve_citations(
         self,
