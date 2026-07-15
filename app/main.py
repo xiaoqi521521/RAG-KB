@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.telemetry import init_metrics, shutdown_metrics
+from app.core.trace_id import register_trace_id_middleware
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.token_metrics import TokenMetrics
 
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
         debug=settings.debug,
         lifespan=lifespan,
     )
+    register_trace_id_middleware(app)
     register_exception_handlers(app)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     if settings.enable_metrics:

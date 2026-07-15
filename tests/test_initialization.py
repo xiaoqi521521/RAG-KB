@@ -169,6 +169,8 @@ def test_current_user_contextvar_is_set_and_reset():
 
 
 def test_fastapi_health_endpoint(monkeypatch):
+    from uuid import UUID
+
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv(
         "DATABASE_URL",
@@ -190,6 +192,7 @@ def test_fastapi_health_endpoint(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "UP"}
+    assert UUID(response.headers["X-Trace-Id"]).version == 4
 
 
 @pytest.mark.asyncio

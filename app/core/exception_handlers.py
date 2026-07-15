@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.trace_id import TRACE_ID_HEADER, trace_id_var
 from app.schemas.common import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -86,11 +87,24 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     Returns:
         包含通用服务器内部错误消息的 JSONResponse。
     """
-    logger.exception("未处理的请求异常：method=%s error_type=%s", request.method, type(exc).__name__)
-    return JSONResponse(
-        status_code=500,
-        content=_response_content(500, "服务器内部错误"),
-    )
+    raw_trace_id = getattr(request.state, "trace_id", None)
+    trace_id = raw_trace_id if isinstance(raw_trace_id, str) else None
+    token = trace_id_var.set(trace_id)
+    try:
+        logger.exception(
+            "未处理的请求异常：method=%s error_type=%s",
+            request.method,
+            type(exc).__name__,
+        )
+        response = JSONResponse(
+            status_code=500,
+            content=_response_content(500, "服务器内部错误"),
+        )
+        if trace_id is not None:
+            response.headers[TRACE_ID_HEADER] = trace_id
+        return response
+    finally:
+        trace_id_var.reset(token)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
