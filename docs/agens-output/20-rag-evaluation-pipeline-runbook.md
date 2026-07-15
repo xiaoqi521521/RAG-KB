@@ -187,11 +187,18 @@ ORDER BY expected.chunk_id;
 
 ## 5. 受约束状态更新 SQL
 
-在同一受控变更事务中执行。SQL 会重复第 4 节的关键条件，条件不满足时返回零行；零行必须
-视为失败并回滚，不能继续用更宽松的 SQL 更新。
+在同一受控变更事务中执行。`SHARE` 表锁会等待已经开始的文档发布完成，并阻止新的文档
+或 chunk 写入越过本次校验；随后 SQL 会在新快照中重复第 4 节的关键条件。该锁会短暂阻塞
+索引发布，只能在受控运维窗口中持有，并应尽快提交或回滚。
+
+不要把最后的 `COMMIT` 与下列语句一起批量执行。先执行到 `RETURNING`：恰好返回一行时
+手工执行 `COMMIT`；返回零行或发生异常时执行 `ROLLBACK`。零行不能改用更宽松的 SQL
+重试。
 
 ```sql
 BEGIN;
+
+LOCK TABLE kb_document, kb_doc_chunk IN SHARE MODE;
 
 UPDATE kb_eval_dataset AS dataset
 SET status = 'ACTIVE',
@@ -227,8 +234,18 @@ WHERE dataset.kb_id = :kb_id
          OR document.is_deleted IS TRUE
   )
 RETURNING id, kb_id, status, review_reason;
+```
 
+成功且恰好返回一行：
+
+```sql
 COMMIT;
+```
+
+其他情况：
+
+```sql
+ROLLBACK;
 ```
 
 ## 6. 文档重建后的重新标注
@@ -275,7 +292,7 @@ COMMIT;
 uv run pytest -q tests/evaluation tests/repositories/test_evaluations.py tests/repositories/test_feedback_repository.py tests/repositories/test_chat_repository.py tests/services/test_feedback_service.py tests/api/test_feedback_api.py tests/services/test_document_update.py tests/services/test_indexing.py tests/services/test_permissions.py tests/services/test_rag_query_v4.py tests/api/test_evaluation.py tests/api/test_rag.py tests/core/test_trace_id.py
 ```
 
-结果：`141 passed`，另有一条既有 Starlette `httpx` 弃用警告。
+结果：`142 passed`，另有一条既有 Starlette `httpx` 弃用警告。
 
 最终验证结果：
 
@@ -285,7 +302,7 @@ uv run ruff check .
 uv run mypy app
 ```
 
-- Pytest：`333 passed`，另有一条既有 Starlette `httpx` 弃用警告。
+- Pytest：`334 passed`，另有一条既有 Starlette `httpx` 弃用警告。
 - Ruff：通过。
 - Mypy：未通过，报告 13 项既有基线错误；分布在 `app/core/config.py`、
   `app/core/security.py`、`app/repositories/chunks.py`、`app/services/reranker.py`、
