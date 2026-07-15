@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Float, case, cast, func, select
+from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DocChunk, DocumentStatus, EvalDataset, EvalResult, KbDocument
+from app.models import (
+    DocChunk,
+    DocumentStatus,
+    EvalDataset,
+    EvalResult,
+    EvalResultStatus,
+    KbDocument,
+)
 
 
 @dataclass(frozen=True)
@@ -20,6 +30,23 @@ class CurrentChunkSummary:
     section_title: str | None
     token_count: int
     excerpt: str
+
+
+@dataclass(frozen=True)
+class EvaluationReport:
+    """一个知识库评估版本的检索聚合报告。"""
+
+    kb_id: int
+    eval_version: str
+    total_questions: int
+    success_count: int
+    partial_count: int
+    failed_count: int
+    retrieval_sample_count: int
+    hit_count: int
+    hit_rate_at_5: float | None
+    mrr_at_5: float | None
+    eval_at: datetime
 
 
 class EvaluationRepository:
@@ -93,6 +120,43 @@ class EvaluationRepository:
         result = await self.session.execute(statement)
         return bool(result.scalar_one())
 
+    async def version_exists(self, *, kb_id: int, eval_version: str) -> bool:
+        """按标准问题所属知识库检查评估版本是否已经存在。"""
+        statement = select(
+            select(EvalResult.id)
+            .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
+            .where(
+                EvalDataset.kb_id == kb_id,
+                EvalResult.eval_version == eval_version,
+            )
+            .exists()
+        )
+        result = await self.session.execute(statement)
+        return bool(result.scalar_one())
+
+    async def save_results(self, results: list[EvalResult]) -> None:
+        """在当前请求事务中一次加入并刷新全部逐题结果。"""
+        self.session.add_all(results)
+        await self.session.flush()
+
+    async def get_report(
+        self,
+        *,
+        kb_id: int,
+        eval_version: str,
+    ) -> EvaluationReport | None:
+        """读取目标知识库的单个评估版本聚合报告。"""
+        result = await self.session.execute(
+            self._report_statement(kb_id=kb_id).where(EvalResult.eval_version == eval_version)
+        )
+        row = result.one_or_none()
+        return self._report_from_row(kb_id, row) if row is not None else None
+
+    async def list_reports(self, *, kb_id: int) -> list[EvaluationReport]:
+        """按评估时间倒序列出目标知识库的版本聚合报告。"""
+        result = await self.session.execute(self._report_statement(kb_id=kb_id))
+        return [self._report_from_row(kb_id, row) for row in result.all()]
+
     async def list_valid_chunk_ids(
         self,
         *,
@@ -153,3 +217,62 @@ class EvaluationRepository:
             )
             for row in result.all()
         ]
+
+    def _report_statement(self, *, kb_id: int):
+        """构建只按逐题结果实时计算的知识库版本聚合查询。"""
+        retrieval_sample_count = func.count(EvalResult.hit)
+        hit_count = func.sum(case((EvalResult.hit.is_(True), 1), else_=0))
+        reciprocal_rank = case(
+            (EvalResult.rank.is_not(None), 1.0 / cast(EvalResult.rank, Float)),
+            else_=0.0,
+        )
+        reciprocal_rank_sum = func.sum(
+            case((EvalResult.hit.is_not(None), reciprocal_rank), else_=0.0)
+        )
+        hit_rate = cast(hit_count, Float) / func.nullif(cast(retrieval_sample_count, Float), 0.0)
+        mrr = cast(reciprocal_rank_sum, Float) / func.nullif(
+            cast(retrieval_sample_count, Float), 0.0
+        )
+        evaluated_at = func.max(EvalResult.eval_at)
+
+        return (
+            select(
+                EvalResult.eval_version.label("eval_version"),
+                func.count(EvalResult.id).label("total_questions"),
+                func.sum(
+                    case((EvalResult.status == EvalResultStatus.SUCCESS.value, 1), else_=0)
+                ).label("success_count"),
+                func.sum(
+                    case((EvalResult.status == EvalResultStatus.PARTIAL.value, 1), else_=0)
+                ).label("partial_count"),
+                func.sum(
+                    case((EvalResult.status == EvalResultStatus.FAILED.value, 1), else_=0)
+                ).label("failed_count"),
+                retrieval_sample_count.label("retrieval_sample_count"),
+                hit_count.label("hit_count"),
+                hit_rate.label("hit_rate_at_5"),
+                mrr.label("mrr_at_5"),
+                evaluated_at.label("eval_at"),
+            )
+            .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
+            .where(EvalDataset.kb_id == kb_id)
+            .group_by(EvalResult.eval_version)
+            .order_by(evaluated_at.desc())
+        )
+
+    def _report_from_row(self, kb_id: int, row: Row[Any]) -> EvaluationReport:
+        """把 SQLAlchemy 聚合行转换为稳定的报告对象。"""
+        values = row._mapping
+        return EvaluationReport(
+            kb_id=kb_id,
+            eval_version=values["eval_version"],
+            total_questions=values["total_questions"],
+            success_count=values["success_count"],
+            partial_count=values["partial_count"],
+            failed_count=values["failed_count"],
+            retrieval_sample_count=values["retrieval_sample_count"],
+            hit_count=values["hit_count"],
+            hit_rate_at_5=values["hit_rate_at_5"],
+            mrr_at_5=values["mrr_at_5"],
+            eval_at=values["eval_at"],
+        )

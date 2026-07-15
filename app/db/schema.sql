@@ -217,10 +217,23 @@ CREATE TABLE kb_eval_result (
     id              BIGSERIAL PRIMARY KEY,
     dataset_id      BIGINT          NOT NULL,
     eval_version    VARCHAR(50)     NOT NULL,           -- 评估版本（如：v1_chunk512_hybrid）
-    hit             BOOLEAN         NOT NULL,           -- 是否命中（期望 chunk 在召回结果中）
+    hit             BOOLEAN,                            -- NULL 表示不参与检索指标
     rank            INT,                               -- 命中 chunk 的排名（用于 MRR 计算）
     actual_answer   TEXT,
     faithfulness    FLOAT,                             -- RAGAS Faithfulness 分数
     answer_relevancy FLOAT,                            -- RAGAS Answer Relevancy 分数
-    eval_at         TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
+    context_recall      FLOAT,
+    context_precision   FLOAT,
+    status              VARCHAR(20)     NOT NULL,
+    error_type          VARCHAR(100),
+    eval_at         TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT uq_eval_result_dataset_version UNIQUE (dataset_id, eval_version),
+    CONSTRAINT ck_eval_result_status CHECK (status IN ('SUCCESS', 'PARTIAL', 'FAILED')),
+    CONSTRAINT ck_eval_result_rank CHECK (rank IS NULL OR rank BETWEEN 1 AND 5),
+    CONSTRAINT ck_eval_result_scores CHECK (
+        (faithfulness IS NULL OR faithfulness BETWEEN 0.0 AND 1.0)
+        AND (answer_relevancy IS NULL OR answer_relevancy BETWEEN 0.0 AND 1.0)
+        AND (context_recall IS NULL OR context_recall BETWEEN 0.0 AND 1.0)
+        AND (context_precision IS NULL OR context_precision BETWEEN 0.0 AND 1.0)
+    )
 );

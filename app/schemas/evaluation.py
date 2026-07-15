@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 PositiveId = Annotated[int, Field(gt=0)]
+EVAL_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def normalize_eval_version(value: str) -> str:
+    """规范化评估版本，并限制为可稳定记录的短标识。"""
+    normalized = value.strip()
+    if not normalized or len(normalized) > 50 or EVAL_VERSION_PATTERN.fullmatch(normalized) is None:
+        raise ValueError("invalid evaluation version")
+    return normalized
 
 
 class EvalDatasetWriteRequest(BaseModel):
@@ -82,3 +92,21 @@ class CurrentChunkSummaryItem(BaseModel):
     section_title: str | None = None
     token_count: int
     excerpt: str
+
+
+class EvaluationReportItem(BaseModel):
+    """检索评估版本的聚合报告。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    kb_id: int
+    eval_version: str
+    total_questions: int
+    success_count: int
+    partial_count: int
+    failed_count: int
+    retrieval_sample_count: int
+    hit_count: int
+    hit_rate_at_5: float | None = None
+    mrr_at_5: float | None = None
+    eval_at: datetime

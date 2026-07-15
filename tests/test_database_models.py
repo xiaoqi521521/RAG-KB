@@ -143,3 +143,41 @@ def test_eval_dataset_model_and_sql_define_lifecycle_constraints():
     assert "ADD COLUMN IF NOT EXISTS status" in migration_sql
     assert "UPDATE kb_eval_dataset" in migration_sql
     assert "SET status = 'ACTIVE'" in migration_sql
+
+
+def test_eval_result_model_and_sql_define_metric_constraints():
+    from app.models import EvalResult, EvalResultStatus
+
+    assert {status.value for status in EvalResultStatus} == {
+        "SUCCESS",
+        "PARTIAL",
+        "FAILED",
+    }
+    columns = EvalResult.__table__.columns
+    assert columns["hit"].nullable is True
+    assert columns["rank"].nullable is True
+    assert columns["context_recall"].nullable is True
+    assert columns["context_precision"].nullable is True
+    assert columns["status"].nullable is False
+    assert columns["error_type"].nullable is True
+    assert {constraint.name for constraint in EvalResult.__table__.constraints} >= {
+        "uq_eval_result_dataset_version",
+        "ck_eval_result_status",
+        "ck_eval_result_rank",
+        "ck_eval_result_scores",
+    }
+
+    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
+    assert "hit             BOOLEAN" in schema_sql
+    assert "context_recall      FLOAT" in schema_sql
+    assert "context_precision   FLOAT" in schema_sql
+    assert "status              VARCHAR(20)     NOT NULL" in schema_sql
+    assert "error_type          VARCHAR(100)" in schema_sql
+    assert "uq_eval_result_dataset_version" in schema_sql
+
+    migration_sql = Path("app/db/migrations/20260715_extend_eval_result.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "ALTER COLUMN hit DROP NOT NULL" in migration_sql
+    assert "ADD COLUMN IF NOT EXISTS context_recall" in migration_sql
+    assert "uq_eval_result_dataset_version" in migration_sql

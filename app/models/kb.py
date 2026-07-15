@@ -16,6 +16,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -76,6 +77,12 @@ class EvalDatasetStatus(StrEnum):
     ACTIVE = "ACTIVE"
     NEEDS_REVIEW = "NEEDS_REVIEW"
     ARCHIVED = "ARCHIVED"
+
+
+class EvalResultStatus(StrEnum):
+    SUCCESS = "SUCCESS"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
 
 
 class KnowledgeBase(Base):
@@ -268,15 +275,41 @@ class EvalDataset(Base):
 
 class EvalResult(Base):
     __tablename__ = "kb_eval_result"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_id",
+            "eval_version",
+            name="uq_eval_result_dataset_version",
+        ),
+        CheckConstraint(
+            "status IN ('SUCCESS', 'PARTIAL', 'FAILED')",
+            name="ck_eval_result_status",
+        ),
+        CheckConstraint(
+            "rank IS NULL OR rank BETWEEN 1 AND 5",
+            name="ck_eval_result_rank",
+        ),
+        CheckConstraint(
+            "(faithfulness IS NULL OR faithfulness BETWEEN 0.0 AND 1.0) AND "
+            "(answer_relevancy IS NULL OR answer_relevancy BETWEEN 0.0 AND 1.0) AND "
+            "(context_recall IS NULL OR context_recall BETWEEN 0.0 AND 1.0) AND "
+            "(context_precision IS NULL OR context_precision BETWEEN 0.0 AND 1.0)",
+            name="ck_eval_result_scores",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     eval_version: Mapped[str] = mapped_column(String(50), nullable=False)
-    hit: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    hit: Mapped[bool | None] = mapped_column(Boolean)
     rank: Mapped[int | None] = mapped_column(Integer)
     actual_answer: Mapped[str | None] = mapped_column(Text)
     faithfulness: Mapped[float | None] = mapped_column(Float)
     answer_relevancy: Mapped[float | None] = mapped_column(Float)
+    context_recall: Mapped[float | None] = mapped_column(Float)
+    context_precision: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    error_type: Mapped[str | None] = mapped_column(String(100))
     eval_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )

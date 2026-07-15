@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
 from app.models import EvalDataset, EvalDatasetStatus
-from app.repositories.evaluations import CurrentChunkSummary
+from app.repositories.evaluations import CurrentChunkSummary, EvaluationReport
 
 
 def _user() -> CurrentUser:
@@ -82,9 +82,44 @@ class FakeEvaluationDatasetService:
         ]
 
 
+class FakeEvaluationRunService:
+    def __init__(self) -> None:
+        self.run_calls: list[tuple[int, str, int]] = []
+        self.history_calls: list[int] = []
+        self.report = EvaluationReport(
+            kb_id=3,
+            eval_version="release-1",
+            total_questions=2,
+            success_count=1,
+            partial_count=0,
+            failed_count=1,
+            retrieval_sample_count=1,
+            hit_count=1,
+            hit_rate_at_5=1.0,
+            mrr_at_5=0.5,
+            eval_at=datetime(2026, 7, 15),
+        )
+
+    async def run(
+        self,
+        *,
+        kb_id: int,
+        eval_version: str,
+        user: CurrentUser,
+        rag_executor: object,
+    ):
+        self.run_calls.append((kb_id, eval_version, user.user_id))
+        return self.report
+
+    async def list_history(self, *, kb_id: int):
+        self.history_calls.append(kb_id)
+        return [self.report]
+
+
 def _client(
     permission_service: FakePermissionService,
     dataset_service: FakeEvaluationDatasetService,
+    run_service: FakeEvaluationRunService | None = None,
 ) -> TestClient:
     from app.api.routes import evaluation
 
@@ -93,6 +128,9 @@ def _client(
     app.dependency_overrides[evaluation.get_current_user] = lambda: _user()
     app.dependency_overrides[evaluation.get_permission_service] = lambda: permission_service
     app.dependency_overrides[evaluation.get_evaluation_dataset_service] = lambda: dataset_service
+    if run_service is not None:
+        app.dependency_overrides[evaluation.get_evaluation_run_service] = lambda: run_service
+        app.dependency_overrides[evaluation.get_evaluation_rag_executor] = lambda: object()
     return TestClient(app)
 
 
@@ -160,3 +198,44 @@ def test_permission_failure_stops_before_dataset_or_chunk_reads() -> None:
     assert chunk_response.status_code == 503
     assert dataset_service.list_calls == []
     assert dataset_service.chunk_calls == []
+
+
+def test_run_and_history_are_admin_guarded_and_return_aggregate_only() -> None:
+    permission_service = FakePermissionService()
+    run_service = FakeEvaluationRunService()
+
+    with _client(permission_service, FakeEvaluationDatasetService(), run_service) as client:
+        run_response = client.post("/api/v1/eval/3/run", params={"version": " release-1 "})
+        history_response = client.get("/api/v1/eval/3/history")
+
+    assert run_response.status_code == 200
+    assert history_response.status_code == 200
+    assert run_response.json()["data"]["mrr_at_5"] == 0.5
+    assert "dataset_id" not in history_response.json()["data"][0]
+    assert run_service.run_calls == [(3, "release-1", 7)]
+    assert run_service.history_calls == [3]
+    assert permission_service.admin_checks == [3, 3]
+
+
+def test_run_rejects_unstable_version_before_evaluation() -> None:
+    run_service = FakeEvaluationRunService()
+
+    with _client(FakePermissionService(), FakeEvaluationDatasetService(), run_service) as client:
+        response = client.post("/api/v1/eval/3/run", params={"version": "bad version"})
+
+    assert response.status_code == 422
+    assert run_service.run_calls == []
+
+
+def test_permission_failure_stops_run_and_history_before_result_access() -> None:
+    run_service = FakeEvaluationRunService()
+    permission_service = FakePermissionService(status_code=503)
+
+    with _client(permission_service, FakeEvaluationDatasetService(), run_service) as client:
+        run_response = client.post("/api/v1/eval/3/run", params={"version": "release-1"})
+        history_response = client.get("/api/v1/eval/3/history")
+
+    assert run_response.status_code == 503
+    assert history_response.status_code == 503
+    assert run_service.run_calls == []
+    assert run_service.history_calls == []

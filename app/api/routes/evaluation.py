@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
 from app.api.routes.knowledge_bases import get_permission_service
+from app.api.routes.rag import RagQueryPipeline, get_rag_query_service
 from app.core.context import CurrentUser
 from app.core.database import get_db
 from app.evaluation.dataset_service import EvaluationDatasetService
+from app.evaluation.service import EvaluationRagExecutor, EvaluationRunService
 from app.models import EvalDatasetStatus
 from app.repositories.evaluations import EvaluationRepository
 from app.schemas.common import ApiResponse
@@ -15,8 +17,11 @@ from app.schemas.evaluation import (
     CurrentChunkSummaryItem,
     EvalDatasetItem,
     EvalDatasetWriteRequest,
+    EvaluationReportItem,
+    normalize_eval_version,
 )
 from app.services.permissions import PermissionService
+from app.services.rag_query_v4 import RagQueryServiceV4
 
 router = APIRouter()
 
@@ -26,6 +31,65 @@ def get_evaluation_dataset_service(
 ) -> EvaluationDatasetService:
     """构建标准问题集服务及其数据库仓储。"""
     return EvaluationDatasetService(EvaluationRepository(session))
+
+
+def get_evaluation_run_service(
+    session: AsyncSession = Depends(get_db),
+) -> EvaluationRunService:
+    """构建评估结果读写和运行编排服务。"""
+    return EvaluationRunService(repository=EvaluationRepository(session))
+
+
+def get_evaluation_rag_executor(
+    rag_service: RagQueryPipeline = Depends(get_rag_query_service),
+) -> EvaluationRagExecutor:
+    """校验正式运行复用的是当前部署 V4 共享执行接口。"""
+    if not isinstance(rag_service, RagQueryServiceV4):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="正式评估要求启用 V4 RAG 管道",
+        )
+    return rag_service
+
+
+@router.post("/{kb_id}/run")
+async def run_evaluation(
+    kb_id: int,
+    version: str = Query(...),
+    user: CurrentUser = Depends(get_current_user),
+    permission_service: PermissionService = Depends(get_permission_service),
+    run_service: EvaluationRunService = Depends(get_evaluation_run_service),
+    rag_executor: EvaluationRagExecutor = Depends(get_evaluation_rag_executor),
+) -> ApiResponse[EvaluationReportItem]:
+    """同步运行当前 V4 管道并返回本次检索聚合报告。"""
+    await permission_service.require_admin(kb_id, user)
+    try:
+        eval_version = normalize_eval_version(version)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="评估版本格式无效",
+        ) from exc
+    report = await run_service.run(
+        kb_id=kb_id,
+        eval_version=eval_version,
+        user=user,
+        rag_executor=rag_executor,
+    )
+    return ApiResponse.ok(EvaluationReportItem.model_validate(report))
+
+
+@router.get("/{kb_id}/history")
+async def list_evaluation_history(
+    kb_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    permission_service: PermissionService = Depends(get_permission_service),
+    run_service: EvaluationRunService = Depends(get_evaluation_run_service),
+) -> ApiResponse[list[EvaluationReportItem]]:
+    """按评估时间倒序返回聚合历史，不暴露逐题结果。"""
+    await permission_service.require_admin(kb_id, user)
+    reports = await run_service.list_history(kb_id=kb_id)
+    return ApiResponse.ok([EvaluationReportItem.model_validate(item) for item in reports])
 
 
 @router.get("/{kb_id}/dataset")
