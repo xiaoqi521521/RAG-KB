@@ -40,6 +40,10 @@ class PermissionService:
         """校验当前用户是否具备知识库写权限。"""
         await self._require(kb_id=kb_id, user=user, action="write")
 
+    async def require_admin(self, kb_id: int, user: CurrentUser) -> None:
+        """校验系统管理员或目标知识库的本地管理员权限。"""
+        await self._require(kb_id=kb_id, user=user, action="admin")
+
     async def get_highest_permission(self, kb_id: int, user: CurrentUser) -> str | None:
         """合并用户权限和部门权限，返回最高权限级别。"""
         try:
@@ -128,7 +132,11 @@ class PermissionService:
 
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="无权访问该知识库" if action == "read" else "无文档管理权限",
+                detail={
+                    "read": "无权访问该知识库",
+                    "write": "无文档管理权限",
+                    "admin": "无评估管理权限",
+                }[action],
             )
         except HTTPException as exc:
             if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
@@ -143,6 +151,8 @@ class PermissionService:
         """判断有效权限能否完成当前读写操作。"""
         if action == "read":
             return permission is not None
+        if action == "admin":
+            return permission == KbPermissionLevel.ADMIN.value
         return permission in {KbPermissionLevel.WRITE.value, KbPermissionLevel.ADMIN.value}
 
     def _service_unavailable(self) -> HTTPException:

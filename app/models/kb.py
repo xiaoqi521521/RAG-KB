@@ -5,7 +5,19 @@ from enum import StrEnum
 from typing import Any
 
 from pgvector.sqlalchemy import Vector as PGVector  # type: ignore[import-untyped]
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, SmallInteger, String, Text, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
@@ -57,6 +69,13 @@ class IndexTaskStatus(StrEnum):
 class ChatMessageRole(StrEnum):
     USER = "USER"
     ASSISTANT = "ASSISTANT"
+
+
+class EvalDatasetStatus(StrEnum):
+    CANDIDATE = "CANDIDATE"
+    ACTIVE = "ACTIVE"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+    ARCHIVED = "ARCHIVED"
 
 
 class KnowledgeBase(Base):
@@ -220,12 +239,27 @@ class AnswerFeedback(Base):
 
 class EvalDataset(Base):
     __tablename__ = "kb_eval_dataset"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('CANDIDATE', 'ACTIVE', 'NEEDS_REVIEW', 'ARCHIVED')",
+            name="ck_eval_dataset_status",
+        ),
+        Index("idx_eval_dataset_kb_status", "kb_id", "status"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     expected_answer: Mapped[str | None] = mapped_column(Text)
     expected_chunk_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=EvalDatasetStatus.ACTIVE.value,
+        server_default=EvalDatasetStatus.ACTIVE.value,
+    )
+    review_reason: Mapped[str | None] = mapped_column(String(50))
+    source_feedback_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL

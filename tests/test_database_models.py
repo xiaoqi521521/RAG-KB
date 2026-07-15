@@ -110,3 +110,36 @@ def test_index_task_can_retry_only_failed_tasks_under_limit():
     assert failed_task.can_retry() is True
     assert exhausted_task.can_retry() is False
     assert pending_task.can_retry() is False
+
+
+def test_eval_dataset_model_and_sql_define_lifecycle_constraints():
+    from app.models import EvalDataset, EvalDatasetStatus
+
+    assert {status.value for status in EvalDatasetStatus} == {
+        "CANDIDATE",
+        "ACTIVE",
+        "NEEDS_REVIEW",
+        "ARCHIVED",
+    }
+    columns = EvalDataset.__table__.columns
+    assert columns["status"].default.arg == "ACTIVE"
+    assert columns["status"].nullable is False
+    assert columns["review_reason"].nullable is True
+    assert columns["source_feedback_id"].nullable is True
+    assert columns["source_feedback_id"].unique is True
+    assert {index.name for index in EvalDataset.__table__.indexes} >= {
+        "idx_eval_dataset_kb_status"
+    }
+
+    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
+    assert "status              VARCHAR(20)     NOT NULL DEFAULT 'ACTIVE'" in schema_sql
+    assert "review_reason       VARCHAR(50)" in schema_sql
+    assert "source_feedback_id  BIGINT UNIQUE" in schema_sql
+    assert "idx_eval_dataset_kb_status" in schema_sql
+
+    migration_sql = Path(
+        "app/db/migrations/20260715_extend_eval_dataset.sql"
+    ).read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS status" in migration_sql
+    assert "UPDATE kb_eval_dataset" in migration_sql
+    assert "SET status = 'ACTIVE'" in migration_sql

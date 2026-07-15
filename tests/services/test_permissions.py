@@ -104,6 +104,52 @@ async def test_require_write_allows_user_write_permission() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "permission",
+    [None, KbPermissionLevel.READ.value, KbPermissionLevel.WRITE.value],
+)
+async def test_require_admin_rejects_public_read_and_non_admin_grants(
+    permission: str | None,
+) -> None:
+    permissions = (
+        {}
+        if permission is None
+        else {
+            (1, PermissionSubjectType.USER.value, "7"): permission,
+        }
+    )
+    service = _service(
+        knowledge_bases=[
+            KnowledgeBase(
+                id=1,
+                name="Public KB",
+                department_id="engineering",
+                is_public=True,
+                created_by=1,
+            )
+        ],
+        permissions=permissions,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.require_admin(1, _user(user_id=7))
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_require_admin_allows_system_or_local_knowledge_base_admin() -> None:
+    service = _service(
+        permissions={
+            (1, PermissionSubjectType.USER.value, "7"): KbPermissionLevel.ADMIN.value,
+        }
+    )
+
+    await service.require_admin(1, _user(role="ADMIN"))
+    await service.require_admin(1, _user(user_id=7))
+
+
+@pytest.mark.asyncio
 async def test_get_highest_permission_prefers_user_admin_over_department_read() -> None:
     service = _service(
         permissions={

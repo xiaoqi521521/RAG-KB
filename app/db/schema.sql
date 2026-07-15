@@ -202,9 +202,16 @@ CREATE TABLE kb_eval_dataset (
     question        TEXT            NOT NULL,
     expected_answer TEXT,
     expected_chunk_ids  BIGINT[],                      -- 期望召回的 chunk ID
+    status              VARCHAR(20)     NOT NULL DEFAULT 'ACTIVE',
+    review_reason       VARCHAR(50),
+    source_feedback_id  BIGINT UNIQUE,
     created_by      BIGINT          NOT NULL,
-    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
+    created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT ck_eval_dataset_status
+        CHECK (status IN ('CANDIDATE', 'ACTIVE', 'NEEDS_REVIEW', 'ARCHIVED'))
 );
+
+CREATE INDEX idx_eval_dataset_kb_status ON kb_eval_dataset(kb_id, status);
 
 CREATE TABLE kb_eval_result (
     id              BIGSERIAL PRIMARY KEY,
