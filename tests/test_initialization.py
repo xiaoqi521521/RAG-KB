@@ -1,6 +1,23 @@
+from uuid import UUID
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+
+
+def _set_required_app_env(monkeypatch: pytest.MonkeyPatch, *, debug: bool = False) -> None:
+    """设置应用工厂测试所需的最小环境变量。"""
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
+    )
+    monkeypatch.setenv(
+        "SYNC_DATABASE_URL",
+        "postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
+    )
+    monkeypatch.setenv("RERANKER_ENDPOINT", "https://example.test/rerank")
+    monkeypatch.setenv("APP_DEBUG", str(debug).lower())
 
 
 def test_settings_env_file_uses_project_root_path():
@@ -168,19 +185,8 @@ def test_current_user_contextvar_is_set_and_reset():
         get_current_user_from_context()
 
 
-def test_fastapi_health_endpoint(monkeypatch):
-    from uuid import UUID
-
-    monkeypatch.setenv("SECRET_KEY", "test-secret")
-    monkeypatch.setenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
-    )
-    monkeypatch.setenv(
-        "SYNC_DATABASE_URL",
-        "postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
-    )
-    monkeypatch.setenv("RERANKER_ENDPOINT", "https://example.test/rerank")
+def test_fastapi_health_endpoint(monkeypatch: pytest.MonkeyPatch):
+    _set_required_app_env(monkeypatch)
 
     from app.core.config import get_settings
     from app.main import create_app
@@ -195,20 +201,10 @@ def test_fastapi_health_endpoint(monkeypatch):
     assert UUID(response.headers["X-Trace-Id"]).version == 4
 
 
-def test_debug_reload_setting_does_not_expose_unhandled_error_details(monkeypatch):
-    from uuid import UUID
-
-    monkeypatch.setenv("SECRET_KEY", "test-secret")
-    monkeypatch.setenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
-    )
-    monkeypatch.setenv(
-        "SYNC_DATABASE_URL",
-        "postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
-    )
-    monkeypatch.setenv("RERANKER_ENDPOINT", "https://example.test/rerank")
-    monkeypatch.setenv("APP_DEBUG", "true")
+def test_debug_reload_setting_does_not_expose_unhandled_error_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_app_env(monkeypatch, debug=True)
 
     from app.core.config import get_settings
     from app.main import create_app
