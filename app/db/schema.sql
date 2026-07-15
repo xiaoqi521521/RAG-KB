@@ -172,6 +172,7 @@ CREATE TABLE kb_chat_message (
     token_count     INT             DEFAULT 0,          -- 消耗的 Token 数
     latency_ms      INT             DEFAULT 0,          -- 生成耗时（毫秒）
     feedback        SMALLINT,                          -- 用户反馈：1=好 -1=差 NULL=未反馈
+    kb_ids          BIGINT[],                          -- 本轮助手回答使用的完整知识库范围
     created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
 );
 
@@ -190,7 +191,8 @@ CREATE TABLE kb_answer_feedback (
     feedback        SMALLINT        NOT NULL,           -- 1=有用 -1=无用
     comment         TEXT,                              -- 可选的文字反馈
     created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
-    UNIQUE (message_id, user_id)
+    CONSTRAINT uq_answer_feedback_message_user UNIQUE (message_id, user_id),
+    CONSTRAINT ck_answer_feedback_value CHECK (feedback IN (-1, 1))
 );
 
 -- ================================================================

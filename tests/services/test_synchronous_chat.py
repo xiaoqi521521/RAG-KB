@@ -118,6 +118,7 @@ async def test_query_injects_history_and_saves_complete_turn() -> None:
     assert len(service.saved_turns) == 1
     assert service.saved_turns[0]["question"] == "年假怎么申请？"
     assert service.saved_turns[0]["answer"] == "根据员工手册。"
+    assert service.saved_turns[0]["kb_ids"] == [2]
     assert service.saved_turns[0]["token_count"] == 4
 
 

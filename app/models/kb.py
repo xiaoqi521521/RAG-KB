@@ -226,6 +226,7 @@ class ChatMessage(Base):
     token_count: Mapped[int | None] = mapped_column(Integer, default=0, server_default="0")
     latency_ms: Mapped[int | None] = mapped_column(Integer, default=0, server_default="0")
     feedback: Mapped[int | None] = mapped_column(SmallInteger)
+    kb_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
@@ -233,6 +234,17 @@ class ChatMessage(Base):
 
 class AnswerFeedback(Base):
     __tablename__ = "kb_answer_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id",
+            "user_id",
+            name="uq_answer_feedback_message_user",
+        ),
+        CheckConstraint(
+            "feedback IN (-1, 1)",
+            name="ck_answer_feedback_value",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)

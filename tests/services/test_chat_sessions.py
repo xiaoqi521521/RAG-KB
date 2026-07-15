@@ -14,7 +14,7 @@ class FakeChatRepository:
         self.messages = messages
         self.owner_id = owner_id
         self.touched: list[str] = []
-        self.saved: list[str] = []
+        self.saved: list[dict[str, object]] = []
 
     async def get_active_session_for_user(
         self,
@@ -36,7 +36,7 @@ class FakeChatRepository:
     async def add_turn_for_user(self, *, session_id: str, user_id: int, **kwargs: object) -> bool:
         if user_id != self.owner_id:
             return False
-        self.saved.append(session_id)
+        self.saved.append({"session_id": session_id, "user_id": user_id, **kwargs})
         return True
 
 
@@ -73,6 +73,7 @@ async def test_saving_a_turn_rejects_a_session_owned_by_another_user() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.save_turn(
             session_id="session-1",
+            kb_ids=[2],
             question="问题",
             answer="回答",
             sources=[],
@@ -83,3 +84,21 @@ async def test_saving_a_turn_rejects_a_session_owned_by_another_user() -> None:
 
     assert exc_info.value.status_code == 404
     assert repository.saved == []
+
+
+async def test_saving_a_turn_passes_the_complete_knowledge_base_scope() -> None:
+    repository = FakeChatRepository([])
+    service = ChatSessionService(repository)  # type: ignore[arg-type]
+
+    await service.save_turn(
+        session_id="session-1",
+        kb_ids=[2, 3],
+        question="问题",
+        answer="回答",
+        sources=[],
+        token_count=1,
+        latency_ms=1,
+        user=CurrentUser(1, "engineering", "MEMBER"),
+    )
+
+    assert repository.saved[0]["kb_ids"] == [2, 3]

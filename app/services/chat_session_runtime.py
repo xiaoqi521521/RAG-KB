@@ -38,6 +38,7 @@ class ChatSessionRuntime:
         self,
         *,
         session_id: str,
+        kb_ids: list[int],
         question: str,
         answer: str,
         sources: list[dict[str, object]],
@@ -50,6 +51,7 @@ class ChatSessionRuntime:
             service = ChatSessionService(ChatRepository(session))
             await service.save_turn(
                 session_id=session_id,
+                kb_ids=kb_ids,
                 question=question,
                 answer=answer,
                 sources=sources,

@@ -39,6 +39,7 @@ class ChatSessionService:
         self,
         *,
         session_id: str,
+        kb_ids: list[int],
         question: str,
         answer: str,
         sources: list[dict[str, object]],
@@ -50,6 +51,7 @@ class ChatSessionService:
         saved = await self.repository.add_turn_for_user(
             session_id=session_id,
             user_id=user.user_id,
+            kb_ids=kb_ids,
             question=question,
             answer=answer,
             sources=sources,

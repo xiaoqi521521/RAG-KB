@@ -186,6 +186,7 @@ async def test_stream_saves_complete_turn_and_injects_recent_history() -> None:
     assert saved_turn["session_id"] == "session-1"
     assert saved_turn["question"] == "年假怎么申请？"
     assert saved_turn["answer"] == "根据员工手册。"
+    assert saved_turn["kb_ids"] == [2]
     assert saved_turn["sources"] == [
         {
             "reference_index": 1,

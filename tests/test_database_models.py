@@ -181,3 +181,30 @@ def test_eval_result_model_and_sql_define_metric_constraints():
     assert "ALTER COLUMN hit DROP NOT NULL" in migration_sql
     assert "ADD COLUMN IF NOT EXISTS context_recall" in migration_sql
     assert "uq_eval_result_dataset_version" in migration_sql
+
+
+def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
+    from sqlalchemy.dialects import postgresql
+
+    from app.models import AnswerFeedback, ChatMessage
+
+    assert ChatMessage.__table__.columns["kb_ids"].nullable is True
+    assert (
+        ChatMessage.__table__.columns["kb_ids"].type.compile(dialect=postgresql.dialect())
+        == "BIGINT[]"
+    )
+    assert {constraint.name for constraint in AnswerFeedback.__table__.constraints} >= {
+        "uq_answer_feedback_message_user",
+        "ck_answer_feedback_value",
+    }
+
+    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
+    assert "kb_ids          BIGINT[]" in schema_sql
+    assert "uq_answer_feedback_message_user" in schema_sql
+    assert "ck_answer_feedback_value" in schema_sql
+
+    migration_sql = Path(
+        "app/db/migrations/20260715_extend_answer_feedback.sql"
+    ).read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS kb_ids BIGINT[]" in migration_sql
+    assert "ck_answer_feedback_value" in migration_sql

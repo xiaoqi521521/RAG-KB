@@ -34,6 +34,7 @@ class ChatRepository:
         *,
         session_id: str,
         user_id: int,
+        kb_ids: list[int],
         question: str,
         answer: str,
         sources: list[dict[str, object]],
@@ -63,6 +64,7 @@ class ChatRepository:
                     sources=sources,
                     token_count=token_count,
                     latency_ms=latency_ms,
+                    kb_ids=kb_ids,
                 ),
             ]
         )

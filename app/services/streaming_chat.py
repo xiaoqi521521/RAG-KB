@@ -159,6 +159,7 @@ class StreamingChatService(ChatSessionRuntime):
         source_data = [source.model_dump(mode="json") for source in sources]
         await self._save_turn(
             session_id=active_session_id,
+            kb_ids=kb_ids,
             question=question,
             answer=answer,
             sources=source_data,
