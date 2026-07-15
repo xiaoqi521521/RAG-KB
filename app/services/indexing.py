@@ -14,6 +14,7 @@ from app.integrations.minio import MinioStorageService
 from app.models import DocChunk, DocumentStatus, IndexTaskType, KbDocument
 from app.repositories.chunks import ChunkRepository
 from app.repositories.documents import DocumentRepository
+from app.repositories.evaluations import EvaluationRepository
 from app.repositories.index_tasks import IndexTaskRepository
 from app.services.chunking import ChunkService
 from app.services.document_loader.service import DocumentLoaderService
@@ -40,6 +41,7 @@ class IndexTaskRunner(Protocol):
 BackgroundServiceFactory = Callable[[], AbstractAsyncContextManager[IndexTaskRunner]]
 CommitBeforeLaunch = Callable[[], Awaitable[None]]
 CommitAfterStatusChange = Callable[[], Awaitable[None]]
+RollbackBeforeFailureStatus = Callable[[], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class IndexService:
         document_repository: DocumentRepository,
         task_repository: IndexTaskRepository,
         chunk_repository: ChunkRepository,
+        evaluation_repository: EvaluationRepository,
         storage_service: MinioStorageService,
         loader_service: DocumentLoaderService,
         chunk_service: ChunkService,
@@ -90,6 +93,7 @@ class IndexService:
         background_service_factory: BackgroundServiceFactory | None = None,
         commit_before_launch: CommitBeforeLaunch | None = None,
         commit_after_status_change: CommitAfterStatusChange | None = None,
+        rollback_before_failure_status: RollbackBeforeFailureStatus | None = None,
     ) -> None:
         """注入索引管道依赖，保持服务层只负责编排流程。
 
@@ -97,6 +101,7 @@ class IndexService:
             document_repository: 文档状态与版本信息仓储。
             task_repository: 索引任务状态仓储。
             chunk_repository: 文档 chunk 与向量写入仓储。
+            evaluation_repository: 标准问题标注状态仓储。
             storage_service: 原始文件下载服务，本阶段只依赖 download 签名。
             loader_service: 文档解析服务。
             chunk_service: 文档分块服务。
@@ -104,10 +109,12 @@ class IndexService:
             background_service_factory: 后台任务使用的独立服务工厂，避免复用请求级数据库会话。
             commit_before_launch: 后台任务启动前的提交钩子，确保新任务对独立会话可见。
             commit_after_status_change: 进入执行态后的提交钩子，确保外部轮询可见处理中状态。
+            rollback_before_failure_status: 失败状态落库前回滚当前发布事务的钩子。
         """
         self.document_repository = document_repository
         self.task_repository = task_repository
         self.chunk_repository = chunk_repository
+        self.evaluation_repository = evaluation_repository
         self.storage_service = storage_service
         self.loader_service = loader_service
         self.chunk_service = chunk_service
@@ -115,6 +122,7 @@ class IndexService:
         self.background_service_factory = background_service_factory
         self.commit_before_launch = commit_before_launch
         self.commit_after_status_change = commit_after_status_change
+        self.rollback_before_failure_status = rollback_before_failure_status
         self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def submit_index_task(self, doc_id: int) -> int:
@@ -324,6 +332,12 @@ class IndexService:
             new_version,
             token_count,
         )
+        old_chunk_ids: list[int] = []
+        if task.task_type == IndexTaskType.REINDEX.value:
+            old_chunk_ids = await self.chunk_repository.list_older_version_ids(
+                doc_id,
+                new_version,
+            )
         publish_source = index_source if index_source.is_replacement else None
         await self.document_repository.mark_done(
             doc_id,
@@ -335,6 +349,11 @@ class IndexService:
             file_size=publish_source.file_size if publish_source is not None else None,
             minio_path=publish_source.minio_path if publish_source is not None else None,
         )
+        if old_chunk_ids:
+            await self.evaluation_repository.invalidate_reindexed_chunk_labels(
+                kb_id=document.kb_id,
+                old_chunk_ids=old_chunk_ids,
+            )
         # 新版本已完整写入后再清理旧版本；若清理失败，旧数据残留也不会影响最新版本查询。
         await self.chunk_repository.delete_older_versions(doc_id, new_version)
         if index_source.old_minio_path is not None:
@@ -463,6 +482,9 @@ class IndexService:
             doc_id: 任务关联的文档 ID。
             error_msg: 失败原因，写入任务和文档状态便于排查。
         """
+        # 发布事务必须先整体回滚，再用新事务记录失败状态，避免版本与标注部分生效。
+        if self.rollback_before_failure_status is not None:
+            await self.rollback_before_failure_status()
         await self.task_repository.mark_failed(task_id, error_msg)
         task = await self.task_repository.get(task_id)
         document = await self.document_repository.get(doc_id)

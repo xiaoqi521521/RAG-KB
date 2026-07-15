@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Float, case, cast, func, select
+from sqlalchemy import Float, case, cast, func, select, update
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from app.models import (
     DocChunk,
     DocumentStatus,
     EvalDataset,
+    EvalDatasetStatus,
     EvalResult,
     EvalResultStatus,
     KbDocument,
@@ -217,6 +218,36 @@ class EvaluationRepository:
             )
             for row in result.all()
         ]
+
+    async def invalidate_reindexed_chunk_labels(
+        self,
+        *,
+        kb_id: int,
+        old_chunk_ids: list[int],
+    ) -> None:
+        """使引用旧版本 chunk 的活动标准问题进入待审核状态。
+
+        Args:
+            kb_id: 重建文档所属知识库 ID。
+            old_chunk_ids: 删除前读取的文档旧版本 chunk ID。
+
+        Returns:
+            None。更新保留在当前事务中，由索引发布流程统一提交。
+        """
+        if not old_chunk_ids:
+            return
+        await self.session.execute(
+            update(EvalDataset)
+            .where(
+                EvalDataset.kb_id == kb_id,
+                EvalDataset.status == EvalDatasetStatus.ACTIVE.value,
+                EvalDataset.expected_chunk_ids.overlap(old_chunk_ids),
+            )
+            .values(
+                status=EvalDatasetStatus.NEEDS_REVIEW.value,
+                review_reason="document_reindexed",
+            )
+        )
 
     def _report_statement(self, *, kb_id: int):
         """构建只按逐题结果实时计算的知识库版本聚合查询。"""

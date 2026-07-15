@@ -46,6 +46,7 @@ def get_document_update_service(
                 settings,
                 background_service_factory=background_index_service_factory,
                 commit_after_status_change=background_session.commit,
+                rollback_before_failure_status=background_session.rollback,
             )
             try:
                 yield background_index_service

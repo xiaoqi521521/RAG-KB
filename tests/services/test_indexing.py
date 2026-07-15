@@ -39,9 +39,10 @@ def _build_document(**overrides: object) -> KbDocument:
 
 
 class FakeDocumentRepository:
-    def __init__(self, docs: list[KbDocument]) -> None:
+    def __init__(self, docs: list[KbDocument], operations: list[str] | None = None) -> None:
         self.docs = {doc.id: doc for doc in docs}
         self.processing_doc_ids: list[int] = []
+        self.operations = operations if operations is not None else []
 
     async def get(self, doc_id: int) -> KbDocument | None:
         return self.docs.get(doc_id)
@@ -62,6 +63,7 @@ class FakeDocumentRepository:
         file_size: int | None = None,
         minio_path: str | None = None,
     ) -> None:
+        self.operations.append("publish_document")
         doc = self.docs[doc_id]
         doc.status = DocumentStatus.DONE.value
         doc.error_msg = None
@@ -84,9 +86,10 @@ class FakeDocumentRepository:
 
 
 class FakeIndexTaskRepository:
-    def __init__(self) -> None:
+    def __init__(self, operations: list[str] | None = None) -> None:
         self.tasks: dict[int, IndexTask] = {}
         self.next_id = 1
+        self.operations = operations if operations is not None else []
 
     async def create(
         self,
@@ -120,6 +123,7 @@ class FakeIndexTaskRepository:
         task.error_msg = None
 
     async def mark_failed(self, task_id: int, error_msg: str) -> None:
+        self.operations.append("mark_task_failed")
         task = self.tasks[task_id]
         task.status = IndexTaskStatus.FAILED.value
         task.error_msg = error_msg
@@ -138,18 +142,53 @@ class FakeIndexTaskRepository:
 
 
 class FakeChunkRepository:
-    def __init__(self, insert_exc: Exception | None = None) -> None:
+    def __init__(
+        self,
+        insert_exc: Exception | None = None,
+        *,
+        old_chunk_ids: list[int] | None = None,
+        delete_exc: Exception | None = None,
+        operations: list[str] | None = None,
+    ) -> None:
         self.inserted: list[DocChunk] = []
+        self.old_chunk_ids = old_chunk_ids or []
+        self.listed_older_versions: list[tuple[int, int]] = []
         self.deleted: list[tuple[int, int]] = []
         self.insert_exc = insert_exc
+        self.delete_exc = delete_exc
+        self.operations = operations if operations is not None else []
 
     async def insert_many(self, chunks: list[DocChunk]) -> None:
         if self.insert_exc:
             raise self.insert_exc
+        self.operations.append("insert_new_chunks")
         self.inserted.extend(chunks)
 
+    async def list_older_version_ids(self, doc_id: int, current_version: int) -> list[int]:
+        self.operations.append("read_old_chunk_ids")
+        self.listed_older_versions.append((doc_id, current_version))
+        return self.old_chunk_ids
+
     async def delete_older_versions(self, doc_id: int, current_version: int) -> None:
+        if self.delete_exc:
+            raise self.delete_exc
+        self.operations.append("delete_old_chunks")
         self.deleted.append((doc_id, current_version))
+
+
+class FakeEvaluationRepository:
+    def __init__(self, operations: list[str] | None = None) -> None:
+        self.invalidations: list[tuple[int, list[int]]] = []
+        self.operations = operations if operations is not None else []
+
+    async def invalidate_reindexed_chunk_labels(
+        self,
+        *,
+        kb_id: int,
+        old_chunk_ids: list[int],
+    ) -> None:
+        self.operations.append("invalidate_labels")
+        self.invalidations.append((kb_id, old_chunk_ids))
 
 
 class FakeStorage:
@@ -230,6 +269,7 @@ class ServiceBundle:
     documents: FakeDocumentRepository
     tasks: FakeIndexTaskRepository
     chunks: FakeChunkRepository
+    evaluations: FakeEvaluationRepository
     storage: FakeStorage
     embedding: FakeEmbeddingService
 
@@ -257,11 +297,23 @@ def _build_service(
     loader_exc: Exception | None = None,
     embedding_exc: Exception | None = None,
     chunk_insert_exc: Exception | None = None,
+    old_chunk_ids: list[int] | None = None,
+    chunk_delete_exc: Exception | None = None,
+    publication_operations: list[str] | None = None,
     index_service_kwargs: dict[str, object] | None = None,
 ) -> ServiceBundle:
-    document_repo = FakeDocumentRepository(docs or [_build_document()])
-    task_repo = FakeIndexTaskRepository()
-    chunk_repo = FakeChunkRepository(insert_exc=chunk_insert_exc)
+    document_repo = FakeDocumentRepository(
+        docs or [_build_document()],
+        operations=publication_operations,
+    )
+    task_repo = FakeIndexTaskRepository(operations=publication_operations)
+    chunk_repo = FakeChunkRepository(
+        insert_exc=chunk_insert_exc,
+        old_chunk_ids=old_chunk_ids,
+        delete_exc=chunk_delete_exc,
+        operations=publication_operations,
+    )
+    evaluation_repo = FakeEvaluationRepository(operations=publication_operations)
     storage = FakeStorage(exc=storage_exc)
     loader = FakeLoader(
         parsed_docs or [Document(page_content="员工手册正文", metadata={"page_num": 1})],
@@ -282,13 +334,22 @@ def _build_service(
         document_repository=document_repo,
         task_repository=task_repo,
         chunk_repository=chunk_repo,
+        evaluation_repository=evaluation_repo,
         storage_service=storage,
         loader_service=loader,
         chunk_service=chunk_service,
         embedding_service=embedding,
         **(index_service_kwargs or {}),
     )
-    return ServiceBundle(service, document_repo, task_repo, chunk_repo, storage, embedding)
+    return ServiceBundle(
+        service,
+        document_repo,
+        task_repo,
+        chunk_repo,
+        evaluation_repo,
+        storage,
+        embedding,
+    )
 
 
 @pytest.mark.asyncio
@@ -344,6 +405,7 @@ async def test_launch_task_uses_background_service_factory() -> None:
         document_repository=document_repo,
         task_repository=task_repo,
         chunk_repository=FakeChunkRepository(),
+        evaluation_repository=FakeEvaluationRepository(),
         storage_service=FakeStorage(),
         loader_service=FakeLoader([Document(page_content="正文")]),
         chunk_service=FakeChunkService([Document(page_content="正文")]),
@@ -414,6 +476,8 @@ async def test_run_task_initial_index_keeps_document_initial_version() -> None:
     assert inserted.token_count == 12
     assert inserted.doc_version == 1
     assert inserted.content_tsv is None
+    assert bundle.chunks.listed_older_versions == []
+    assert bundle.evaluations.invalidations == []
     assert bundle.chunks.deleted == [(1, 1)]
 
 
@@ -509,6 +573,7 @@ async def test_run_task_reindex_keeps_done_document_queryable_while_running() ->
 @pytest.mark.asyncio
 async def test_run_task_reindex_increments_document_version() -> None:
     doc = _build_document(version=1)
+    publication_operations: list[str] = []
     bundle = _build_service(
         docs=[doc],
         chunks=[
@@ -518,6 +583,8 @@ async def test_run_task_reindex_increments_document_version() -> None:
             )
         ],
         vectors=[[0.4] * 1024],
+        old_chunk_ids=[101, 102],
+        publication_operations=publication_operations,
     )
     task_id = await bundle.service.reindex_document(1)
 
@@ -530,7 +597,16 @@ async def test_run_task_reindex_increments_document_version() -> None:
     assert doc.version == 2
     inserted = bundle.chunks.inserted[0]
     assert inserted.doc_version == 2
+    assert bundle.chunks.listed_older_versions == [(1, 2)]
+    assert bundle.evaluations.invalidations == [(10, [101, 102])]
     assert bundle.chunks.deleted == [(1, 2)]
+    assert publication_operations == [
+        "insert_new_chunks",
+        "read_old_chunk_ids",
+        "publish_document",
+        "invalidate_labels",
+        "delete_old_chunks",
+    ]
 
 
 @pytest.mark.asyncio
@@ -573,6 +649,42 @@ async def test_run_task_reindex_with_replacement_payload_publishes_new_file_afte
     assert bundle.chunks.inserted[0].doc_version == 3
     assert bundle.chunks.deleted == [(1, 3)]
     assert bundle.storage.deleted == ["kb/10/old-handbook.txt"]
+
+
+@pytest.mark.asyncio
+async def test_failed_reindex_rolls_back_before_recording_retry_status() -> None:
+    """发布失败时应先回滚当前事务，再记录任务失败和重试状态。"""
+    doc = _build_document(
+        status=DocumentStatus.DONE.value,
+        version=1,
+        chunk_count=2,
+        token_count=20,
+    )
+    publication_operations: list[str] = []
+
+    async def rollback_publication() -> None:
+        publication_operations.append("rollback_publication")
+
+    bundle = _build_service(
+        docs=[doc],
+        old_chunk_ids=[101, 102],
+        chunk_delete_exc=RuntimeError("delete old chunks failed"),
+        publication_operations=publication_operations,
+        index_service_kwargs={
+            "rollback_before_failure_status": rollback_publication,
+        },
+    )
+    task_id = await bundle.service.reindex_document(1)
+
+    await bundle.service.run_task(task_id, 1)
+
+    task = bundle.tasks.tasks[task_id]
+    assert publication_operations[-2:] == [
+        "rollback_publication",
+        "mark_task_failed",
+    ]
+    assert task.status == IndexTaskStatus.PENDING.value
+    assert task.retry_count == 1
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from app.core.database import AsyncSessionLocal, get_db
 from app.integrations.minio import MinioStorageService
 from app.repositories.chunks import ChunkRepository
 from app.repositories.documents import DocumentRepository
+from app.repositories.evaluations import EvaluationRepository
 from app.repositories.index_tasks import IndexTaskRepository
 from app.repositories.knowledge_bases import KnowledgeBaseRepository
 from app.repositories.permissions import KbPermissionRepository
@@ -44,6 +45,7 @@ def _build_index_service(
     background_service_factory=None,
     commit_before_launch=None,
     commit_after_status_change=None,
+    rollback_before_failure_status=None,
 ) -> IndexService:
     """构建索引服务及其底层依赖。
 
@@ -53,6 +55,7 @@ def _build_index_service(
         background_service_factory: 后台任务独立服务工厂。
         commit_before_launch: 后台任务启动前的事务提交钩子。
         commit_after_status_change: 任务进入执行态后的事务提交钩子。
+        rollback_before_failure_status: 发布失败后、记录失败状态前的事务回滚钩子。
 
     Returns:
         已组装仓储、存储、加载、分块和向量化能力的 IndexService。
@@ -62,6 +65,7 @@ def _build_index_service(
         document_repository=DocumentRepository(session),
         task_repository=IndexTaskRepository(session),
         chunk_repository=ChunkRepository(session),
+        evaluation_repository=EvaluationRepository(session),
         storage_service=MinioStorageService(client=get_minio(), bucket=settings.minio_bucket),
         loader_service=DocumentLoaderService(
             [
@@ -76,6 +80,7 @@ def _build_index_service(
         background_service_factory=background_service_factory,
         commit_before_launch=commit_before_launch,
         commit_after_status_change=commit_after_status_change,
+        rollback_before_failure_status=rollback_before_failure_status,
     )
 
 
@@ -123,6 +128,7 @@ def get_knowledge_base_service(
                 settings,
                 background_service_factory=background_index_service_factory,
                 commit_after_status_change=background_session.commit,
+                rollback_before_failure_status=background_session.rollback,
             )
             try:
                 yield background_index_service

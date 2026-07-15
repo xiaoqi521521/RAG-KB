@@ -178,6 +178,16 @@ class ChunkRepository:
         self.session.add_all(chunks)
         await self.session.flush()
 
+    async def list_older_version_ids(self, doc_id: int, current_version: int) -> list[int]:
+        """读取指定文档在当前版本之前的历史 chunk ID。"""
+        result = await self.session.execute(
+            select(DocChunk.id).where(
+                DocChunk.doc_id == doc_id,
+                DocChunk.doc_version < current_version,
+            )
+        )
+        return list(result.scalars().all())
+
     async def delete_older_versions(self, doc_id: int, current_version: int) -> None:
         """删除指定文档在当前版本之前的历史分块数据。"""
         await self.session.execute(

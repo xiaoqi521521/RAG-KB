@@ -21,6 +21,25 @@ class FakeSession:
         return FakeResult()
 
 
+class FakeIdScalars:
+    def all(self) -> list[int]:
+        return [101, 102]
+
+
+class FakeIdResult:
+    def scalars(self) -> FakeIdScalars:
+        return FakeIdScalars()
+
+
+class IdRecordingSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return FakeIdResult()
+
+
 async def test_search_by_vector_builds_current_version_filtered_query() -> None:
     session = FakeSession()
     repository = ChunkRepository(session)
@@ -57,3 +76,16 @@ async def test_search_by_fulltext_builds_current_version_filtered_query() -> Non
     assert isinstance(list(session.statement.selected_columns)[-1].type, Float)
     assert hits[0].chunk_id == 10
     assert hits[0].score == 0.25
+
+
+async def test_list_older_version_ids_reads_only_document_chunks_before_new_version() -> None:
+    """发布新版本前应只读取该文档即将删除的旧 chunk ID。"""
+    session = IdRecordingSession()
+    repository = ChunkRepository(session)
+
+    chunk_ids = await repository.list_older_version_ids(doc_id=7, current_version=3)
+
+    statement_text = str(session.statement)
+    assert "kb_doc_chunk.doc_id =" in statement_text
+    assert "kb_doc_chunk.doc_version <" in statement_text
+    assert chunk_ids == [101, 102]
