@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -9,6 +11,8 @@ from typing import Any, Protocol
 import httpx
 import openai
 from instructor.core.exceptions import InstructorRetryException
+from opentelemetry import metrics as otel_metrics
+from opentelemetry.metrics import Counter, Histogram, Meter
 from ragas.embeddings.base import BaseRagasEmbedding
 from ragas.llms import llm_factory
 from ragas.llms.base import InstructorBaseRagasLLM
@@ -20,6 +24,8 @@ from ragas.metrics.collections import (
 )
 
 from app.integrations.openai_embeddings import OpenAICompatibleEmbeddings
+
+logger = logging.getLogger(__name__)
 
 
 class FaithfulnessMetric(Protocol):
@@ -162,6 +168,69 @@ class _MetricOutcome:
     error: RagasMetricError | None
 
 
+class RagasEvaluationMetrics:
+    """记录不含业务正文和标识的 RAGAS 指标观测。"""
+
+    def __init__(self, *, meter: Meter | None = None) -> None:
+        """初始化结果、重试次数和耗时指标。"""
+        effective_meter = meter or otel_metrics.get_meter("rag-kb.ragas_evaluation")
+        self._results: Counter = effective_meter.create_counter(
+            "rag.evaluation.ragas.results",
+            description="RAGAS 单项评估结果数",
+        )
+        self._retries: Counter = effective_meter.create_counter(
+            "rag.evaluation.ragas.retries",
+            description="RAGAS 单项外层重试数",
+        )
+        self._durations: Histogram = effective_meter.create_histogram(
+            "rag.evaluation.ragas.duration",
+            unit="ms",
+            description="RAGAS 单项评估总耗时",
+        )
+
+    def record_retry(
+        self,
+        *,
+        metric: RagasMetricName,
+        error_type: RagasErrorType,
+    ) -> None:
+        """记录一次低基数重试原因。"""
+        attributes = {"metric": metric.value, "error_type": error_type.value}
+        logger.info(
+            "ragas_metric_retry=true metric=%s error_type=%s",
+            metric.value,
+            error_type.value,
+        )
+        try:
+            self._retries.add(1, attributes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ragas_retry_metric_write_failed=true error_type=%s", type(exc).__name__)
+
+    def record_result(
+        self,
+        *,
+        metric: RagasMetricName,
+        error_type: RagasErrorType | None,
+        elapsed_ms: int,
+    ) -> None:
+        """记录一次单项最终结果和总耗时。"""
+        result = "success" if error_type is None else "error"
+        error = error_type.value if error_type is not None else "none"
+        attributes = {"metric": metric.value, "result": result, "error_type": error}
+        logger.info(
+            "ragas_metric_completed=true metric=%s result=%s error_type=%s elapsed_ms=%s",
+            metric.value,
+            result,
+            error,
+            elapsed_ms,
+        )
+        try:
+            self._results.add(1, attributes)
+            self._durations.record(elapsed_ms, attributes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ragas_result_metric_write_failed=true error_type=%s", type(exc).__name__)
+
+
 @dataclass(frozen=True)
 class RagasEvaluationResult:
     """四项独立可空分数及其失败分类。"""
@@ -181,12 +250,18 @@ class RagasEvaluator:
         *,
         metrics: RagasMetrics,
         timeout_seconds: float = 30.0,
+        max_retries: int = 1,
+        observability: RagasEvaluationMetrics | None = None,
     ) -> None:
         """初始化四项指标依赖。"""
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if isinstance(max_retries, bool) or max_retries not in {0, 1}:
+            raise ValueError("max_retries must be 0 or 1")
         self.metrics = metrics
         self.timeout_seconds = timeout_seconds
+        self.max_retries = max_retries
+        self.observability = observability or RagasEvaluationMetrics()
 
     @classmethod
     def from_clients(
@@ -194,6 +269,9 @@ class RagasEvaluator:
         *,
         chat_model: Any,
         embeddings: OpenAICompatibleEmbeddings,
+        timeout_seconds: float = 30.0,
+        max_retries: int = 1,
+        observability: RagasEvaluationMetrics | None = None,
     ) -> RagasEvaluator:
         """复用现有回答模型和 Embedding 客户端构建正式评估适配器。"""
         model_name = getattr(chat_model, "model_name", None)
@@ -205,13 +283,16 @@ class RagasEvaluator:
 
         # 禁用 SDK 内部重试，确保重试次数只由本适配器控制。
         evaluation_client = root_async_client.with_options(max_retries=0)
-        llm = llm_factory(model_name, client=evaluation_client, max_retries=1)
+        llm = llm_factory(model_name, client=evaluation_client, max_retries=0)
         ragas_embeddings = _OpenAICompatibleRagasEmbeddings(embeddings)
         return cls(
             metrics=build_ragas_metrics(
                 llm=llm,
                 embeddings=ragas_embeddings,
-            )
+            ),
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            observability=observability,
         )
 
     async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
@@ -272,10 +353,20 @@ class RagasEvaluator:
         inputs: dict[str, Any],
     ) -> _MetricOutcome:
         """执行单项评分，并将异常正文收敛为稳定分类。"""
-        if self._has_invalid_input(inputs):
-            return self._error_outcome(metric_name, RagasErrorType.INVALID_INPUT)
+        started_at = time.perf_counter()
 
-        for attempt in range(2):
+        def finish(outcome: _MetricOutcome) -> _MetricOutcome:
+            self.observability.record_result(
+                metric=metric_name,
+                error_type=outcome.error.error_type if outcome.error is not None else None,
+                elapsed_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+            )
+            return outcome
+
+        if self._has_invalid_input(inputs):
+            return finish(self._error_outcome(metric_name, RagasErrorType.INVALID_INPUT))
+
+        for attempt in range(self.max_retries + 1):
             try:
                 result = await asyncio.wait_for(
                     metric.ascore(**inputs),
@@ -283,17 +374,25 @@ class RagasEvaluator:
                 )
             except Exception as exc:  # noqa: BLE001
                 error_type, retryable = self._classify_error(exc)
-                if attempt == 0 and retryable:
+                if attempt < self.max_retries and retryable:
+                    self.observability.record_retry(
+                        metric=metric_name,
+                        error_type=error_type,
+                    )
                     continue
-                return self._error_outcome(metric_name, error_type)
+                return finish(self._error_outcome(metric_name, error_type))
             else:
                 try:
                     score = float(getattr(result, "value"))
                 except (AttributeError, TypeError, ValueError):
-                    return self._error_outcome(metric_name, RagasErrorType.PARSE_ERROR)
+                    return finish(
+                        self._error_outcome(metric_name, RagasErrorType.PARSE_ERROR)
+                    )
                 if not math.isfinite(score) or not 0.0 <= score <= 1.0:
-                    return self._error_outcome(metric_name, RagasErrorType.INVALID_SCORE)
-                return _MetricOutcome(score=score, error=None)
+                    return finish(
+                        self._error_outcome(metric_name, RagasErrorType.INVALID_SCORE)
+                    )
+                return finish(_MetricOutcome(score=score, error=None))
 
         raise AssertionError("unreachable metric attempt state")
 
@@ -326,6 +425,10 @@ class RagasEvaluator:
         if isinstance(exc, openai.APIStatusError) and exc.status_code >= 500:
             return RagasErrorType.TEMPORARY_PROVIDER, True
         if isinstance(exc, InstructorRetryException):
+            if isinstance(exc.__cause__, Exception):
+                return RagasEvaluator._classify_error(exc.__cause__)
+            if exc.failed_attempts:
+                return RagasEvaluator._classify_error(exc.failed_attempts[-1].exception)
             return RagasErrorType.PARSE_ERROR, False
         if isinstance(exc, (ValueError, TypeError, AttributeError)):
             return RagasErrorType.PARSE_ERROR, False

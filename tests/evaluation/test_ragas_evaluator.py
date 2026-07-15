@@ -14,6 +14,7 @@ from ragas.llms.base import InstructorBaseRagasLLM
 from app.evaluation.ragas_evaluator import (
     RagasErrorType,
     RagasEvaluationSample,
+    RagasEvaluationMetrics,
     RagasEvaluator,
     RagasMetricError,
     RagasMetricName,
@@ -125,7 +126,9 @@ async def test_evaluate_runs_all_four_metrics_concurrently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evaluate_isolates_one_metric_failure_without_sensitive_error_text() -> None:
+async def test_evaluate_isolates_one_metric_failure_without_sensitive_error_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class ParseFailingMetric(FakeMetric):
         async def ascore(self, **kwargs: Any) -> SimpleNamespace:
             self.calls.append(kwargs)
@@ -146,14 +149,15 @@ async def test_evaluate_isolates_one_metric_failure_without_sensitive_error_text
         )
     )
 
-    result = await evaluator.evaluate(
-        RagasEvaluationSample(
-            question="问题",
-            actual_answer="回答",
-            expected_answer="期望回答",
-            reference_contexts=["参考内容"],
+    with caplog.at_level("INFO", logger="app.evaluation.ragas_evaluator"):
+        result = await evaluator.evaluate(
+            RagasEvaluationSample(
+                question="问题",
+                actual_answer="回答",
+                expected_answer="期望回答",
+                reference_contexts=["参考内容"],
+            )
         )
-    )
 
     assert result.faithfulness == 0.9
     assert result.answer_relevancy == 0.8
@@ -167,6 +171,9 @@ async def test_evaluate_isolates_one_metric_failure_without_sensitive_error_text
     )
     assert len(context_recall.calls) == 1
     assert "供应商响应" not in repr(result)
+    assert "供应商响应" not in caplog.text
+    assert "问题与回答正文" not in caplog.text
+    assert "metric=context_recall result=error error_type=parse_error" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -234,7 +241,14 @@ async def test_evaluate_retries_only_temporary_provider_failures(
     class FailingMetric(FakeMetric):
         async def ascore(self, **kwargs: Any) -> NoReturn:
             self.calls.append(kwargs)
-            raise error
+            try:
+                raise error
+            except Exception as cause:
+                raise InstructorRetryException(
+                    "wrapped provider failure",
+                    n_attempts=1,
+                    total_usage=0,
+                ) from cause
 
     faithfulness = FailingMetric(0.0)
     evaluator = RagasEvaluator(
@@ -395,6 +409,8 @@ async def test_from_clients_reuses_existing_chat_and_embedding_clients() -> None
     evaluator = RagasEvaluator.from_clients(
         chat_model=chat_model,
         embeddings=embeddings,
+        timeout_seconds=12.0,
+        max_retries=0,
     )
     ragas_embeddings = evaluator.metrics.answer_relevancy.embeddings
     vectors = await ragas_embeddings.aembed_texts(["问题", "生成问题"])
@@ -403,7 +419,8 @@ async def test_from_clients_reuses_existing_chat_and_embedding_clients() -> None
     assert embedding_api.calls == [
         {"input": ["问题", "生成问题"], "model": "text-embedding-v3"}
     ]
-    assert evaluator.timeout_seconds == 30.0
+    assert evaluator.timeout_seconds == 12.0
+    assert evaluator.max_retries == 0
     await root_client.close()
 
 
@@ -449,3 +466,58 @@ async def test_evaluate_rejects_only_metrics_with_invalid_inputs_without_calling
     assert len(answer_relevancy.calls) == 1
     assert context_recall.calls == []
     assert context_precision.calls == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_records_low_cardinality_result_retry_and_duration_metrics() -> None:
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    class TimeoutOnceMetric(FakeMetric):
+        async def ascore(self, **kwargs: Any) -> SimpleNamespace:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                await asyncio.sleep(1)
+            return SimpleNamespace(value=self.score)
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    evaluator = RagasEvaluator(
+        metrics=RagasMetrics(
+            faithfulness=TimeoutOnceMetric(0.9),
+            answer_relevancy=FakeMetric(0.8),
+            context_recall=FakeMetric(0.7),
+            context_precision=FakeMetric(0.6),
+        ),
+        timeout_seconds=0.01,
+        observability=RagasEvaluationMetrics(
+            meter=provider.get_meter("tests.ragas_evaluation")
+        ),
+    )
+
+    await evaluator.evaluate(
+        RagasEvaluationSample(
+            question="敏感问题",
+            actual_answer="敏感回答",
+            expected_answer="敏感期望答案",
+            reference_contexts=["敏感参考内容"],
+        )
+    )
+
+    try:
+        metrics_data = reader.get_metrics_data()
+    finally:
+        provider.shutdown()
+
+    assert metrics_data is not None
+    metric_names = {
+        metric.name
+        for resource_metrics in metrics_data.resource_metrics
+        for scope_metrics in resource_metrics.scope_metrics
+        for metric in scope_metrics.metrics
+    }
+    assert metric_names == {
+        "rag.evaluation.ragas.results",
+        "rag.evaluation.ragas.retries",
+        "rag.evaluation.ragas.duration",
+    }
