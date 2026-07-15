@@ -42,7 +42,8 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title=settings.app_name,
-        debug=settings.debug,
+        # APP_DEBUG 仅控制本地热重载，HTTP 异常始终使用不泄露内部细节的统一响应。
+        debug=False,
         lifespan=lifespan,
     )
     register_trace_id_middleware(app)

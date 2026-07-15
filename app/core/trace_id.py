@@ -18,13 +18,6 @@ def get_trace_id() -> str | None:
     return trace_id_var.get()
 
 
-def _resolve_trace_id(raw_trace_id: str | None) -> str:
-    """沿用安全的客户端值，否则生成不可注入日志的新 UUID。"""
-    if raw_trace_id is not None and _TRACE_ID_PATTERN.fullmatch(raw_trace_id):
-        return raw_trace_id
-    return str(uuid4())
-
-
 def register_trace_id_middleware(app: FastAPI) -> None:
     """注册请求 Trace ID 中间件。
 
@@ -49,3 +42,10 @@ def register_trace_id_middleware(app: FastAPI) -> None:
             return response
         finally:
             trace_id_var.reset(token)
+
+
+def _resolve_trace_id(raw_trace_id: str | None) -> str:
+    """沿用安全的客户端值，否则生成不可注入日志的新 UUID。"""
+    if raw_trace_id is not None and _TRACE_ID_PATTERN.fullmatch(raw_trace_id):
+        return raw_trace_id
+    return str(uuid4())

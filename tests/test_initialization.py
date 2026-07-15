@@ -195,6 +195,40 @@ def test_fastapi_health_endpoint(monkeypatch):
     assert UUID(response.headers["X-Trace-Id"]).version == 4
 
 
+def test_debug_reload_setting_does_not_expose_unhandled_error_details(monkeypatch):
+    from uuid import UUID
+
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
+    )
+    monkeypatch.setenv(
+        "SYNC_DATABASE_URL",
+        "postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
+    )
+    monkeypatch.setenv("RERANKER_ENDPOINT", "https://example.test/rerank")
+    monkeypatch.setenv("APP_DEBUG", "true")
+
+    from app.core.config import get_settings
+    from app.main import create_app
+
+    get_settings.cache_clear()
+    app = create_app()
+
+    @app.get("/crash")
+    async def crash() -> None:
+        raise RuntimeError("不得出现在响应中的内部错误")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/crash")
+
+    assert response.status_code == 500
+    assert UUID(response.headers["X-Trace-Id"]).version == 4
+    assert response.json() == {"code": 500, "message": "服务器内部错误", "data": None}
+    assert "不得出现在响应中的内部错误" not in response.text
+
+
 @pytest.mark.asyncio
 async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
     from fastapi import FastAPI
