@@ -119,6 +119,7 @@ class FeedbackRepository:
         )
         upsert_statement = statement.on_conflict_do_update(
             index_elements=[EvalDataset.source_feedback_id],
+            index_where=EvalDataset.source_feedback_id.is_not(None),
             set_={
                 "status": EvalDatasetStatus.CANDIDATE.value,
                 "review_reason": None,

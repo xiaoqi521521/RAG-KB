@@ -115,7 +115,10 @@ async def test_candidate_upsert_restores_only_archived_and_archive_updates_only_
 
     upsert_sql = _sql(session.statements[0])
     archive_sql = _sql(session.statements[1])
-    assert "ON CONFLICT (source_feedback_id) DO UPDATE" in upsert_sql
+    assert (
+        "ON CONFLICT (source_feedback_id) WHERE source_feedback_id IS NOT NULL DO UPDATE"
+        in upsert_sql
+    )
     assert "WHERE kb_eval_dataset.status =" in upsert_sql
     assert "UPDATE kb_eval_dataset SET status=" in archive_sql
     assert "kb_eval_dataset.source_feedback_id =" in archive_sql
