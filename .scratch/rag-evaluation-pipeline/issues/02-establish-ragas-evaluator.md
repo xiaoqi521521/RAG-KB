@@ -21,4 +21,4 @@
 
 - 2026-07-15：锁定 `ragas==0.4.3` 与 `langchain-community==0.3.31`，解决 RAGAS 导入已移除 VertexAI 模块的问题。适配器采用官方现代 `metrics.collections` 异步接口，复用现有 ChatOpenAI 底层异步客户端和 `text-embedding-v3` 客户端。
 - 四项指标单题内并发执行，每次尝试默认超时 30 秒；OpenAI SDK 与 Instructor 内部各只允许一次尝试，外层仅对超时、限流和临时连接故障再尝试一次。错误结果只保存指标名与低基数分类，并记录不含业务正文的结果、重试和耗时观测。
-- 验证：`uv run pytest -v`（265 passed）；`uv run ruff check .`（通过）；新评估模块专项 Mypy 通过。`uv run mypy app` 仍报告 13 个既有或并行改动问题，均不位于本 Ticket 修改文件。
+- 验证：`uv run pytest -v`（266 passed）；`uv run ruff check .`（通过）；新评估模块专项 Mypy 通过。`uv run mypy app` 仍报告 13 个既有或并行改动问题，均不位于本 Ticket 修改文件。
