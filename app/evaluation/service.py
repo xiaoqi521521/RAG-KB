@@ -10,8 +10,13 @@ from sqlalchemy.exc import IntegrityError
 from app.core.context import CurrentUser
 from app.core.time import shanghai_now_naive
 from app.evaluation.metrics import calculate_retrieval_metrics
+from app.evaluation.ragas_evaluator import (
+    RagasEvaluationResult,
+    RagasEvaluationSample,
+)
 from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
 from app.repositories.evaluations import EvaluationReport, EvaluationRepository
+from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.rag_query_v4 import RagExecution
 
 logger = logging.getLogger(__name__)
@@ -27,6 +32,12 @@ class EvaluationRagExecutor(Protocol):
         kb_ids: list[int],
         user: CurrentUser,
     ) -> RagExecution: ...
+
+
+class GenerationEvaluator(Protocol):
+    """正式评估依赖的四项生成指标接口。"""
+
+    async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult: ...
 
 
 class EvaluationRunService:
@@ -46,6 +57,7 @@ class EvaluationRunService:
         eval_version: str,
         user: CurrentUser,
         rag_executor: EvaluationRagExecutor,
+        ragas_evaluator: GenerationEvaluator,
     ) -> EvaluationReport:
         """同步运行当前 V4 管道，并返回本次版本聚合报告。"""
         if await self.repository.version_exists(kb_id=kb_id, eval_version=eval_version):
@@ -74,6 +86,7 @@ class EvaluationRunService:
                     dataset=dataset,
                     user=user,
                     rag_executor=rag_executor,
+                    ragas_evaluator=ragas_evaluator,
                     evaluated_at=evaluated_at,
                 )
             )
@@ -104,6 +117,7 @@ class EvaluationRunService:
         dataset: EvalDataset,
         user: CurrentUser,
         rag_executor: EvaluationRagExecutor,
+        ragas_evaluator: GenerationEvaluator,
         evaluated_at: datetime,
     ) -> EvalResult:
         """隔离单题主流程异常，并形成一条内存结果。"""
@@ -145,6 +159,11 @@ class EvaluationRunService:
                 eval_at=evaluated_at,
             )
 
+        actual_answer = (
+            RAG_REFUSAL_ANSWER
+            if execution.explicit_refusal
+            else execution.public_response.answer
+        )
         hit: bool | None = None
         rank: int | None = None
         if dataset.expected_chunk_ids:
@@ -155,13 +174,63 @@ class EvaluationRunService:
             hit = metrics.hit
             rank = metrics.rank
 
+        faithfulness: float | None = None
+        answer_relevancy: float | None = None
+        context_recall: float | None = None
+        context_precision: float | None = None
+        result_status = EvalResultStatus.SUCCESS.value
+        error_type: str | None = None
+        expected_answer = dataset.expected_answer.strip() if dataset.expected_answer else ""
+        if expected_answer and not execution.explicit_refusal:
+            try:
+                generation = await ragas_evaluator.evaluate(
+                    RagasEvaluationSample(
+                        question=dataset.question,
+                        actual_answer=actual_answer,
+                        expected_answer=expected_answer,
+                        reference_contexts=execution.reference_contexts,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "RAGAS question evaluation failed: error_type=ragas_metric_failed "
+                    "exception_type=%s",
+                    type(exc).__name__,
+                )
+                result_status = EvalResultStatus.PARTIAL.value
+                error_type = "ragas_metric_failed"
+            else:
+                faithfulness = generation.faithfulness
+                answer_relevancy = generation.answer_relevancy
+                context_recall = generation.context_recall
+                context_precision = generation.context_precision
+                scores = (
+                    faithfulness,
+                    answer_relevancy,
+                    context_recall,
+                    context_precision,
+                )
+                if generation.errors or any(score is None for score in scores):
+                    result_status = EvalResultStatus.PARTIAL.value
+                    error_type = "ragas_metric_failed"
+                    logger.info(
+                        "RAGAS question evaluation partial: failed_metrics=%s error_types=%s",
+                        ",".join(error.metric.value for error in generation.errors) or "unknown",
+                        ",".join(error.error_type.value for error in generation.errors)
+                        or "unknown",
+                    )
+
         return EvalResult(
             dataset_id=dataset.id,
             eval_version=eval_version,
             hit=hit,
             rank=rank,
-            actual_answer=execution.public_response.answer,
-            status=EvalResultStatus.SUCCESS.value,
-            error_type=None,
+            actual_answer=actual_answer,
+            faithfulness=faithfulness,
+            answer_relevancy=answer_relevancy,
+            context_recall=context_recall,
+            context_precision=context_precision,
+            status=result_status,
+            error_type=error_type,
             eval_at=evaluated_at,
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import pytest
@@ -7,11 +8,19 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app.core.context import CurrentUser
+from app.evaluation.ragas_evaluator import (
+    RagasErrorType,
+    RagasEvaluationResult,
+    RagasEvaluationSample,
+    RagasMetricError,
+    RagasMetricName,
+)
 from app.evaluation.service import EvaluationRunService
 from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
 from app.repositories.chunks import ChunkSearchHit
 from app.repositories.evaluations import EvaluationReport
 from app.schemas.rag import RagQueryResponse
+from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.rag_query_v4 import RagExecution
 
 
@@ -19,12 +28,17 @@ def _user() -> CurrentUser:
     return CurrentUser(user_id=7, department_id="engineering", role="USER")
 
 
-def _dataset(dataset_id: int, expected_chunk_ids: list[int] | None) -> EvalDataset:
+def _dataset(
+    dataset_id: int,
+    expected_chunk_ids: list[int] | None,
+    *,
+    expected_answer: str | None = None,
+) -> EvalDataset:
     return EvalDataset(
         id=dataset_id,
         kb_id=3,
         question=f"问题 {dataset_id}",
-        expected_answer="期望答案",
+        expected_answer=expected_answer,
         expected_chunk_ids=expected_chunk_ids,
         status=EvalDatasetStatus.ACTIVE.value,
         created_by=7,
@@ -51,6 +65,8 @@ def _execution(
     *,
     answer: str = "实际回答",
     degraded: bool = False,
+    reference_contexts: list[str] | None = None,
+    explicit_refusal: bool = False,
 ) -> RagExecution:
     return RagExecution(
         public_response=RagQueryResponse(
@@ -60,11 +76,11 @@ def _execution(
             latency_ms=10,
         ),
         reranked_hits=[_hit(chunk_id) for chunk_id in chunk_ids],
-        reference_contexts=[],
+        reference_contexts=reference_contexts or [],
         prompt_context="",
         reranker_degraded=degraded,
         degraded_reason="reranker_timeout" if degraded else None,
-        explicit_refusal=False,
+        explicit_refusal=explicit_refusal,
     )
 
 
@@ -82,6 +98,19 @@ class FakeRagExecutor:
     ) -> RagExecution:
         self.calls.append((question, kb_ids, user.user_id))
         outcome = self.outcomes[len(self.calls) - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class FakeRagasEvaluator:
+    def __init__(self, outcomes: list[RagasEvaluationResult | Exception]) -> None:
+        self.outcomes = outcomes
+        self.samples: list[RagasEvaluationSample] = []
+
+    async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
+        self.samples.append(sample)
+        outcome = self.outcomes[len(self.samples) - 1]
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -133,6 +162,21 @@ class FakeEvaluationRepository:
             hit_count=hit_count,
             hit_rate_at_5=hit_count / len(samples) if samples else None,
             mrr_at_5=mrr / len(samples) if samples else None,
+            faithfulness_sample_count=sum(result.faithfulness is not None for result in results),
+            avg_faithfulness=None,
+            answer_relevancy_sample_count=sum(
+                result.answer_relevancy is not None for result in results
+            ),
+            avg_answer_relevancy=None,
+            context_recall_sample_count=sum(result.context_recall is not None for result in results),
+            avg_context_recall=None,
+            context_precision_sample_count=sum(
+                result.context_precision is not None for result in results
+            ),
+            avg_context_precision=None,
+            refusal_count=sum(result.actual_answer == RAG_REFUSAL_ANSWER for result in results),
+            refusal_rate=sum(result.actual_answer == RAG_REFUSAL_ANSWER for result in results)
+            / len(results),
             eval_at=results[0].eval_at,
         )
 
@@ -152,6 +196,7 @@ async def test_run_uses_active_questions_once_and_applies_null_metric_semantics(
         eval_version="release-1",
         user=_user(),
         rag_executor=executor,
+        ragas_evaluator=FakeRagasEvaluator([]),
     )
 
     assert repository.list_calls == [(3, EvalDatasetStatus.ACTIVE.value)]
@@ -180,6 +225,7 @@ async def test_run_isolates_main_flow_failure_and_all_failed_run_still_reports()
         eval_version="outage",
         user=_user(),
         rag_executor=executor,
+        ragas_evaluator=FakeRagasEvaluator([]),
     )
 
     assert len(executor.calls) == 2
@@ -210,6 +256,7 @@ async def test_run_rejects_version_conflict_or_missing_active_questions(
             eval_version="release-1",
             user=_user(),
             rag_executor=executor,
+            ragas_evaluator=FakeRagasEvaluator([]),
         )
 
     assert exc_info.value.status_code == 409
@@ -232,6 +279,7 @@ async def test_run_attempts_one_final_batch_and_propagates_persistence_failure()
             eval_version="release-1",
             user=_user(),
             rag_executor=executor,
+            ragas_evaluator=FakeRagasEvaluator([]),
         )
 
     assert len(executor.calls) == 2
@@ -253,8 +301,154 @@ async def test_run_maps_concurrent_unique_conflict_to_http_conflict() -> None:
             eval_version="release-1",
             user=_user(),
             rag_executor=executor,
+            ragas_evaluator=FakeRagasEvaluator([]),
         )
 
     assert exc_info.value.status_code == 409
     assert len(executor.calls) == 1
     assert repository.saved_batches == []
+
+
+@pytest.mark.asyncio
+async def test_run_maps_actual_execution_content_to_all_ragas_scores() -> None:
+    repository = FakeEvaluationRepository(
+        datasets=[_dataset(1, [10], expected_answer="期望答案")]
+    )
+    executor = FakeRagExecutor(
+        [
+            _execution(
+                [10],
+                answer="实际回答",
+                reference_contexts=["截断参考一", "截断参考二"],
+            )
+        ]
+    )
+    ragas = FakeRagasEvaluator(
+        [
+            RagasEvaluationResult(
+                faithfulness=0.9,
+                answer_relevancy=0.8,
+                context_recall=0.7,
+                context_precision=0.6,
+                errors=(),
+            )
+        ]
+    )
+    service = EvaluationRunService(repository=repository)  # type: ignore[arg-type]
+
+    await service.run(
+        kb_id=3,
+        eval_version="generation-1",
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=ragas,
+    )
+
+    assert ragas.samples == [
+        RagasEvaluationSample(
+            question="问题 1",
+            actual_answer="实际回答",
+            expected_answer="期望答案",
+            reference_contexts=["截断参考一", "截断参考二"],
+        )
+    ]
+    result = repository.saved_batches[0][0]
+    assert (
+        result.faithfulness,
+        result.answer_relevancy,
+        result.context_recall,
+        result.context_precision,
+    ) == (0.9, 0.8, 0.7, 0.6)
+    assert result.status == EvalResultStatus.SUCCESS.value
+    assert result.error_type is None
+
+
+@pytest.mark.asyncio
+async def test_run_skips_ragas_for_missing_answer_refusal_and_reranker_degradation() -> None:
+    repository = FakeEvaluationRepository(
+        datasets=[
+            _dataset(1, [10]),
+            _dataset(2, [20], expected_answer="期望答案"),
+            _dataset(3, [30], expected_answer="期望答案"),
+        ]
+    )
+    executor = FakeRagExecutor(
+        [
+            _execution([10]),
+            _execution([20], answer="模型拒答", explicit_refusal=True),
+            _execution([30], degraded=True),
+        ]
+    )
+    ragas = FakeRagasEvaluator([])
+    service = EvaluationRunService(repository=repository)  # type: ignore[arg-type]
+
+    await service.run(
+        kb_id=3,
+        eval_version="skip-generation",
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=ragas,
+    )
+
+    assert ragas.samples == []
+    missing_answer, refusal, degraded = repository.saved_batches[0]
+    assert missing_answer.status == EvalResultStatus.SUCCESS.value
+    assert refusal.actual_answer == RAG_REFUSAL_ANSWER
+    assert refusal.status == EvalResultStatus.SUCCESS.value
+    assert degraded.status == EvalResultStatus.PARTIAL.value
+    for result in (missing_answer, refusal, degraded):
+        assert result.faithfulness is None
+        assert result.answer_relevancy is None
+        assert result.context_recall is None
+        assert result.context_precision is None
+
+
+@pytest.mark.asyncio
+async def test_run_keeps_valid_scores_when_one_ragas_metric_fails(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    repository = FakeEvaluationRepository(
+        datasets=[_dataset(1, [10], expected_answer="敏感期望答案")]
+    )
+    executor = FakeRagExecutor(
+        [_execution([10], answer="敏感实际回答", reference_contexts=["敏感参考正文"])]
+    )
+    ragas = FakeRagasEvaluator(
+        [
+            RagasEvaluationResult(
+                faithfulness=0.9,
+                answer_relevancy=0.8,
+                context_recall=None,
+                context_precision=0.6,
+                errors=(
+                    RagasMetricError(
+                        metric=RagasMetricName.CONTEXT_RECALL,
+                        error_type=RagasErrorType.TIMEOUT,
+                    ),
+                ),
+            )
+        ]
+    )
+    service = EvaluationRunService(repository=repository)  # type: ignore[arg-type]
+
+    await service.run(
+        kb_id=3,
+        eval_version="partial-generation",
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=ragas,
+    )
+
+    result = repository.saved_batches[0][0]
+    assert (result.faithfulness, result.answer_relevancy, result.context_precision) == (
+        0.9,
+        0.8,
+        0.6,
+    )
+    assert result.context_recall is None
+    assert result.status == EvalResultStatus.PARTIAL.value
+    assert result.error_type == "ragas_metric_failed"
+    assert "context_recall" in caplog.text
+    assert "timeout" in caplog.text
+    assert "敏感期望答案" not in caplog.text
+    assert "敏感实际回答" not in caplog.text
+    assert "敏感参考正文" not in caplog.text

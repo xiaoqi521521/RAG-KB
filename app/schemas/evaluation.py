@@ -95,7 +95,7 @@ class CurrentChunkSummaryItem(BaseModel):
 
 
 class EvaluationReportItem(BaseModel):
-    """检索评估版本的聚合报告。"""
+    """检索与生成评估版本的聚合报告。"""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -109,4 +109,14 @@ class EvaluationReportItem(BaseModel):
     hit_count: int
     hit_rate_at_5: float | None = None
     mrr_at_5: float | None = None
+    faithfulness_sample_count: int
+    avg_faithfulness: float | None = None
+    answer_relevancy_sample_count: int
+    avg_answer_relevancy: float | None = None
+    context_recall_sample_count: int
+    avg_context_recall: float | None = None
+    context_precision_sample_count: int
+    avg_context_precision: float | None = None
+    refusal_count: int
+    refusal_rate: float
     eval_at: datetime

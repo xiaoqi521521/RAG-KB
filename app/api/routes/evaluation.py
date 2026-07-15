@@ -6,10 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_current_user
 from app.api.routes.knowledge_bases import get_permission_service
 from app.api.routes.rag import RagQueryPipeline, get_rag_query_service
+from app.core.clients import get_chat_model, get_embeddings
 from app.core.context import CurrentUser
 from app.core.database import get_db
 from app.evaluation.dataset_service import EvaluationDatasetService
-from app.evaluation.service import EvaluationRagExecutor, EvaluationRunService
+from app.evaluation.ragas_evaluator import RagasEvaluator
+from app.evaluation.service import (
+    EvaluationRagExecutor,
+    EvaluationRunService,
+    GenerationEvaluator,
+)
 from app.models import EvalDatasetStatus
 from app.repositories.evaluations import EvaluationRepository
 from app.schemas.common import ApiResponse
@@ -52,6 +58,14 @@ def get_evaluation_rag_executor(
     return rag_service
 
 
+def get_evaluation_ragas_evaluator() -> GenerationEvaluator:
+    """复用现有回答与 Embedding 客户端构建正式 RAGAS 适配器。"""
+    return RagasEvaluator.from_clients(
+        chat_model=get_chat_model(),
+        embeddings=get_embeddings(),
+    )
+
+
 @router.post("/{kb_id}/run")
 async def run_evaluation(
     kb_id: int,
@@ -60,6 +74,7 @@ async def run_evaluation(
     permission_service: PermissionService = Depends(get_permission_service),
     run_service: EvaluationRunService = Depends(get_evaluation_run_service),
     rag_executor: EvaluationRagExecutor = Depends(get_evaluation_rag_executor),
+    ragas_evaluator: GenerationEvaluator = Depends(get_evaluation_ragas_evaluator),
 ) -> ApiResponse[EvaluationReportItem]:
     """同步运行当前 V4 管道并返回本次检索聚合报告。"""
     await permission_service.require_admin(kb_id, user)
@@ -75,6 +90,7 @@ async def run_evaluation(
         eval_version=eval_version,
         user=user,
         rag_executor=rag_executor,
+        ragas_evaluator=ragas_evaluator,
     )
     return ApiResponse.ok(EvaluationReportItem.model_validate(report))
 

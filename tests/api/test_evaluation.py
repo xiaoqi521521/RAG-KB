@@ -97,6 +97,16 @@ class FakeEvaluationRunService:
             hit_count=1,
             hit_rate_at_5=1.0,
             mrr_at_5=0.5,
+            faithfulness_sample_count=1,
+            avg_faithfulness=0.9,
+            answer_relevancy_sample_count=1,
+            avg_answer_relevancy=0.8,
+            context_recall_sample_count=0,
+            avg_context_recall=None,
+            context_precision_sample_count=1,
+            avg_context_precision=0.7,
+            refusal_count=1,
+            refusal_rate=0.5,
             eval_at=datetime(2026, 7, 15),
         )
 
@@ -107,6 +117,7 @@ class FakeEvaluationRunService:
         eval_version: str,
         user: CurrentUser,
         rag_executor: object,
+        ragas_evaluator: object,
     ):
         self.run_calls.append((kb_id, eval_version, user.user_id))
         return self.report
@@ -131,6 +142,7 @@ def _client(
     if run_service is not None:
         app.dependency_overrides[evaluation.get_evaluation_run_service] = lambda: run_service
         app.dependency_overrides[evaluation.get_evaluation_rag_executor] = lambda: object()
+        app.dependency_overrides[evaluation.get_evaluation_ragas_evaluator] = lambda: object()
     return TestClient(app)
 
 
@@ -211,6 +223,10 @@ def test_run_and_history_are_admin_guarded_and_return_aggregate_only() -> None:
     assert run_response.status_code == 200
     assert history_response.status_code == 200
     assert run_response.json()["data"]["mrr_at_5"] == 0.5
+    assert run_response.json()["data"]["avg_faithfulness"] == 0.9
+    assert run_response.json()["data"]["refusal_rate"] == 0.5
+    assert run_response.json()["data"]["context_recall_sample_count"] == 0
+    assert run_response.json()["data"]["avg_context_recall"] is None
     assert "dataset_id" not in history_response.json()["data"][0]
     assert run_service.run_calls == [(3, "release-1", 7)]
     assert run_service.history_calls == [3]
@@ -239,3 +255,25 @@ def test_permission_failure_stops_run_and_history_before_result_access() -> None
     assert history_response.status_code == 503
     assert run_service.run_calls == []
     assert run_service.history_calls == []
+
+
+def test_ragas_dependency_reuses_application_model_and_embedding_clients(monkeypatch) -> None:
+    from app.api.routes import evaluation
+
+    chat_model = object()
+    embeddings = object()
+    evaluator = object()
+    received: dict[str, object] = {}
+
+    class FakeRagasFactory:
+        @staticmethod
+        def from_clients(**kwargs: object) -> object:
+            received.update(kwargs)
+            return evaluator
+
+    monkeypatch.setattr(evaluation, "get_chat_model", lambda: chat_model)
+    monkeypatch.setattr(evaluation, "get_embeddings", lambda: embeddings)
+    monkeypatch.setattr(evaluation, "RagasEvaluator", FakeRagasFactory)
+
+    assert evaluation.get_evaluation_ragas_evaluator() is evaluator
+    assert received == {"chat_model": chat_model, "embeddings": embeddings}

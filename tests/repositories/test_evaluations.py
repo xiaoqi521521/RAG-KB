@@ -100,6 +100,15 @@ async def test_version_and_report_queries_are_scoped_through_dataset_knowledge_b
     assert "kb_eval_result.eval_version =" in version_sql
     assert "GROUP BY kb_eval_result.eval_version" in report_sql
     assert "count(kb_eval_result.hit)" in report_sql
+    for metric in (
+        "faithfulness",
+        "answer_relevancy",
+        "context_recall",
+        "context_precision",
+    ):
+        assert f"count(kb_eval_result.{metric})" in report_sql
+        assert f"avg(kb_eval_result.{metric})" in report_sql
+    assert "kb_eval_result.actual_answer =" in report_sql
     assert "ORDER BY max(kb_eval_result.eval_at) DESC" in report_sql
 
 

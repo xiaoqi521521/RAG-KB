@@ -17,6 +17,7 @@ from app.models import (
     EvalResultStatus,
     KbDocument,
 )
+from app.services.rag_query import RAG_REFUSAL_ANSWER
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,16 @@ class EvaluationReport:
     hit_count: int
     hit_rate_at_5: float | None
     mrr_at_5: float | None
+    faithfulness_sample_count: int
+    avg_faithfulness: float | None
+    answer_relevancy_sample_count: int
+    avg_answer_relevancy: float | None
+    context_recall_sample_count: int
+    avg_context_recall: float | None
+    context_precision_sample_count: int
+    avg_context_precision: float | None
+    refusal_count: int
+    refusal_rate: float
     eval_at: datetime
 
 
@@ -264,12 +275,19 @@ class EvaluationRepository:
         mrr = cast(reciprocal_rank_sum, Float) / func.nullif(
             cast(retrieval_sample_count, Float), 0.0
         )
+        total_questions = func.count(EvalResult.id)
+        refusal_count = func.sum(
+            case((EvalResult.actual_answer == RAG_REFUSAL_ANSWER, 1), else_=0)
+        )
+        refusal_rate = cast(refusal_count, Float) / func.nullif(
+            cast(total_questions, Float), 0.0
+        )
         evaluated_at = func.max(EvalResult.eval_at)
 
         return (
             select(
                 EvalResult.eval_version.label("eval_version"),
-                func.count(EvalResult.id).label("total_questions"),
+                total_questions.label("total_questions"),
                 func.sum(
                     case((EvalResult.status == EvalResultStatus.SUCCESS.value, 1), else_=0)
                 ).label("success_count"),
@@ -283,6 +301,20 @@ class EvaluationRepository:
                 hit_count.label("hit_count"),
                 hit_rate.label("hit_rate_at_5"),
                 mrr.label("mrr_at_5"),
+                func.count(EvalResult.faithfulness).label("faithfulness_sample_count"),
+                func.avg(EvalResult.faithfulness).label("avg_faithfulness"),
+                func.count(EvalResult.answer_relevancy).label(
+                    "answer_relevancy_sample_count"
+                ),
+                func.avg(EvalResult.answer_relevancy).label("avg_answer_relevancy"),
+                func.count(EvalResult.context_recall).label("context_recall_sample_count"),
+                func.avg(EvalResult.context_recall).label("avg_context_recall"),
+                func.count(EvalResult.context_precision).label(
+                    "context_precision_sample_count"
+                ),
+                func.avg(EvalResult.context_precision).label("avg_context_precision"),
+                refusal_count.label("refusal_count"),
+                refusal_rate.label("refusal_rate"),
                 evaluated_at.label("eval_at"),
             )
             .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
@@ -305,5 +337,15 @@ class EvaluationRepository:
             hit_count=values["hit_count"],
             hit_rate_at_5=values["hit_rate_at_5"],
             mrr_at_5=values["mrr_at_5"],
+            faithfulness_sample_count=values["faithfulness_sample_count"],
+            avg_faithfulness=values["avg_faithfulness"],
+            answer_relevancy_sample_count=values["answer_relevancy_sample_count"],
+            avg_answer_relevancy=values["avg_answer_relevancy"],
+            context_recall_sample_count=values["context_recall_sample_count"],
+            avg_context_recall=values["avg_context_recall"],
+            context_precision_sample_count=values["context_precision_sample_count"],
+            avg_context_precision=values["avg_context_precision"],
+            refusal_count=values["refusal_count"],
+            refusal_rate=values["refusal_rate"],
             eval_at=values["eval_at"],
         )
