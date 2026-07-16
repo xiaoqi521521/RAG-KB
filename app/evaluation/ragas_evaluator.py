@@ -270,6 +270,7 @@ class RagasEvaluator:
         *,
         chat_model: Any,
         embeddings: OpenAICompatibleEmbeddings,
+        max_tokens: int,
         timeout_seconds: float = 30.0,
         max_retries: int = 1,
         observability: RagasEvaluationMetrics | None = None,
@@ -282,17 +283,14 @@ class RagasEvaluator:
         if root_async_client is None:
             raise ValueError("chat_model must expose root_async_client")
 
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+
         # 禁用 SDK 内部重试，确保重试次数只由本适配器控制。
         evaluation_client = root_async_client.with_options(max_retries=0)
         model_kwargs: dict[str, Any] = {"max_retries": 0}
-        chat_max_tokens = getattr(chat_model, "max_tokens", None)
-        if (
-            isinstance(chat_max_tokens, int)
-            and not isinstance(chat_max_tokens, bool)
-            and chat_max_tokens > 0
-        ):
-            # Faithfulness 需要两次嵌套结构化输出，不能退回 RAGAS 默认的 1024。
-            model_kwargs["max_tokens"] = chat_max_tokens
+        # 正式评估使用独立预算，避免 Faithfulness 的详细 NLI 输出被问答预算截断。
+        model_kwargs["max_tokens"] = max_tokens
         llm = llm_factory(model_name, client=evaluation_client, **model_kwargs)
         ragas_embeddings = _OpenAICompatibleRagasEmbeddings(embeddings)
         return cls(

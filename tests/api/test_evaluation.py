@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -273,7 +274,16 @@ def test_ragas_dependency_reuses_application_model_and_embedding_clients(monkeyp
 
     monkeypatch.setattr(evaluation, "get_chat_model", lambda: chat_model)
     monkeypatch.setattr(evaluation, "get_embeddings", lambda: embeddings)
+    monkeypatch.setattr(
+        evaluation,
+        "get_settings",
+        lambda: SimpleNamespace(ragas_max_tokens=4096),
+    )
     monkeypatch.setattr(evaluation, "RagasEvaluator", FakeRagasFactory)
 
     assert evaluation.get_evaluation_ragas_evaluator() is evaluator
-    assert received == {"chat_model": chat_model, "embeddings": embeddings}
+    assert received == {
+        "chat_model": chat_model,
+        "embeddings": embeddings,
+        "max_tokens": 4096,
+    }

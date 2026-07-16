@@ -447,6 +447,7 @@ async def test_from_clients_reuses_existing_chat_and_embedding_clients() -> None
     evaluator = RagasEvaluator.from_clients(
         chat_model=chat_model,
         embeddings=embeddings,
+        max_tokens=4096,
         timeout_seconds=12.0,
         max_retries=0,
     )
@@ -463,7 +464,7 @@ async def test_from_clients_reuses_existing_chat_and_embedding_clients() -> None
 
 
 @pytest.mark.asyncio
-async def test_from_clients_uses_chat_max_tokens_for_structured_calls() -> None:
+async def test_from_clients_uses_configured_max_tokens_for_structured_calls() -> None:
     requests: list[dict[str, Any]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -508,6 +509,7 @@ async def test_from_clients_uses_chat_max_tokens_for_structured_calls() -> None:
     evaluator = RagasEvaluator.from_clients(
         chat_model=chat_model,
         embeddings=embeddings,
+        max_tokens=4096,
         max_retries=0,
     )
 
@@ -518,7 +520,7 @@ async def test_from_clients_uses_chat_max_tokens_for_structured_calls() -> None:
     )
 
     assert output.statements == ["应在三十天内提交。"]
-    assert requests[0]["max_tokens"] == 2048
+    assert requests[0]["max_tokens"] == 4096
     assert requests[0]["model"] == "deepseek-v4-flash"
     await root_client.close()
 

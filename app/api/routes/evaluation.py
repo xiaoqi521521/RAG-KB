@@ -7,6 +7,7 @@ from app.api.dependencies import get_current_user
 from app.api.routes.knowledge_bases import get_permission_service
 from app.api.routes.rag import RagQueryPipeline, get_rag_query_service
 from app.core.clients import get_chat_model, get_embeddings
+from app.core.config import get_settings
 from app.core.context import CurrentUser
 from app.core.database import get_db
 from app.evaluation.dataset_service import EvaluationDatasetService
@@ -63,6 +64,7 @@ def get_evaluation_ragas_evaluator() -> GenerationEvaluator:
     return RagasEvaluator.from_clients(
         chat_model=get_chat_model(),
         embeddings=get_embeddings(),
+        max_tokens=get_settings().ragas_max_tokens,
     )
 
 

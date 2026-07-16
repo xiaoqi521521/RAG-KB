@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     embedding_max_retries: int = 3
     chat_temperature: float = 0.1
     chat_max_tokens: int = 2048
+    ragas_max_tokens: int = Field(default=4096, gt=0)
     chat_stream_timeout_seconds: float = Field(default=60, gt=0)
 
     reranker_endpoint: str
