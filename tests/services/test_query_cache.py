@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -15,8 +16,10 @@ class FakeRedis:
         self.fail_get = False
         self.fail_setex = False
         self.fail_delete = False
+        self.get_calls = 0
 
     async def get(self, key: str) -> str | None:
+        self.get_calls += 1
         if self.fail_get:
             raise RuntimeError("redis unavailable")
         return self.values.get(key)
@@ -115,3 +118,26 @@ async def test_query_cache_treats_invalid_value_and_redis_failures_as_non_fatal(
 
     assert "Query cache read failed" in caplog.text
     assert "Query cache write failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_query_cache_retries_redis_read_once_before_degrading() -> None:
+    redis = FakeRedis()
+    redis.fail_get = True
+    service = QueryCacheService(redis, ttl_seconds=600, max_retries=1)
+
+    assert await service.get("重试读取", [2]) is None
+    assert redis.get_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_query_cache_times_out_slow_redis_read() -> None:
+    class SlowRedis(FakeRedis):
+        async def get(self, key: str) -> str | None:
+            await asyncio.sleep(0.05)
+            return await super().get(key)
+
+    redis = SlowRedis()
+    service = QueryCacheService(redis, ttl_seconds=600, timeout_seconds=0.001)
+
+    assert await service.get("超时读取", [2]) is None

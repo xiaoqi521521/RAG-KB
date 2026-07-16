@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     embedding_cache_ttl_seconds: int = 604800
     query_cache_ttl_seconds: int = 600
+    query_cache_timeout_seconds: float = Field(default=1.0, gt=0)
+    query_cache_max_retries: int = Field(default=1, ge=0)
 
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"

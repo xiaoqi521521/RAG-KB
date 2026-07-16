@@ -64,7 +64,12 @@ def get_query_cache_service(
     settings: Settings = Depends(get_settings),
 ) -> QueryCacheService:
     """构建普通 RAG 查询结果缓存服务。"""
-    return QueryCacheService(get_redis(), ttl_seconds=settings.query_cache_ttl_seconds)
+    return QueryCacheService(
+        get_redis(),
+        ttl_seconds=settings.query_cache_ttl_seconds,
+        timeout_seconds=settings.query_cache_timeout_seconds,
+        max_retries=settings.query_cache_max_retries,
+    )
 
 
 def get_rag_query_service(

@@ -37,16 +37,15 @@ class FakePermissionService:
 
 
 class FakeRagQueryService:
-    def __init__(self) -> None:
+    def __init__(self, *, return_sources: bool = True) -> None:
         self.calls: list[dict[str, object]] = []
+        self.return_sources = return_sources
 
     async def query(
         self, *, question: str, kb_ids: list[int], user: CurrentUser
     ) -> RagQueryResponse:
         self.calls.append({"question": question, "kb_ids": kb_ids, "user_id": user.user_id})
-        return RagQueryResponse(
-            answer="需要通过本地测试。[参考1]",
-            sources=[
+        sources = [
                 SourceCitation(
                     reference_index=1,
                     document_id=1,
@@ -59,8 +58,11 @@ class FakeRagQueryService:
                     excerpt="代码提交前必须通过本地测试。",
                     score=0.91,
                 )
-            ],
-            hit_count=1,
+            ] if self.return_sources else []
+        return RagQueryResponse(
+            answer=("需要通过本地测试。[参考1]" if self.return_sources else "在知识库中未找到相关内容。"),
+            sources=sources,
+            hit_count=len(sources),
             latency_ms=12,
         )
 
@@ -83,6 +85,25 @@ class FakeQueryCache:
                 sources=response.sources,
                 hit_count=response.hit_count,
             )
+
+
+class RecordingCacheRedis:
+    def __init__(self, *, fail_get: bool = False) -> None:
+        self.fail_get = fail_get
+        self.values: dict[str, str] = {}
+        self.setex_calls: list[tuple[str, int, str]] = []
+
+    async def get(self, key: str) -> str | None:
+        if self.fail_get:
+            raise RuntimeError("redis unavailable")
+        return self.values.get(key)
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        self.setex_calls.append((key, ttl, value))
+        self.values[key] = value
+
+    async def delete(self, key: str) -> None:
+        self.values.pop(key, None)
 
 
 class FakeTokenMetrics:
@@ -190,6 +211,44 @@ def test_query_endpoint_reuses_successful_first_turn_cache() -> None:
     assert len(rag_service.calls) == 1
     assert len(query_cache.get_calls) == 2
     assert query_cache.put_calls == [("代码提交规范？", [3, 2])]
+
+
+def test_query_endpoint_does_not_cache_refusal() -> None:
+    from app.services.query_cache import QueryCacheService
+
+    permission_service = FakePermissionService()
+    rag_service = FakeRagQueryService(return_sources=False)
+    redis = RecordingCacheRedis()
+    query_cache = QueryCacheService(redis, ttl_seconds=600)
+
+    with _client(permission_service, rag_service, query_cache) as client:
+        response = client.post(
+            "/api/v1/rag/query",
+            json={"question": "没有相关内容？", "kb_ids": [2]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["sources"] == []
+    assert redis.setex_calls == []
+
+
+def test_query_endpoint_degrades_when_cache_read_fails() -> None:
+    from app.services.query_cache import QueryCacheService
+
+    permission_service = FakePermissionService()
+    rag_service = FakeRagQueryService()
+    redis = RecordingCacheRedis(fail_get=True)
+    query_cache = QueryCacheService(redis, ttl_seconds=600, max_retries=1)
+
+    with _client(permission_service, rag_service, query_cache) as client:
+        response = client.post(
+            "/api/v1/rag/query",
+            json={"question": "缓存读取失败也应回答", "kb_ids": [2]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["answer"] == "需要通过本地测试。[参考1]"
+    assert len(rag_service.calls) == 1
 
 
 def test_dependency_builder_can_select_basic_query_pipeline(
