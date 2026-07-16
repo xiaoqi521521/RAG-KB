@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
 from app.repositories.chunks import ChunkSearchHit
+from app.schemas.query_cache import QueryCacheEntry
 from app.schemas.rag import RagQueryResponse, SourceCitation
 from app.services.enhanced_retriever import EnhancedRetrieveResult
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
@@ -64,6 +65,26 @@ class FakeRagQueryService:
         )
 
 
+class FakeQueryCache:
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, tuple[int, ...]], QueryCacheEntry] = {}
+        self.get_calls: list[tuple[str, list[int]]] = []
+        self.put_calls: list[tuple[str, list[int]]] = []
+
+    async def get(self, question: str, kb_ids: list[int]) -> QueryCacheEntry | None:
+        self.get_calls.append((question, kb_ids))
+        return self.entries.get((question.strip(), tuple(sorted(kb_ids))))
+
+    async def put(self, question: str, kb_ids: list[int], response: RagQueryResponse) -> None:
+        self.put_calls.append((question, kb_ids))
+        if response.sources:
+            self.entries[(question.strip(), tuple(sorted(kb_ids)))] = QueryCacheEntry(
+                answer=response.answer,
+                sources=response.sources,
+                hit_count=response.hit_count,
+            )
+
+
 class FakeTokenMetrics:
     async def record_embedding_tokens(self, *, tokens: int, source: str = "provider") -> None:
         return None
@@ -100,6 +121,7 @@ class FakeSettings:
 def _client(
     permission_service: FakePermissionService,
     rag_service: FakeRagQueryService,
+    query_cache: FakeQueryCache | None = None,
 ) -> TestClient:
     from app.api.routes import rag
 
@@ -108,6 +130,7 @@ def _client(
     app.dependency_overrides[rag.get_permission_service] = lambda: permission_service
     app.dependency_overrides[rag.get_rag_query_service] = lambda: rag_service
     app.dependency_overrides[rag.get_current_user] = lambda: _user()
+    app.dependency_overrides[rag.get_query_cache_service] = lambda: query_cache or FakeQueryCache()
     return TestClient(app)
 
 
@@ -132,8 +155,9 @@ def test_query_endpoint_checks_unique_kb_read_permissions_before_service_call() 
 def test_query_endpoint_stops_before_service_when_permission_denied() -> None:
     permission_service = FakePermissionService(forbidden_kb_id=3)
     rag_service = FakeRagQueryService()
+    query_cache = FakeQueryCache()
 
-    with _client(permission_service, rag_service) as client:
+    with _client(permission_service, rag_service, query_cache) as client:
         response = client.post(
             "/api/v1/rag/query",
             json={"question": "代码提交规范？", "kb_ids": [2, 3]},
@@ -142,6 +166,30 @@ def test_query_endpoint_stops_before_service_when_permission_denied() -> None:
     assert response.status_code == 403
     assert permission_service.read_checks == [2, 3]
     assert rag_service.calls == []
+    assert query_cache.get_calls == []
+
+
+def test_query_endpoint_reuses_successful_first_turn_cache() -> None:
+    permission_service = FakePermissionService()
+    rag_service = FakeRagQueryService()
+    query_cache = FakeQueryCache()
+
+    with _client(permission_service, rag_service, query_cache) as client:
+        first = client.post(
+            "/api/v1/rag/query",
+            json={"question": " 代码提交规范？ ", "kb_ids": [3, 2, 2]},
+        )
+        second = client.post(
+            "/api/v1/rag/query",
+            json={"question": "代码提交规范？", "kb_ids": [2, 3]},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["data"]["answer"] == first.json()["data"]["answer"]
+    assert len(rag_service.calls) == 1
+    assert len(query_cache.get_calls) == 2
+    assert query_cache.put_calls == [("代码提交规范？", [3, 2])]
 
 
 def test_dependency_builder_can_select_basic_query_pipeline(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Protocol
 
 from fastapi import APIRouter, Depends, Request
@@ -32,6 +33,7 @@ from app.services.reranker import RerankerService
 from app.services.source_builder import SourceBuilder
 from app.services.ts_query_builder import TsQueryBuilder
 from app.services.token_metrics import TokenMetrics
+from app.services.query_cache import QueryCacheService
 
 router = APIRouter()
 
@@ -56,6 +58,13 @@ def get_token_metrics(request: Request) -> TokenMetrics:
 def get_faithfulness_metrics(request: Request) -> FaithfulnessMetrics:
     """从应用状态获取单例忠实性评估指标记录器。"""
     return request.app.state.faithfulness_metrics
+
+
+def get_query_cache_service(
+    settings: Settings = Depends(get_settings),
+) -> QueryCacheService:
+    """构建普通 RAG 查询结果缓存服务。"""
+    return QueryCacheService(get_redis(), ttl_seconds=settings.query_cache_ttl_seconds)
 
 
 def get_rag_query_service(
@@ -175,6 +184,7 @@ async def query_rag(
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
     rag_service: RagQueryPipeline = Depends(get_rag_query_service),
+    query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> ApiResponse[RagQueryResponse]:
     """执行基础 RAG 查询。
 
@@ -187,14 +197,31 @@ async def query_rag(
     Returns:
         包含回答、引用来源、命中数量和总耗时的统一响应。
     """
-    # 读权限必须在向量化和检索之前完成，避免无权限知识库内容进入 Prompt。
+    started_at = time.perf_counter()
+
+    # 读权限必须在缓存读取、向量化和检索之前完成，避免无权限范围泄露缓存命中状态。
     for kb_id in request.kb_ids:
         await permission_service.require_read(kb_id, user)
 
-    return ApiResponse.ok(
-        await rag_service.query(
-            question=request.question,
-            kb_ids=request.kb_ids,
-            user=user,
+    cached = await query_cache.get(request.question, request.kb_ids)
+    if cached is not None:
+        response = RagQueryResponse(
+            answer=cached.answer,
+            sources=cached.sources,
+            hit_count=cached.hit_count,
+            latency_ms=_elapsed_ms(started_at),
         )
+        return ApiResponse.ok(response)
+
+    response = await rag_service.query(
+        question=request.question,
+        kb_ids=request.kb_ids,
+        user=user,
     )
+    await query_cache.put(request.question, request.kb_ids, response)
+    return ApiResponse.ok(response.model_copy(update={"latency_ms": _elapsed_ms(started_at)}))
+
+
+def _elapsed_ms(started_at: float) -> int:
+    """计算普通 RAG 业务入口的完整服务耗时。"""
+    return max(0, int((time.perf_counter() - started_at) * 1000))
