@@ -88,7 +88,7 @@ class QueryCacheService:
         response: RagQueryResponse,
     ) -> None:
         """写入带引用来源的成功回答，缓存故障不影响调用方。"""
-        if not response.sources:
+        if not response.sources or response.hit_count != len(response.sources):
             return
 
         entry = QueryCacheEntry(

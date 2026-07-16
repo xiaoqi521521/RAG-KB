@@ -177,3 +177,14 @@ async def test_query_cache_rejects_inconsistent_hit_count() -> None:
 
     assert await service.get("计数不一致", [2]) is None
     assert key not in redis.values
+
+
+@pytest.mark.asyncio
+async def test_query_cache_does_not_write_inconsistent_response() -> None:
+    redis = FakeRedis()
+    service = QueryCacheService(redis, ttl_seconds=600)
+    response = _response().model_copy(update={"hit_count": 0})
+
+    await service.put("不写入不一致", [2], response)
+
+    assert redis.setex_calls == []
