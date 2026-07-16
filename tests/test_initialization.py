@@ -59,6 +59,31 @@ def test_settings_loads_required_rag_defaults():
     assert settings.max_upload_request_size_mb == 100
 
 
+def test_settings_loads_token_cost_and_stats_redis_configuration():
+    from decimal import Decimal
+
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        secret_key="test-secret",
+        database_url="postgresql+asyncpg://ragkb:ragkb123@localhost:5432/ragkb",
+        sync_database_url="postgresql+psycopg://ragkb:ragkb123@localhost:5432/ragkb",
+        reranker_endpoint="https://example.test/rerank",
+        token_stats_timeout_seconds=2,
+        token_stats_max_retries=2,
+        embedding_input_cost_cny_per_1k_tokens=Decimal("0.0007"),
+        chat_input_cost_cny_per_1k_tokens=Decimal("0.0008"),
+        chat_output_cost_cny_per_1k_tokens=Decimal("0.002"),
+    )
+
+    assert settings.token_stats_timeout_seconds == 2
+    assert settings.token_stats_max_retries == 2
+    assert settings.embedding_input_cost_cny_per_1k_tokens == Decimal("0.0007")
+    assert settings.chat_input_cost_cny_per_1k_tokens == Decimal("0.0008")
+    assert settings.chat_output_cost_cny_per_1k_tokens == Decimal("0.002")
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -262,9 +287,10 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
         assert value is provider
         calls.append("shutdown_metrics")
 
-    def fake_token_metrics_factory(*, redis_client, meter):
+    def fake_token_metrics_factory(*, redis_client, meter, **kwargs):
         assert redis_client is fake_provider
         assert meter is fake_meter
+        assert kwargs == {"read_timeout_seconds": 1.0, "read_max_retries": 1}
         return fake_token_metrics
 
     def fake_faithfulness_metrics_factory(*, meter):

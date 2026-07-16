@@ -1,4 +1,5 @@
 from functools import lru_cache
+from decimal import Decimal
 from pathlib import Path
 
 from pydantic import Field
@@ -28,6 +29,12 @@ class Settings(BaseSettings):
     query_cache_ttl_seconds: int = 600
     query_cache_timeout_seconds: float = Field(default=1.0, gt=0)
     query_cache_max_retries: int = Field(default=1, ge=0)
+    token_stats_timeout_seconds: float = Field(default=1.0, gt=0)
+    token_stats_max_retries: int = Field(default=1, ge=0)
+
+    embedding_input_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)
+    chat_input_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)
+    chat_output_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)
 
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"

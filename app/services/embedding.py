@@ -232,9 +232,14 @@ class EmbeddingService:
                 if batch_tokens is None:
                     usage_unavailable_batches += 1
                 elif self.token_metrics is not None:
+                    usage_source = {
+                        "query": "provider",
+                        "doc": "offline_indexing",
+                    }.get(namespace, "internal")
                     await self.token_metrics.record_embedding_tokens(
                         tokens=batch_tokens,
-                        source="provider",
+                        # 文档索引可能继承请求上下文，但其成本不应归属上传者。
+                        source=usage_source,
                     )
 
                 for cache_key, vector in zip(batch_keys, batch_vectors, strict=True):

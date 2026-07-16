@@ -10,6 +10,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from app.core.context import CurrentUser, current_user_var
 from app.services.token_metrics import (
     TokenMetrics,
+    TokenMetricsUnavailableError,
     extract_generation_tokens,
     record_generation_usage,
 )
@@ -19,12 +20,20 @@ class FakeRedis:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
         self.fail = False
+        self.hash_values: dict[str, str] = {}
+        self.hgetall_calls = 0
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
         self.calls.append((name, key, amount))
         if self.fail:
             raise RuntimeError("redis unavailable")
         return amount
+
+    async def hgetall(self, name: str) -> dict[str, str]:
+        self.hgetall_calls += 1
+        if self.fail:
+            raise RuntimeError("redis unavailable")
+        return self.hash_values.copy()
 
 
 def _build_metrics() -> tuple[TokenMetrics, FakeRedis, InMemoryMetricReader, MeterProvider]:
@@ -105,6 +114,50 @@ async def test_record_generation_tokens_without_user_only_updates_counter() -> N
 
     assert redis_client.calls == []
     assert _metric_value(reader, "rag.tokens.generation", {"source": "provider"}) == 88
+
+
+@pytest.mark.asyncio
+async def test_internal_generation_tokens_are_not_added_to_user_redis() -> None:
+    metrics, redis_client, reader, provider = _build_metrics()
+    token = current_user_var.set(CurrentUser(user_id=11, department_id="eng", role="ADMIN"))
+    try:
+        await metrics.record_generation_tokens(tokens=13, source="faithfulness_evaluation")
+    finally:
+        current_user_var.reset(token)
+        provider.shutdown()
+
+    assert redis_client.calls == []
+    assert (
+        _metric_value(reader, "rag.tokens.generation", {"source": "faithfulness_evaluation"}) == 13
+    )
+
+
+@pytest.mark.asyncio
+async def test_offline_embedding_tokens_are_not_added_to_user_redis() -> None:
+    metrics, redis_client, reader, provider = _build_metrics()
+    token = current_user_var.set(CurrentUser(user_id=12, department_id="eng", role="ADMIN"))
+    try:
+        await metrics.record_embedding_tokens(tokens=17, source="offline_indexing")
+    finally:
+        current_user_var.reset(token)
+        provider.shutdown()
+
+    assert redis_client.calls == []
+    assert _metric_value(reader, "rag.tokens.embedding", {"source": "offline_indexing"}) == 17
+
+
+@pytest.mark.asyncio
+async def test_internal_embedding_tokens_are_not_added_to_user_redis() -> None:
+    metrics, redis_client, reader, provider = _build_metrics()
+    token = current_user_var.set(CurrentUser(user_id=13, department_id="eng", role="ADMIN"))
+    try:
+        await metrics.record_embedding_tokens(tokens=19, source="internal")
+    finally:
+        current_user_var.reset(token)
+        provider.shutdown()
+
+    assert redis_client.calls == []
+    assert _metric_value(reader, "rag.tokens.embedding", {"source": "internal"}) == 19
 
 
 @pytest.mark.asyncio
@@ -196,3 +249,53 @@ async def test_record_generation_usage_logs_when_provider_usage_is_unavailable(
 
     assert recorder.calls == []
     assert "generation_token_usage_unavailable=true pipeline=v4" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_read_user_tokens_returns_redis_hash_values_and_zero_for_missing_fields() -> None:
+    metrics, redis_client, _, provider = _build_metrics()
+    redis_client.hash_values = {
+        "embeddingTokens": "125",
+        "generationTokens": "8",
+    }
+    try:
+        usage = await metrics.read_user_tokens(7)
+    finally:
+        provider.shutdown()
+
+    assert usage.embedding_tokens == 125
+    assert usage.context_tokens == 0
+    assert usage.generation_tokens == 8
+
+
+@pytest.mark.asyncio
+async def test_read_user_tokens_rejects_unreadable_redis_data() -> None:
+    metrics, redis_client, _, provider = _build_metrics()
+    redis_client.hash_values = {"contextTokens": "not-a-number"}
+    try:
+        with pytest.raises(TokenMetricsUnavailableError):
+            await metrics.read_user_tokens(7)
+    finally:
+        provider.shutdown()
+
+    metrics, redis_client, _, provider = _build_metrics()
+    redis_client.fail = True
+    try:
+        with pytest.raises(TokenMetricsUnavailableError):
+            await metrics.read_user_tokens(7)
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_user_tokens_retries_redis_failure() -> None:
+    metrics, redis_client, _, provider = _build_metrics()
+    redis_client.fail = True
+    metrics.read_max_retries = 1
+    try:
+        with pytest.raises(TokenMetricsUnavailableError):
+            await metrics.read_user_tokens(7)
+    finally:
+        provider.shutdown()
+
+    assert redis_client.hgetall_calls == 2

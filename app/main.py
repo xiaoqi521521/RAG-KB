@@ -24,7 +24,12 @@ async def lifespan(app: FastAPI):
     meter_provider = init_metrics(settings)
     meter = meter_provider.get_meter("rag-kb.token-metrics") if meter_provider is not None else None
     app.state.meter_provider = meter_provider
-    app.state.token_metrics = TokenMetrics(redis_client=get_redis(), meter=meter)
+    app.state.token_metrics = TokenMetrics(
+        redis_client=get_redis(),
+        meter=meter,
+        read_timeout_seconds=settings.token_stats_timeout_seconds,
+        read_max_retries=settings.token_stats_max_retries,
+    )
     app.state.faithfulness_metrics = FaithfulnessMetrics(meter=meter)
     try:
         yield
