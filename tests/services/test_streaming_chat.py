@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.context import CurrentUser
+from app.schemas.query_cache import QueryCacheEntry
 from app.schemas.rag import SourceCitation
 from app.services.rag_query_v4 import PreparedRagContext
 from app.services.streaming_chat import SseEvent, StreamingChatService
@@ -19,6 +20,7 @@ class TimeoutStreamingChatService(StreamingChatService):
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float,
     ) -> AsyncIterator[SseEvent]:
         await asyncio.sleep(0.01)
         if False:
@@ -29,6 +31,7 @@ async def test_stream_timeout_returns_fixed_error_event() -> None:
     service = TimeoutStreamingChatService(
         session_factory=Any,
         rag_service_factory=lambda session: Any,
+        query_cache=FakeQueryCache(),
         timeout_seconds=0.001,
     )
 
@@ -78,6 +81,20 @@ class FakeTokenMetrics:
         self.tokens.append(tokens)
 
 
+class FakeQueryCache:
+    def __init__(self, entry: QueryCacheEntry | None = None) -> None:
+        self.entry = entry
+        self.get_calls: list[tuple[str, list[int]]] = []
+        self.put_calls: list[tuple[str, list[int], object]] = []
+
+    async def get(self, question: str, kb_ids: list[int]) -> QueryCacheEntry | None:
+        self.get_calls.append((question, kb_ids))
+        return self.entry
+
+    async def put(self, question: str, kb_ids: list[int], response: object) -> None:
+        self.put_calls.append((question, kb_ids, response))
+
+
 class FakeChatModel:
     def __init__(self, chunks: list[FakeChunk] | None = None, error: Exception | None = None) -> None:
         self.chunks = chunks if chunks is not None else [
@@ -108,8 +125,10 @@ class FakeRagService:
         self.chat_model = chat_model or FakeChatModel()
         self.token_metrics = FakeTokenMetrics()
         self.received_history: list[object] | None = None
+        self.prepare_calls = 0
 
     async def prepare_context(self, **kwargs: object) -> PreparedRagContext | None:
+        self.prepare_calls += 1
         return self.prepared_context
 
     def build_generation_messages(
@@ -127,10 +146,16 @@ class FakeRagService:
 
 
 class InMemoryStreamingChatService(StreamingChatService):
-    def __init__(self, rag_service: FakeRagService) -> None:
+    def __init__(
+        self,
+        rag_service: FakeRagService,
+        query_cache: FakeQueryCache | None = None,
+    ) -> None:
+        self.query_cache = query_cache or FakeQueryCache()
         super().__init__(
             session_factory=FakeSessionFactory(),
             rag_service_factory=lambda session: rag_service,
+            query_cache=self.query_cache,
         )
         self.history: list[object] = ["earlier-user", "earlier-assistant"]
         self.saved_turns: list[dict[str, object]] = []
@@ -143,6 +168,11 @@ class InMemoryStreamingChatService(StreamingChatService):
 
     async def _save_turn(self, **kwargs: object) -> None:
         self.saved_turns.append(kwargs)
+
+
+class FailingSaveStreamingChatService(InMemoryStreamingChatService):
+    async def _save_turn(self, **kwargs: object) -> None:
+        raise RuntimeError("message persistence failed")
 
 
 def _prepared_context() -> PreparedRagContext:
@@ -162,6 +192,15 @@ def _prepared_context() -> PreparedRagContext:
                 score=0.9,
             )
         ],
+    )
+
+
+def _cache_entry() -> QueryCacheEntry:
+    return QueryCacheEntry(
+        version=1,
+        answer="缓存回答。[参考1]",
+        sources=_prepared_context().sources,
+        hit_count=1,
     )
 
 
@@ -205,6 +244,8 @@ async def test_stream_saves_complete_turn_and_injects_recent_history() -> None:
     assert isinstance(saved_turn["latency_ms"], int)
     assert saved_turn["latency_ms"] >= 0
     assert rag_service.token_metrics.tokens == [4]
+    assert service.query_cache.get_calls == []
+    assert service.query_cache.put_calls == []
 
 
 async def test_stream_returns_refusal_without_saving_turn_when_context_is_missing() -> None:
@@ -290,3 +331,93 @@ async def test_stream_returns_fixed_error_without_saving_turn_when_generation_fa
     assert [event.event for event in events] == ["status", "status", "error"]
     assert events[-1].data == '{"message":"请求处理失败，请稍后重试"}'
     assert service.saved_turns == []
+
+
+async def test_first_turn_cache_hit_emits_status_token_done_and_saves_zero_token_turn() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache(_cache_entry())
+    service = InMemoryStreamingChatService(rag_service, query_cache)
+    service.history = []
+
+    events = [
+        event
+        async for event in service.stream(
+            question="年假怎么申请？",
+            kb_ids=[2],
+            session_id=None,
+            user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        )
+    ]
+
+    assert [event.event for event in events] == ["status", "token", "done"]
+    assert '"session_id":"session-1"' in events[0].data
+    assert events[1].data == "缓存回答。[参考1]"
+    assert '"sources":[{' in events[2].data
+    assert '"latency_ms":' in events[2].data
+    assert rag_service.prepare_calls == 0
+    assert query_cache.get_calls == [("年假怎么申请？", [2])]
+    assert query_cache.put_calls == []
+    assert service.saved_turns[0]["token_count"] == 0
+
+
+async def test_first_turn_cache_miss_saves_before_writing_cache() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache()
+    service = InMemoryStreamingChatService(rag_service, query_cache)
+    service.history = []
+
+    events = [
+        event
+        async for event in service.stream(
+            question="年假怎么申请？",
+            kb_ids=[2],
+            session_id=None,
+            user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        )
+    ]
+
+    assert events[-1].event == "done"
+    assert rag_service.prepare_calls == 1
+    assert query_cache.get_calls == [("年假怎么申请？", [2])]
+    assert len(query_cache.put_calls) == 1
+    assert query_cache.put_calls[0][2].answer == "根据员工手册。"
+
+
+async def test_non_empty_history_skips_cache_read_and_write() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache(_cache_entry())
+    service = InMemoryStreamingChatService(rag_service, query_cache)
+
+    events = [
+        event
+        async for event in service.stream(
+            question="年假怎么申请？",
+            kb_ids=[2],
+            session_id="session-1",
+            user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        )
+    ]
+
+    assert events[-1].event == "done"
+    assert rag_service.received_history == ["earlier-user", "earlier-assistant"]
+    assert query_cache.get_calls == []
+    assert query_cache.put_calls == []
+
+
+async def test_cache_hit_persistence_failure_emits_no_success_done() -> None:
+    query_cache = FakeQueryCache(_cache_entry())
+    service = FailingSaveStreamingChatService(FakeRagService(_prepared_context()), query_cache)
+    service.history = []
+
+    events = [
+        event
+        async for event in service.stream(
+            question="年假怎么申请？",
+            kb_ids=[2],
+            session_id=None,
+            user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        )
+    ]
+
+    assert [event.event for event in events] == ["status", "error"]
+    assert query_cache.put_calls == []

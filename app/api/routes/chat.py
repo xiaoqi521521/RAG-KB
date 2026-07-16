@@ -45,6 +45,7 @@ class StreamingChatPipeline(Protocol):
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float | None = None,
     ) -> AsyncIterator[SseEvent]: ...
 
 
@@ -66,6 +67,7 @@ def get_streaming_chat_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
     faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
+    query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> StreamingChatPipeline:
     """组装使用独立数据库会话的流式问答服务。"""
 
@@ -83,6 +85,7 @@ def get_streaming_chat_service(
     return StreamingChatService(
         session_factory=AsyncSessionLocal,
         rag_service_factory=build_rag_service,
+        query_cache=query_cache,
         timeout_seconds=settings.chat_stream_timeout_seconds,
     )
 
@@ -161,6 +164,7 @@ async def stream_chat(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="question must not be blank")
 
     normalized_kb_ids = _normalize_kb_ids(kb_ids)
+    started_at = time.perf_counter()
     # 读权限必须在建立流式连接前校验，避免无权知识库内容进入模型上下文。
     for kb_id in normalized_kb_ids:
         await permission_service.require_read(kb_id, user)
@@ -171,6 +175,7 @@ async def stream_chat(
             kb_ids=normalized_kb_ids,
             session_id=session_id,
             user=user,
+            started_at=started_at,
         ):
             yield _encode_sse(event)
 

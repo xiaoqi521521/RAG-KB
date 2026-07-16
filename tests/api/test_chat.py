@@ -44,6 +44,7 @@ class FakeStreamingChatService:
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float | None = None,
     ) -> AsyncIterator[FakeStreamEvent]:
         self.calls.append(
             {
@@ -51,6 +52,7 @@ class FakeStreamingChatService:
                 "kb_ids": kb_ids,
                 "session_id": session_id,
                 "user_id": user.user_id,
+                "started_at": started_at,
             }
         )
         yield FakeStreamEvent(
@@ -228,9 +230,13 @@ def test_stream_endpoint_returns_ordered_sse_events_for_first_question() -> None
         '"excerpt":"年假规则","score":0.9}],"latency_ms":12}\n\n'
     )
     assert permission_service.read_checks == [2]
-    assert streaming_service.calls == [
-        {"question": "年假怎么申请？", "kb_ids": [2], "session_id": None, "user_id": 1}
-    ]
+    assert len(streaming_service.calls) == 1
+    call = streaming_service.calls[0]
+    assert call["question"] == "年假怎么申请？"
+    assert call["kb_ids"] == [2]
+    assert call["session_id"] is None
+    assert call["user_id"] == 1
+    assert isinstance(call["started_at"], float)
 
 
 def test_stream_endpoint_checks_each_kb_before_starting_stream() -> None:

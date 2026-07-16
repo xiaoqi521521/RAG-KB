@@ -4,34 +4,21 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.context import CurrentUser
-from app.schemas.query_cache import QueryCacheEntry
-from app.schemas.rag import ChatQueryResponse, RagQueryResponse
+from app.schemas.rag import ChatQueryResponse
 from app.services.chat_session_runtime import ChatSessionRuntime
+from app.services.chat_session_runtime import QueryResultCache
 from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.token_metrics import extract_generation_tokens, record_generation_usage
 
 logger = logging.getLogger(__name__)
 
 _NO_HIT_ANSWER = "在知识库中未找到与该问题相关的内容。"
-
-
-class QueryResultCache(Protocol):
-    """同步聊天所需的查询结果缓存边界。"""
-
-    async def get(self, question: str, kb_ids: list[int]) -> QueryCacheEntry | None: ...
-
-    async def put(
-        self,
-        question: str,
-        kb_ids: list[int],
-        response: RagQueryResponse,
-    ) -> None: ...
 
 
 class SynchronousChatService(ChatSessionRuntime):

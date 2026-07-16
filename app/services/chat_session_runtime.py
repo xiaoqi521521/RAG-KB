@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Protocol
 
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -8,7 +9,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.context import CurrentUser
 from app.models.kb import ChatMessage
 from app.repositories.chat import ChatRepository
+from app.schemas.query_cache import QueryCacheEntry
+from app.schemas.rag import RagQueryResponse
 from app.services.chat_sessions import ChatSessionService
+
+
+class QueryResultCache(Protocol):
+    """会话化问答使用的查询结果缓存边界。"""
+
+    async def get(self, question: str, kb_ids: list[int]) -> QueryCacheEntry | None: ...
+
+    async def put(
+        self,
+        question: str,
+        kb_ids: list[int],
+        response: RagQueryResponse,
+    ) -> None: ...
 
 
 class ChatSessionRuntime:
