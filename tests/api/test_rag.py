@@ -81,6 +81,7 @@ class FakeQueryCache:
         self.put_calls.append((question, kb_ids))
         if response.sources:
             self.entries[(question.strip(), tuple(sorted(kb_ids)))] = QueryCacheEntry(
+                version=1,
                 answer=response.answer,
                 sources=response.sources,
                 hit_count=response.hit_count,

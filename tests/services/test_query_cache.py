@@ -141,3 +141,39 @@ async def test_query_cache_times_out_slow_redis_read() -> None:
     service = QueryCacheService(redis, ttl_seconds=600, timeout_seconds=0.001)
 
     assert await service.get("超时读取", [2]) is None
+
+
+@pytest.mark.asyncio
+async def test_query_cache_rejects_missing_version_and_empty_sources() -> None:
+    redis = FakeRedis()
+    service = QueryCacheService(redis, ttl_seconds=600)
+    key = service.build_cache_key("版本缺失", [2])
+    payload = json.loads(_response().model_dump_json())
+    payload["version"] = 1
+    payload.pop("version")
+    redis.values[key] = json.dumps(payload, ensure_ascii=False)
+
+    assert await service.get("版本缺失", [2]) is None
+    assert key not in redis.values
+
+    empty_key = service.build_cache_key("空引用", [2])
+    redis.values[empty_key] = json.dumps(
+        {"version": 1, "answer": "拒答", "sources": [], "hit_count": 0},
+        ensure_ascii=False,
+    )
+
+    assert await service.get("空引用", [2]) is None
+    assert empty_key not in redis.values
+
+
+@pytest.mark.asyncio
+async def test_query_cache_rejects_inconsistent_hit_count() -> None:
+    redis = FakeRedis()
+    service = QueryCacheService(redis, ttl_seconds=600)
+    key = service.build_cache_key("计数不一致", [2])
+    payload = json.loads(_response().model_dump_json())
+    payload["hit_count"] = 0
+    redis.values[key] = json.dumps(payload, ensure_ascii=False)
+
+    assert await service.get("计数不一致", [2]) is None
+    assert key not in redis.values

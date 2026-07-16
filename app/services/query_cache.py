@@ -71,6 +71,13 @@ class QueryCacheService:
             await self._delete_invalid(key)
             return None
 
+        if not entry.sources or entry.hit_count != len(entry.sources):
+            logger.warning(
+                "Query cache value invalid: operation=read error_type=invalid_response_shape",
+            )
+            await self._delete_invalid(key)
+            return None
+
         logger.info("Query cache result: outcome=hit")
         return entry
 
@@ -85,6 +92,7 @@ class QueryCacheService:
             return
 
         entry = QueryCacheEntry(
+            version=1,
             answer=response.answer,
             sources=response.sources,
             hit_count=response.hit_count,
