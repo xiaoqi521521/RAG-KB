@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any, NoReturn
 
 import httpx
 import openai
 import pytest
-from instructor.core.exceptions import InstructorRetryException
+from instructor.core.exceptions import IncompleteOutputException, InstructorRetryException
 from ragas.embeddings.base import BaseRagasEmbedding
 from ragas.llms.base import InstructorBaseRagasLLM
+from ragas.metrics.collections.faithfulness.util import StatementGeneratorOutput
 
 from app.evaluation.ragas_evaluator import (
     RagasErrorType,
@@ -281,6 +283,42 @@ async def test_evaluate_retries_only_temporary_provider_failures(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_classifies_incomplete_structured_output() -> None:
+    class TruncatedMetric(FakeMetric):
+        async def ascore(self, **kwargs: Any) -> NoReturn:
+            self.calls.append(kwargs)
+            raise IncompleteOutputException()
+
+    faithfulness = TruncatedMetric(0.0)
+    evaluator = RagasEvaluator(
+        metrics=RagasMetrics(
+            faithfulness=faithfulness,
+            answer_relevancy=FakeMetric(0.8),
+            context_recall=FakeMetric(0.7),
+            context_precision=FakeMetric(0.6),
+        )
+    )
+
+    result = await evaluator.evaluate(
+        RagasEvaluationSample(
+            question="问题",
+            actual_answer="回答",
+            expected_answer="期望回答",
+            reference_contexts=["参考内容"],
+        )
+    )
+
+    assert result.faithfulness is None
+    assert result.errors == (
+        RagasMetricError(
+            metric=RagasMetricName.FAITHFULNESS,
+            error_type=RagasErrorType.OUTPUT_TRUNCATED,
+        ),
+    )
+    assert len(faithfulness.calls) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_score", [float("nan"), float("inf"), float("-inf"), -0.1, 1.1])
 async def test_evaluate_rejects_invalid_scores_without_retry(invalid_score: float) -> None:
     faithfulness = FakeMetric(invalid_score)
@@ -421,6 +459,67 @@ async def test_from_clients_reuses_existing_chat_and_embedding_clients() -> None
     ]
     assert evaluator.timeout_seconds == 12.0
     assert evaluator.max_retries == 0
+    await root_client.close()
+
+
+@pytest.mark.asyncio
+async def test_from_clients_uses_chat_max_tokens_for_structured_calls() -> None:
+    requests: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"statements":["应在三十天内提交。"]}',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    embeddings = OpenAICompatibleEmbeddings(
+        embeddings_api=SimpleNamespace(),
+        model="text-embedding-v3",
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    root_client = openai.AsyncOpenAI(
+        api_key="test-key",
+        base_url="https://provider.test/v1",
+        max_retries=2,
+        http_client=http_client,
+    )
+    chat_model = SimpleNamespace(
+        model_name="deepseek-v4-flash",
+        max_tokens=2048,
+        root_async_client=root_client,
+    )
+
+    evaluator = RagasEvaluator.from_clients(
+        chat_model=chat_model,
+        embeddings=embeddings,
+        max_retries=0,
+    )
+
+    ragas_llm = getattr(evaluator.metrics.faithfulness, "llm")
+    output = await ragas_llm.agenerate(
+        "生成声明",
+        StatementGeneratorOutput,
+    )
+
+    assert output.statements == ["应在三十天内提交。"]
+    assert requests[0]["max_tokens"] == 2048
+    assert requests[0]["model"] == "deepseek-v4-flash"
     await root_client.close()
 
 

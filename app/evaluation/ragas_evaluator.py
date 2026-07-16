@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 import httpx
 import openai
-from instructor.core.exceptions import InstructorRetryException
+from instructor.core.exceptions import IncompleteOutputException, InstructorRetryException
 from opentelemetry import metrics as otel_metrics
 from opentelemetry.metrics import Counter, Histogram, Meter
 from ragas.embeddings.base import BaseRagasEmbedding
@@ -80,6 +80,7 @@ class RagasErrorType(StrEnum):
     """不包含供应商正文的稳定错误分类。"""
 
     PARSE_ERROR = "parse_error"
+    OUTPUT_TRUNCATED = "output_truncated"
     TIMEOUT = "timeout"
     RATE_LIMIT = "rate_limit"
     TEMPORARY_PROVIDER = "temporary_provider"
@@ -283,7 +284,16 @@ class RagasEvaluator:
 
         # 禁用 SDK 内部重试，确保重试次数只由本适配器控制。
         evaluation_client = root_async_client.with_options(max_retries=0)
-        llm = llm_factory(model_name, client=evaluation_client, max_retries=0)
+        model_kwargs: dict[str, Any] = {"max_retries": 0}
+        chat_max_tokens = getattr(chat_model, "max_tokens", None)
+        if (
+            isinstance(chat_max_tokens, int)
+            and not isinstance(chat_max_tokens, bool)
+            and chat_max_tokens > 0
+        ):
+            # Faithfulness 需要两次嵌套结构化输出，不能退回 RAGAS 默认的 1024。
+            model_kwargs["max_tokens"] = chat_max_tokens
+        llm = llm_factory(model_name, client=evaluation_client, **model_kwargs)
         ragas_embeddings = _OpenAICompatibleRagasEmbeddings(embeddings)
         return cls(
             metrics=build_ragas_metrics(
@@ -424,6 +434,8 @@ class RagasEvaluator:
             return RagasErrorType.TEMPORARY_PROVIDER, True
         if isinstance(exc, openai.APIStatusError) and exc.status_code >= 500:
             return RagasErrorType.TEMPORARY_PROVIDER, True
+        if isinstance(exc, IncompleteOutputException):
+            return RagasErrorType.OUTPUT_TRUNCATED, False
         if isinstance(exc, InstructorRetryException):
             if isinstance(exc.__cause__, Exception):
                 return RagasEvaluator._classify_error(exc.__cause__)
