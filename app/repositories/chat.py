@@ -40,16 +40,25 @@ class ChatRepository:
         sources: list[dict[str, object]],
         token_count: int,
         latency_ms: int,
-    ) -> bool:
+    ) -> ChatMessage | None:
         """为会话所有者保存完整问答轮次。
 
         Returns:
-            会话归属当前用户时返回 True，否则不写入并返回 False。
+            会话归属当前用户时返回已加入会话的助手消息，否则返回 None。
         """
         chat_session = await self.get_active_session_for_user(session_id, user_id)
         if chat_session is None:
-            return False
+            return None
 
+        assistant_message = ChatMessage(
+            session_id=session_id,
+            role=ChatMessageRole.ASSISTANT.value,
+            content=answer,
+            sources=sources,
+            token_count=token_count,
+            latency_ms=latency_ms,
+            kb_ids=kb_ids,
+        )
         self.session.add_all(
             [
                 ChatMessage(
@@ -57,15 +66,7 @@ class ChatRepository:
                     role=ChatMessageRole.USER.value,
                     content=question,
                 ),
-                ChatMessage(
-                    session_id=session_id,
-                    role=ChatMessageRole.ASSISTANT.value,
-                    content=answer,
-                    sources=sources,
-                    token_count=token_count,
-                    latency_ms=latency_ms,
-                    kb_ids=kb_ids,
-                ),
+                assistant_message,
             ]
         )
 
@@ -76,7 +77,7 @@ class ChatRepository:
             chat_session.title = question[:50]
 
         await self.session.flush()
-        return True
+        return assistant_message
 
     async def touch_session(self, chat_session: ChatSession) -> None:
         """更新会话最近活跃时间。"""

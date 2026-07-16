@@ -84,6 +84,7 @@ class FakeSynchronousChatService:
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float | None = None,
     ) -> ChatQueryResponse:
         self.calls.append(
             {
@@ -91,6 +92,7 @@ class FakeSynchronousChatService:
                 "kb_ids": kb_ids,
                 "session_id": session_id,
                 "user_id": user.user_id,
+                "started_at": started_at,
             }
         )
         return ChatQueryResponse(
@@ -174,9 +176,13 @@ def test_sync_endpoint_returns_complete_answer_and_session_id() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["session_id"] == "new-session"
     assert permission_service.read_checks == [2]
-    assert synchronous_service.calls == [
-        {"question": "年假怎么申请？", "kb_ids": [2], "session_id": None, "user_id": 1}
-    ]
+    assert len(synchronous_service.calls) == 1
+    call = synchronous_service.calls[0]
+    assert call["question"] == "年假怎么申请？"
+    assert call["kb_ids"] == [2]
+    assert call["session_id"] is None
+    assert call["user_id"] == 1
+    assert isinstance(call["started_at"], float)
 
 
 def test_sync_endpoint_stops_before_session_creation_when_permission_denied() -> None:

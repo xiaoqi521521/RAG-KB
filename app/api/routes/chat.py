@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from typing import Protocol
 
@@ -9,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
 from app.api.routes.knowledge_bases import get_permission_service
-from app.api.routes.rag import get_faithfulness_metrics, get_rag_query_service, get_token_metrics
+from app.api.routes.rag import (
+    get_faithfulness_metrics,
+    get_query_cache_service,
+    get_rag_query_service,
+    get_token_metrics,
+)
 from app.core.config import Settings, get_settings
 from app.core.context import CurrentUser
 from app.core.database import AsyncSessionLocal
@@ -21,6 +27,7 @@ from app.services.chat_sessions import ChatSessionService
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.permissions import PermissionService
 from app.services.rag_query_v4 import RagQueryServiceV4
+from app.services.query_cache import QueryCacheService
 from app.services.streaming_chat import SseEvent, StreamingChatService
 from app.services.synchronous_chat import SynchronousChatService
 from app.services.token_metrics import TokenMetrics
@@ -51,6 +58,7 @@ class SynchronousChatPipeline(Protocol):
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float | None = None,
     ) -> ChatQueryResponse: ...
 
 
@@ -83,6 +91,7 @@ def get_synchronous_chat_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
     faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
+    query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> SynchronousChatPipeline:
     """组装使用独立数据库会话的同步问答服务。"""
 
@@ -100,6 +109,7 @@ def get_synchronous_chat_service(
     return SynchronousChatService(
         session_factory=AsyncSessionLocal,
         rag_service_factory=build_rag_service,
+        query_cache=query_cache,
         timeout_seconds=settings.chat_stream_timeout_seconds,
     )
 
@@ -119,6 +129,8 @@ async def query_chat(
     synchronous_service: SynchronousChatPipeline = Depends(get_synchronous_chat_service),
 ) -> ApiResponse[ChatQueryResponse]:
     """执行会话化同步问答并返回完整答案。"""
+    # 从权限校验前开始计时，确保响应 latency 覆盖完整同步业务路径。
+    started_at = time.perf_counter()
     # 权限校验必须在创建会话和检索前完成，避免无权范围留下会话记录。
     for kb_id in request.kb_ids:
         await permission_service.require_read(kb_id, user)
@@ -129,6 +141,7 @@ async def query_chat(
             kb_ids=request.kb_ids,
             session_id=request.session_id,
             user=user,
+            started_at=started_at,
         )
     )
 

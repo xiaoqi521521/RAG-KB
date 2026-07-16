@@ -74,7 +74,7 @@ async def test_saved_turn_records_scope_only_on_assistant_message() -> None:
         latency_ms=10,
     )
 
-    assert saved is True
+    assert saved is not None
     assert len(session.added) == 2
     user_message, assistant_message = session.added
     assert user_message.role == ChatMessageRole.USER.value  # type: ignore[attr-defined]

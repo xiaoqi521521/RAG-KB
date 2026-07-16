@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.context import CurrentUser
+from app.models.kb import ChatMessage
 from app.repositories.chat import ChatRepository
 from app.services.chat_sessions import ChatSessionService
 
@@ -45,11 +46,12 @@ class ChatSessionRuntime:
         token_count: int,
         latency_ms: int,
         user: CurrentUser,
+        started_at: float | None = None,
     ) -> None:
         """使用独立事务保存已完成的问答轮次。"""
         async with self.session_factory() as session:
             service = ChatSessionService(ChatRepository(session))
-            await service.save_turn(
+            saved_message = await service.save_turn(
                 session_id=session_id,
                 kb_ids=kb_ids,
                 question=question,
@@ -59,6 +61,9 @@ class ChatSessionRuntime:
                 latency_ms=latency_ms,
                 user=user,
             )
+            if started_at is not None and isinstance(saved_message, ChatMessage):
+                # flush 后补写已包含消息持久化阶段的耗时，再提交同一事务。
+                saved_message.latency_ms = self._elapsed_ms(started_at)
             await session.commit()
 
     async def _load_history(self, session_id: str, user: CurrentUser) -> list[object]:

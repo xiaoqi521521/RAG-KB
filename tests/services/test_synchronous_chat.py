@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.context import CurrentUser
+from app.schemas.query_cache import QueryCacheEntry
 from app.schemas.rag import SourceCitation
 from app.services.rag_query_v4 import PreparedRagContext
 from app.services.synchronous_chat import SynchronousChatService
@@ -17,6 +18,20 @@ class FakeMessage:
 class FakeTokenMetrics:
     async def record_generation_tokens(self, *, tokens: int, source: str = "provider") -> None:
         return None
+
+
+class FakeQueryCache:
+    def __init__(self, entry: QueryCacheEntry | None = None) -> None:
+        self.entry = entry
+        self.get_calls: list[tuple[str, list[int]]] = []
+        self.put_calls: list[tuple[str, list[int], object]] = []
+
+    async def get(self, question: str, kb_ids: list[int]) -> QueryCacheEntry | None:
+        self.get_calls.append((question, kb_ids))
+        return self.entry
+
+    async def put(self, question: str, kb_ids: list[int], response: object) -> None:
+        self.put_calls.append((question, kb_ids, response))
 
 
 class FakeSessionContext:
@@ -43,8 +58,10 @@ class FakeRagService:
         self.chat_model = FakeChatModel()
         self.token_metrics = FakeTokenMetrics()
         self.received_history: list[object] | None = None
+        self.prepare_calls = 0
 
     async def prepare_context(self, **kwargs: object) -> PreparedRagContext | None:
+        self.prepare_calls += 1
         return self.prepared_context
 
     def build_generation_messages(
@@ -62,10 +79,16 @@ class FakeRagService:
 
 
 class InMemorySynchronousChatService(SynchronousChatService):
-    def __init__(self, rag_service: FakeRagService) -> None:
+    def __init__(
+        self,
+        rag_service: FakeRagService,
+        query_cache: FakeQueryCache | None = None,
+    ) -> None:
+        self.query_cache = query_cache or FakeQueryCache()
         super().__init__(
             session_factory=FakeSessionFactory(),
             rag_service_factory=lambda session: rag_service,
+            query_cache=self.query_cache,
         )
         self.history: list[object] = ["earlier-user", "earlier-assistant"]
         self.saved_turns: list[dict[str, object]] = []
@@ -78,6 +101,20 @@ class InMemorySynchronousChatService(SynchronousChatService):
 
     async def _save_turn(self, **kwargs: object) -> None:
         self.saved_turns.append(kwargs)
+
+
+class FailingSaveSynchronousChatService(InMemorySynchronousChatService):
+    async def _save_turn(self, **kwargs: object) -> None:
+        raise RuntimeError("message persistence failed")
+
+
+def _cache_entry() -> QueryCacheEntry:
+    return QueryCacheEntry(
+        version=1,
+        answer="缓存回答。[参考1]",
+        sources=_prepared_context().sources,
+        hit_count=1,
+    )
 
 
 def _prepared_context() -> PreparedRagContext:
@@ -120,6 +157,8 @@ async def test_query_injects_history_and_saves_complete_turn() -> None:
     assert service.saved_turns[0]["answer"] == "根据员工手册。"
     assert service.saved_turns[0]["kb_ids"] == [2]
     assert service.saved_turns[0]["token_count"] == 4
+    assert service.query_cache.get_calls == []
+    assert service.query_cache.put_calls == []
 
 
 async def test_query_returns_refusal_without_saving_turn_when_context_is_missing() -> None:
@@ -136,3 +175,83 @@ async def test_query_returns_refusal_without_saving_turn_when_context_is_missing
     assert response.sources == []
     assert response.hit_count == 0
     assert service.saved_turns == []
+
+
+async def test_first_turn_cache_hit_saves_zero_token_turn_without_rag_call() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache(_cache_entry())
+    service = InMemorySynchronousChatService(rag_service, query_cache)
+    service.history = []
+
+    response = await service.query(
+        question="年假怎么申请？",
+        kb_ids=[2],
+        session_id=None,
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+    )
+
+    assert response.answer == "缓存回答。[参考1]"
+    assert response.sources == _prepared_context().sources
+    assert response.hit_count == 1
+    assert response.session_id == "session-1"
+    assert response.latency_ms >= 0
+    assert rag_service.prepare_calls == 0
+    assert query_cache.get_calls == [("年假怎么申请？", [2])]
+    assert query_cache.put_calls == []
+    assert service.saved_turns[0]["token_count"] == 0
+
+
+async def test_first_turn_cache_miss_writes_only_after_turn_persistence() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache()
+    service = InMemorySynchronousChatService(rag_service, query_cache)
+    service.history = []
+
+    await service.query(
+        question="年假怎么申请？",
+        kb_ids=[2],
+        session_id=None,
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+    )
+
+    assert rag_service.prepare_calls == 1
+    assert query_cache.get_calls == [("年假怎么申请？", [2])]
+    assert len(query_cache.put_calls) == 1
+    assert query_cache.put_calls[0][2].answer == "根据员工手册。"
+
+
+async def test_non_empty_history_skips_cache_read_and_write() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache(_cache_entry())
+    service = InMemorySynchronousChatService(rag_service, query_cache)
+
+    await service.query(
+        question="年假怎么申请？",
+        kb_ids=[2],
+        session_id="session-1",
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+    )
+
+    assert rag_service.received_history == ["earlier-user", "earlier-assistant"]
+    assert query_cache.get_calls == []
+    assert query_cache.put_calls == []
+
+
+async def test_persistence_failure_does_not_create_first_turn_cache_entry() -> None:
+    query_cache = FakeQueryCache()
+    service = FailingSaveSynchronousChatService(FakeRagService(_prepared_context()), query_cache)
+    service.history = []
+
+    try:
+        await service.query(
+            question="年假怎么申请？",
+            kb_ids=[2],
+            session_id=None,
+            user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "message persistence failed"
+    else:
+        raise AssertionError("expected message persistence failure")
+
+    assert query_cache.put_calls == []

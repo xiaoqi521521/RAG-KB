@@ -4,13 +4,14 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.context import CurrentUser
-from app.schemas.rag import ChatQueryResponse
+from app.schemas.query_cache import QueryCacheEntry
+from app.schemas.rag import ChatQueryResponse, RagQueryResponse
 from app.services.chat_session_runtime import ChatSessionRuntime
 from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.token_metrics import extract_generation_tokens, record_generation_usage
@@ -18,6 +19,19 @@ from app.services.token_metrics import extract_generation_tokens, record_generat
 logger = logging.getLogger(__name__)
 
 _NO_HIT_ANSWER = "在知识库中未找到与该问题相关的内容。"
+
+
+class QueryResultCache(Protocol):
+    """同步聊天所需的查询结果缓存边界。"""
+
+    async def get(self, question: str, kb_ids: list[int]) -> QueryCacheEntry | None: ...
+
+    async def put(
+        self,
+        question: str,
+        kb_ids: list[int],
+        response: RagQueryResponse,
+    ) -> None: ...
 
 
 class SynchronousChatService(ChatSessionRuntime):
@@ -28,10 +42,12 @@ class SynchronousChatService(ChatSessionRuntime):
         *,
         session_factory: async_sessionmaker[AsyncSession],
         rag_service_factory: Callable[[AsyncSession], RagQueryServiceV4],
+        query_cache: QueryResultCache,
         timeout_seconds: float = 60,
     ) -> None:
         super().__init__(session_factory=session_factory)
         self.rag_service_factory = rag_service_factory
+        self.query_cache = query_cache
         self.timeout_seconds = timeout_seconds
 
     async def query(
@@ -41,8 +57,10 @@ class SynchronousChatService(ChatSessionRuntime):
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float | None = None,
     ) -> ChatQueryResponse:
         """执行会话化同步问答，成功后保存完整消息轮次。"""
+        effective_started_at = started_at if started_at is not None else time.perf_counter()
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 return await self._query_success(
@@ -50,6 +68,7 @@ class SynchronousChatService(ChatSessionRuntime):
                     kb_ids=kb_ids,
                     session_id=session_id,
                     user=user,
+                    started_at=effective_started_at,
                 )
         except TimeoutError as exc:
             logger.warning("Synchronous chat timed out")
@@ -65,14 +84,41 @@ class SynchronousChatService(ChatSessionRuntime):
         kb_ids: list[int],
         session_id: str | None,
         user: CurrentUser,
+        started_at: float,
     ) -> ChatQueryResponse:
         """执行正常问答并在回答可用时保存会话消息。"""
-        started_at = time.perf_counter()
         active_session_id = await self._get_or_create_session(
             session_id=session_id,
             kb_ids=kb_ids,
             user=user,
         )
+        history = await self._load_history(active_session_id, user)
+
+        # 只有服务端确认会话没有任何历史时，才允许读取首轮缓存。
+        if not history:
+            cached = await self.query_cache.get(question, kb_ids)
+            if cached is not None:
+                latency_ms = self._elapsed_ms(started_at)
+                source_data = [source.model_dump(mode="json") for source in cached.sources]
+                await self._save_turn(
+                    session_id=active_session_id,
+                    kb_ids=kb_ids,
+                    question=question,
+                    answer=cached.answer,
+                    sources=source_data,
+                    token_count=0,
+                    latency_ms=latency_ms,
+                    user=user,
+                    started_at=started_at,
+                )
+                latency_ms = self._elapsed_ms(started_at)
+                return ChatQueryResponse(
+                    session_id=active_session_id,
+                    answer=cached.answer,
+                    sources=cached.sources,
+                    hit_count=cached.hit_count,
+                    latency_ms=latency_ms,
+                )
 
         async with self.session_factory() as session:
             rag_service = self.rag_service_factory(session)
@@ -95,7 +141,7 @@ class SynchronousChatService(ChatSessionRuntime):
         messages = rag_service.build_generation_messages(
             question=question,
             prepared_context=prepared_context,
-            history=await self._load_history(active_session_id, user),
+            history=history,
         )
         response = await self._generate_answer(
             rag_service=rag_service,
@@ -129,14 +175,19 @@ class SynchronousChatService(ChatSessionRuntime):
             token_count=extract_generation_tokens(response) or 0,
             latency_ms=latency_ms,
             user=user,
+            started_at=started_at,
         )
-        return ChatQueryResponse(
+        result = ChatQueryResponse(
             session_id=active_session_id,
             answer=answer,
             sources=sources,
             hit_count=len(sources),
             latency_ms=latency_ms,
         )
+        if not history:
+            # 消息已成功持久化后再写缓存，避免缓存出现在不完整会话旁边。
+            await self.query_cache.put(question, kb_ids, result)
+        return result.model_copy(update={"latency_ms": self._elapsed_ms(started_at)})
 
     async def _generate_answer(
         self,

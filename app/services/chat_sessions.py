@@ -46,7 +46,7 @@ class ChatSessionService:
         token_count: int,
         latency_ms: int,
         user: CurrentUser,
-    ) -> None:
+    ) -> ChatMessage:
         """仅保存完整生成成功的用户问题和助手回答。"""
         saved = await self.repository.add_turn_for_user(
             session_id=session_id,
@@ -60,6 +60,7 @@ class ChatSessionService:
         )
         if not saved:
             raise self._session_not_found()
+        return saved
 
     async def get_history(self, session_id: str, user: CurrentUser) -> list[ChatMessage]:
         """返回当前问题之前最近五轮、按时间正序的对话历史。"""
