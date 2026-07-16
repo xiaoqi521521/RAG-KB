@@ -510,6 +510,7 @@ async def test_from_clients_uses_configured_max_tokens_for_structured_calls() ->
         chat_model=chat_model,
         embeddings=embeddings,
         max_tokens=4096,
+        timeout_seconds=60,
         max_retries=0,
     )
 

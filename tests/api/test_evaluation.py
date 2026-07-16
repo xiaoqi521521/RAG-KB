@@ -277,7 +277,7 @@ def test_ragas_dependency_reuses_application_model_and_embedding_clients(monkeyp
     monkeypatch.setattr(
         evaluation,
         "get_settings",
-        lambda: SimpleNamespace(ragas_max_tokens=4096),
+        lambda: SimpleNamespace(ragas_max_tokens=4096, ragas_timeout_seconds=60),
     )
     monkeypatch.setattr(evaluation, "RagasEvaluator", FakeRagasFactory)
 
@@ -286,4 +286,5 @@ def test_ragas_dependency_reuses_application_model_and_embedding_clients(monkeyp
         "chat_model": chat_model,
         "embeddings": embeddings,
         "max_tokens": 4096,
+        "timeout_seconds": 60,
     }

@@ -61,10 +61,12 @@ def get_evaluation_rag_executor(
 
 def get_evaluation_ragas_evaluator() -> GenerationEvaluator:
     """复用现有回答与 Embedding 客户端构建正式 RAGAS 适配器。"""
+    settings = get_settings()
     return RagasEvaluator.from_clients(
         chat_model=get_chat_model(),
         embeddings=get_embeddings(),
-        max_tokens=get_settings().ragas_max_tokens,
+        max_tokens=settings.ragas_max_tokens,
+        timeout_seconds=settings.ragas_timeout_seconds,
     )
 
 

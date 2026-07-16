@@ -275,7 +275,11 @@ class RagasEvaluator:
         max_retries: int = 1,
         observability: RagasEvaluationMetrics | None = None,
     ) -> RagasEvaluator:
-        """复用现有回答模型和 Embedding 客户端构建正式评估适配器。"""
+        """复用现有回答模型和 Embedding 客户端构建正式评估适配器。
+
+        Args:
+            max_tokens: RAGAS 结构化输出的独立 token 上限。
+        """
         model_name = getattr(chat_model, "model_name", None)
         root_async_client = getattr(chat_model, "root_async_client", None)
         if not isinstance(model_name, str) or not model_name.strip():

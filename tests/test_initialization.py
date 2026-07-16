@@ -54,6 +54,7 @@ def test_settings_loads_required_rag_defaults():
     assert settings.rag_faithfulness_sample_rate == 0.2
     assert settings.rag_faithfulness_timeout_seconds == 5
     assert settings.ragas_max_tokens == 4096
+    assert settings.ragas_timeout_seconds == 60
     assert settings.max_upload_file_size_mb == 50
     assert settings.max_upload_request_size_mb == 100
 
@@ -65,6 +66,7 @@ def test_settings_loads_required_rag_defaults():
         ("rag_faithfulness_sample_rate", 1.1),
         ("rag_faithfulness_timeout_seconds", 0),
         ("ragas_max_tokens", 0),
+        ("ragas_timeout_seconds", 0),
     ],
 )
 def test_settings_rejects_invalid_faithfulness_evaluation_config(field: str, value: float) -> None:
