@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    auth,
     chat,
     document_updates,
     evaluation,
@@ -12,6 +13,7 @@ from app.api.routes import (
 )
 
 api_router = APIRouter()
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(health.router, prefix="/health", tags=["health"])
 api_router.include_router(knowledge_bases.router, prefix="/kb", tags=["knowledge-bases"])
 api_router.include_router(document_updates.router, prefix="/kb", tags=["document-updates"])

@@ -1,5 +1,6 @@
 .env
 .references
+docs/logs/
 
 .venv/
 .uv-cache/

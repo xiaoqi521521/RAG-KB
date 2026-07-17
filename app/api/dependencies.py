@@ -10,7 +10,7 @@ from app.core.security import decode_access_token
 from app.services.identity import (
     IdentityProvider,
     IdentityProviderUnavailableError,
-    UnavailableIdentityProvider,
+    demo_identity_provider,
 )
 
 settings = get_settings()
@@ -24,7 +24,7 @@ def get_identity_provider() -> IdentityProvider:
     Returns:
         用于读取用户资料的身份提供者。生产环境需要替换为实际用户目录。
     """
-    return UnavailableIdentityProvider()
+    return demo_identity_provider
 
 
 async def get_current_user(
