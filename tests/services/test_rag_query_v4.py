@@ -182,7 +182,14 @@ class FakeFaithfulnessEvaluator:
         self.result = result
         self.calls: list[dict[str, str]] = []
 
-    async def evaluate(self, *, question: str, answer: str, context: str) -> FaithfulnessResult:
+    async def evaluate(
+        self,
+        *,
+        question: str,
+        answer: str,
+        context: str,
+        kb_id: str | int = "unknown",
+    ) -> FaithfulnessResult:
         self.calls.append({"question": question, "answer": answer, "context": context})
         return self.result
 
@@ -536,7 +543,14 @@ async def test_query_returns_before_faithfulness_observation_completes() -> None
             self.started = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def evaluate(self, *, question: str, answer: str, context: str) -> FaithfulnessResult:
+        async def evaluate(
+            self,
+            *,
+            question: str,
+            answer: str,
+            context: str,
+            kb_id: str | int = "unknown",
+        ) -> FaithfulnessResult:
             self.started.set()
             await self.release.wait()
             return FaithfulnessResult(

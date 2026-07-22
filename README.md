@@ -12,8 +12,8 @@
 - 回答引用可追溯到文档、页码、章节和 chunk；上下文不足时明确拒答。
 - 知识库级权限隔离，检索 SQL 硬过滤授权知识库、当前文档版本和已完成索引。
 - 支持 `POST /api/v1/chat` 同步问答和 `GET /api/v1/chat/stream` SSE 流式问答。
+- Token 监控按 `model`、`token_type`、`kb_id` 导出 Prometheus，并提供 Grafana Dashboard、预算告警和个人六类累计用量。
 - 支持 Hit Rate@5、MRR@5、Faithfulness、Answer Relevancy、Context Recall 和 Context Precision 评估。
-- 评估使用独立的 `RAGAS_MAX_TOKENS=4096` 和 `RAGAS_TIMEOUT_SECONDS=60`，不影响普通问答预算。
 
 ## 技术栈
 
@@ -96,6 +96,8 @@ curl --request POST http://localhost:8000/api/v1/auth/login \
 | 评估运行 | POST | `/api/v1/eval/{kb_id}/run?version={eval_version}` |
 | 评估历史 | GET | `/api/v1/eval/{kb_id}/history` |
 | Token 统计 | GET | `/api/v1/stats/tokens` |
+
+启用监控时将 `ENABLE_METRICS=true`，Prometheus 抓取 `/metrics`。监控面板和 Prometheus 查询只对系统管理员与运维开放；应用本身不在本期增加 `/metrics` 网络 ACL。每日 Token 预算、时区和单次异常阈值分别由 `TOKEN_BUDGET_DAILY_TOKENS`、`TOKEN_BUDGET_TIMEZONE` 和 `TOKEN_REQUEST_ALERT_LIMIT` 配置。
 
 反馈接口使用 JSON 请求体，而不是查询参数：
 

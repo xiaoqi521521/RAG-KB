@@ -8,6 +8,7 @@ from app.repositories.chunks import ChunkRepository, ChunkSearchHit
 from app.services.embedding import EmbeddingService
 from app.services.rrf import rrf_fuse
 from app.services.ts_query_builder import TsQueryBuilder
+from app.services.token_metrics import knowledge_base_scope
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,10 @@ class HybridRetriever:
         """
         normalized_question = question.strip()
 
-        query_vector = await self.embedding_service.embed_query(normalized_question)
+        query_vector = await self.embedding_service.embed_query(
+            normalized_question,
+            kb_id=knowledge_base_scope(kb_ids),
+        )
         vector_hits = await self.chunk_repository.search_by_vector(
             query_vector=query_vector,
             kb_ids=kb_ids,

@@ -1,6 +1,7 @@
 .env
 .references
 /docs/references/
+/docs/temp/
 docs/logs/
 
 .venv/

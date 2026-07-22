@@ -287,10 +287,11 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
         assert value is provider
         calls.append("shutdown_metrics")
 
-    def fake_token_metrics_factory(*, redis_client, meter, **kwargs):
+    def fake_token_metrics_factory(*, redis_client, **kwargs):
         assert redis_client is fake_provider
-        assert meter is fake_meter
-        assert kwargs == {"read_timeout_seconds": 1.0, "read_max_retries": 1}
+        assert kwargs["read_timeout_seconds"] == 1.0
+        assert kwargs["read_max_retries"] == 1
+        assert "budget_gate" in kwargs
         return fake_token_metrics
 
     def fake_faithfulness_metrics_factory(*, meter):
@@ -309,6 +310,7 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
     app = FastAPI()
     async with main.lifespan(app):
         assert app.state.token_metrics is fake_token_metrics
+        assert app.state.token_budget_gate is not None
         assert app.state.faithfulness_metrics is fake_faithfulness_metrics
         assert app.state.meter_provider is provider
 

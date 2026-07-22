@@ -13,7 +13,16 @@ from app.core.context import CurrentUser
 from app.schemas.rag import RagQueryResponse
 from app.services.chat_session_runtime import ChatSessionRuntime, QueryResultCache
 from app.services.rag_query_v4 import RagQueryServiceV4
-from app.services.token_metrics import extract_generation_tokens, record_generation_usage
+from app.services.token_metrics import (
+    extract_generation_tokens,
+    knowledge_base_scope,
+    record_generation_usage,
+)
+from app.services.token_budget import (
+    GlobalTokenBudgetGate,
+    TokenBudgetExhaustedError,
+    TokenBudgetUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +45,13 @@ class StreamingChatService(ChatSessionRuntime):
         rag_service_factory: Callable[[AsyncSession], RagQueryServiceV4],
         query_cache: QueryResultCache,
         timeout_seconds: float = 60,
+        budget_gate: GlobalTokenBudgetGate | None = None,
     ) -> None:
         super().__init__(session_factory=session_factory)
         self.rag_service_factory = rag_service_factory
         self.query_cache = query_cache
         self.timeout_seconds = timeout_seconds
+        self.budget_gate = budget_gate
 
     async def stream(
         self,
@@ -55,19 +66,34 @@ class StreamingChatService(ChatSessionRuntime):
         effective_started_at = started_at if started_at is not None else time.perf_counter()
         try:
             async with asyncio.timeout(self.timeout_seconds):
-                async for event in self._stream_success(
-                    question=question,
-                    kb_ids=kb_ids,
-                    session_id=session_id,
-                    user=user,
-                    started_at=effective_started_at,
-                ):
-                    yield event
+                if self.budget_gate is None:
+                    async for event in self._stream_success(
+                        question=question,
+                        kb_ids=kb_ids,
+                        session_id=session_id,
+                        user=user,
+                        started_at=effective_started_at,
+                    ):
+                        yield event
+                else:
+                    async with self.budget_gate.request_scope():
+                        async for event in self._stream_success(
+                            question=question,
+                            kb_ids=kb_ids,
+                            session_id=session_id,
+                            user=user,
+                            started_at=effective_started_at,
+                        ):
+                            yield event
         except TimeoutError:
             logger.warning("Streaming chat timed out")
             yield SseEvent(event="error", data='{"message":"生成超时，请稍后重试"}')
         except asyncio.CancelledError:
             raise
+        except TokenBudgetExhaustedError:
+            yield SseEvent(event="error", data='{"message":"今日 Token 预算已用尽"}')
+        except TokenBudgetUnavailableError:
+            yield SseEvent(event="error", data='{"message":"Token 预算状态暂不可用"}')
         except Exception:  # noqa: BLE001
             logger.exception("Streaming chat failed")
             yield SseEvent(event="error", data='{"message":"请求处理失败，请稍后重试"}')
@@ -124,6 +150,7 @@ class StreamingChatService(ChatSessionRuntime):
                 return
 
         async with self.session_factory() as session:
+            await self._ensure_budget()
             rag_service = self.rag_service_factory(session)
             prepared_context = await rag_service.prepare_context(
                 question=question,
@@ -174,6 +201,8 @@ class StreamingChatService(ChatSessionRuntime):
                 recorder=rag_service.token_metrics,
                 response=full_message,
                 pipeline="v4",
+                model=getattr(getattr(rag_service, "settings", None), "chat_model", "unknown"),
+                kb_id=knowledge_base_scope(kb_ids),
             )
 
         sources = rag_service.finalize_answer(
@@ -227,3 +256,8 @@ class StreamingChatService(ChatSessionRuntime):
         import json
 
         return json.dumps(sources, ensure_ascii=False, separators=(",", ":"))
+
+    async def _ensure_budget(self) -> None:
+        """在缓存未命中后检查预算，缓存回答不占用模型闸门。"""
+        if self.budget_gate is not None:
+            await self.budget_gate.ensure_available()

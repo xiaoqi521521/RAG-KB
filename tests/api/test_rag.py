@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -118,6 +119,15 @@ class FakeTokenMetrics:
         return None
 
 
+class FakeTokenBudgetGate:
+    async def ensure_available(self) -> None:
+        return None
+
+    @asynccontextmanager
+    async def request_scope(self):
+        yield
+
+
 @dataclass
 class FakeSettings:
     rag_query_pipeline: str
@@ -153,6 +163,7 @@ def _client(
     app.dependency_overrides[rag.get_rag_query_service] = lambda: rag_service
     app.dependency_overrides[rag.get_current_user] = lambda: _user()
     app.dependency_overrides[rag.get_query_cache_service] = lambda: query_cache or FakeQueryCache()
+    app.dependency_overrides[rag.get_token_budget_gate] = FakeTokenBudgetGate
     return TestClient(app)
 
 

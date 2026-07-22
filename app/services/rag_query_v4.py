@@ -23,7 +23,7 @@ from app.services.rag_prompt import build_v4_system_prompt
 from app.services.rag_query import RAG_REFUSAL_ANSWER, RAG_REFUSAL_MARKER
 from app.services.reranker import RerankerService
 from app.services.source_builder import CitationSelectionStatus, SourceBuilder
-from app.services.token_metrics import TokenMetrics, record_generation_usage
+from app.services.token_metrics import TokenMetrics, knowledge_base_scope, record_generation_usage
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ class RagQueryServiceV4:
                 question=question.strip(),
                 answer=execution.public_response.answer,
                 context=execution.prompt_context,
+                kb_id=knowledge_base_scope(kb_ids),
             )
         return execution.public_response
 
@@ -131,6 +132,7 @@ class RagQueryServiceV4:
         answer = await self._generate_answer(
             normalized_question,
             prepared_context,
+            kb_ids=kb_ids,
         )
         sources = self._resolve_answer_sources(
             answer=answer,
@@ -180,6 +182,7 @@ class RagQueryServiceV4:
                 question=question,
                 answer=answer,
                 context=prepared_context.context,
+                kb_id=knowledge_base_scope(kb_ids),
             )
         return sources
 
@@ -249,7 +252,7 @@ class RagQueryServiceV4:
             )
             return PreparedRagContext(context="", sources=[])
 
-        prepared_hits = await self._prepare_context_hits(question, retrieve_result.hits)
+        prepared_hits = await self._prepare_context_hits(question, retrieve_result.hits, kb_ids)
         if not prepared_hits.context_hits:
             logger.info(
                 "RAG v4 query refused: reason=no_context_hits kb_count=%s",
@@ -293,6 +296,7 @@ class RagQueryServiceV4:
         self,
         question: str,
         candidates: list[ChunkSearchHit],
+        kb_ids: list[int],
     ) -> PreparedRagHits:
         """执行精排、成功态过滤和上下文裁剪占位。"""
         rerank_result = await self.reranker.rerank(question=question, candidates=candidates)
@@ -317,6 +321,14 @@ class RagQueryServiceV4:
             rerank_result.total_tokens,
             len(hits),
         )
+        if not rerank_result.degraded:
+            if rerank_result.total_tokens is not None:
+                await self._record_reranker_usage(
+                    tokens=rerank_result.total_tokens,
+                    kb_ids=kb_ids,
+                )
+            elif rerank_result.degraded_reason != "skipped_not_enough_candidates":
+                self._record_reranker_usage_unavailable(kb_ids=kb_ids)
         # 裁剪器只统计最终允许进入 SourceBuilder 的候选，确保 Context Token 与引用口径一致。
         context_candidates = hits[: self.settings.rag_return_top_n]
         context_hits = await self.context_trimmer.trim(context_candidates)
@@ -326,6 +338,31 @@ class RagQueryServiceV4:
             reranker_degraded=rerank_result.degraded,
             degraded_reason=rerank_result.degraded_reason,
         )
+
+    async def _record_reranker_usage(
+        self,
+        *,
+        tokens: int,
+        kb_ids: list[int],
+    ) -> None:
+        """记录成功 Reranker 调用的 provider usage，降级路径不生成估算。"""
+        if not hasattr(self.token_metrics, "record_usage"):
+            return
+        await self.token_metrics.record_usage(  # type: ignore[attr-defined]
+            tokens=tokens,
+            model=getattr(self.settings, "reranker_model", "unknown"),
+            token_type="reranker",
+            kb_id=knowledge_base_scope(kb_ids),
+        )
+
+    def _record_reranker_usage_unavailable(self, *, kb_ids: list[int]) -> None:
+        """成功调用但 provider 未返回 Reranker usage 时只写 unavailable 观测。"""
+        if hasattr(self.token_metrics, "record_usage_unavailable"):
+            self.token_metrics.record_usage_unavailable(  # type: ignore[attr-defined]
+                model=getattr(self.settings, "reranker_model", "unknown"),
+                token_type="reranker",
+                kb_id=knowledge_base_scope(kb_ids),
+            )
 
     async def _retrieve_hits(
         self,
@@ -378,6 +415,8 @@ class RagQueryServiceV4:
         self,
         question: str,
         prepared_context: PreparedRagContext,
+        *,
+        kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
@@ -398,6 +437,8 @@ class RagQueryServiceV4:
             recorder=self.token_metrics,
             response=response,
             pipeline="v4",
+            model=getattr(self.settings, "chat_model", "unknown"),
+            kb_id=knowledge_base_scope(kb_ids),
         )
 
         content = getattr(response, "content", None)
@@ -436,6 +477,7 @@ class RagQueryServiceV4:
         question: str,
         answer: str,
         context: str,
+        kb_id: str | int,
     ) -> None:
         """在后台记录忠实性评估，避免质量观测增加用户响应延迟。"""
         if self.faithfulness_evaluator is None:
@@ -446,6 +488,7 @@ class RagQueryServiceV4:
                 question=question,
                 answer=answer,
                 context=context,
+                kb_id=kb_id,
             ),
             name="rag-faithfulness-evaluation",
         )
@@ -457,6 +500,7 @@ class RagQueryServiceV4:
         question: str,
         answer: str,
         context: str,
+        kb_id: str | int,
     ) -> None:
         """记录正常回答的忠实性观测，任何异常均不得影响查询响应。"""
         if self.faithfulness_evaluator is None:
@@ -467,6 +511,7 @@ class RagQueryServiceV4:
                 question=question,
                 answer=answer,
                 context=context,
+                kb_id=kb_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(

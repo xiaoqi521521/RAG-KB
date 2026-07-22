@@ -143,7 +143,7 @@ docs/
 - 管理员跨知识库查询也要通过显式权限列表实现。
 - 严禁把“只能访问某知识库”作为纯 Prompt 规则。
 - 引用元数据至少包含：`document_id`、`document_name`、`kb_id`、`chunk_id`、`page_number` 或 `section_title`。
-- 权限与认证日志、指标不得记录 JWT、完整问题、文档正文、对象路径、会话消息、用户 ID 或知识库/文档 ID 等高基数敏感标识；只记录操作、结果、权限来源、数量、耗时和错误类型。
+- 权限与认证日志不得记录 JWT、完整问题、文档正文、对象路径、会话消息、用户 ID、知识库 ID 或文档 ID；只记录操作、结果、权限来源、数量、耗时和错误类型。Prometheus Token 指标允许使用当前知识库范围的 `kb_id` 作为受控低基数标签（当前仅 4 个值，多知识库请求使用 `multi`），但严禁使用用户 ID、部门 ID、请求 ID、问题、回答、文档 ID 或对象路径作为标签。
 
 ## RAG 质量要求
 
@@ -154,6 +154,15 @@ docs/
 - 上下文必须按 Token 预算裁剪，不能无限拼接。
 - 低置信度或无检索结果时，回答必须说明“未找到相关内容”。
 - Prompt 中要明确：只根据参考内容回答，禁止使用通用知识补全公司政策。
+
+## Token 监控约束
+
+- Token 监控类型固定为 `embedding`、`input`、`answer_generation`、`hyde`、`reranker` 和 `faithfulness_check`；`input` 仅统计聊天模型的 System Prompt、用户问题、对话历史和检索上下文输入，其他生成类型只统计对应输出。
+- Token 指标使用现有 Prometheus `/metrics` 出口，标签只包含 `model`、`token_type`、`kb_id`；Grafana 和 Prometheus 查询仅供系统管理员与运维人员使用。
+- 六类在线请求 Token 按类型累计到新的 Redis 用户统计版本；不迁移旧三类数据，不按模型分桶，不保存请求级明细。没有当前用户的离线调用不写用户累计。
+- provider 没有可靠 usage 时不得用本地估算冒充精确 Token；只记录 usage 不可用观测。
+- 全局每日预算默认 `1,000,000` Token，时区默认 `Asia/Shanghai`；达到 80% 告警，达到 100% 拒绝后续新请求，已开始请求继续完成；单次请求超过 `20,000` Token 告警。
+- 预算闸门使用 Redis 原子判断；预算闸门 Redis 不可用时返回 `503`，普通 Token 统计写入失败不得阻断问答。Redis 统计是近似累计用量，不是账单级账本。
 
 ## 开发约定
 

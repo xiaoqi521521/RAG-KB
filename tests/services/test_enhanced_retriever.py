@@ -27,7 +27,12 @@ class FakeQueryRewriter:
         self.hyde_calls: list[str] = []
         self.expand_calls: list[str] = []
 
-    async def generate_hyde_answer(self, question: str) -> HydeRewriteResult:
+    async def generate_hyde_answer(
+        self,
+        question: str,
+        *,
+        kb_id: str | int = "unknown",
+    ) -> HydeRewriteResult:
         self.hyde_calls.append(question)
         return HydeRewriteResult(
             original_question=question.strip(),
@@ -67,6 +72,7 @@ class FakeEmbeddingService:
         *,
         namespace: str = "query",
         cache_enabled: bool = True,
+        kb_id: str | int = "unknown",
     ) -> list[float]:
         self.queries.append({"text": text, "namespace": namespace, "cache_enabled": cache_enabled})
         if self.fail:

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_app_token_metrics, get_current_user
 from app.core.clients import get_embeddings, get_minio, get_redis
 from app.core.config import Settings, get_settings
 from app.core.context import CurrentUser
@@ -34,6 +34,7 @@ from app.services.embedding import EmbeddingService
 from app.services.indexing import IndexService
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.permissions import PermissionService
+from app.services.token_metrics import TokenUsageRecorder
 
 router = APIRouter()
 
@@ -42,6 +43,7 @@ def _build_index_service(
     session: AsyncSession,
     settings: Settings,
     *,
+    token_metrics: TokenUsageRecorder,
     background_service_factory=None,
     commit_before_launch=None,
     commit_after_status_change=None,
@@ -76,7 +78,12 @@ def _build_index_service(
             ]
         ),
         chunk_service=ChunkService(),
-        embedding_service=EmbeddingService(get_embeddings(), get_redis()),
+        embedding_service=EmbeddingService(
+            get_embeddings(),
+            get_redis(),
+            token_metrics=token_metrics,
+            model_name=settings.embedding_model,
+        ),
         background_service_factory=background_service_factory,
         commit_before_launch=commit_before_launch,
         commit_after_status_change=commit_after_status_change,
@@ -104,6 +111,7 @@ def get_permission_service(
 def get_knowledge_base_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    token_metrics: TokenUsageRecorder = Depends(get_app_token_metrics),
 ) -> KnowledgeBaseService:
     """构建知识库业务服务及其索引链路依赖。
 
@@ -126,6 +134,7 @@ def get_knowledge_base_service(
             background_index_service = _build_index_service(
                 background_session,
                 settings,
+                token_metrics=token_metrics,
                 background_service_factory=background_index_service_factory,
                 commit_after_status_change=background_session.commit,
                 rollback_before_failure_status=background_session.rollback,
@@ -140,6 +149,7 @@ def get_knowledge_base_service(
     index_service = _build_index_service(
         session,
         settings,
+        token_metrics=token_metrics,
         background_service_factory=background_index_service_factory,
         commit_before_launch=session.commit,
     )

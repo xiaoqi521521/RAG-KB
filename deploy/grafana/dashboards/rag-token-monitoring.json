@@ -1,0 +1,23 @@
+{
+  "uid": "rag-token-monitoring",
+  "title": "RAG-KB Token 监控",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {
+    "list": [
+      {"name": "model", "label": "模型", "type": "query", "datasource": {"type": "prometheus", "uid": "rag-prometheus"}, "query": "label_values(rag_token_usage_total, model)", "includeAll": true, "allValue": ".*", "multi": true},
+      {"name": "token_type", "label": "Token 类型", "type": "query", "datasource": {"type": "prometheus", "uid": "rag-prometheus"}, "query": "label_values(rag_token_usage_total, token_type)", "includeAll": true, "allValue": ".*", "multi": true},
+      {"name": "kb_id", "label": "知识库范围", "type": "query", "datasource": {"type": "prometheus", "uid": "rag-prometheus"}, "query": "label_values(rag_token_usage_total, kb_id)", "includeAll": true, "allValue": ".*", "multi": true}
+    ]
+  },
+  "panels": [
+    {"id": 1, "type": "stat", "title": "当前时间范围 Token 总量", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}, "targets": [{"expr": "sum(increase(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[$__range]))", "legendFormat": "tokens"}]},
+    {"id": 2, "type": "timeseries", "title": "5 分钟 Token 速率", "gridPos": {"h": 8, "w": 12, "x": 6, "y": 0}, "targets": [{"expr": "sum by (token_type) (rate(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[5m]))", "legendFormat": "{{token_type}}"}]},
+    {"id": 3, "type": "gauge", "title": "每日预算使用比例", "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}, "targets": [{"expr": "rag_token_budget_usage_ratio", "legendFormat": "global"}], "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.8}, {"color": "red", "value": 1}]}}}},
+    {"id": 4, "type": "timeseries", "title": "按模型/知识库的 Token 速率", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}, "targets": [{"expr": "sum by (model,kb_id) (rate(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[5m]))", "legendFormat": "{{model}} / kb={{kb_id}}"}]},
+    {"id": 5, "type": "timeseries", "title": "估算成本速率（CNY）", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}, "targets": [{"expr": "sum by (token_type) (rate(rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[5m]))", "legendFormat": "{{token_type}}"}], "fieldConfig": {"defaults": {"unit": "currencyCNY"}}},
+    {"id": 6, "type": "timeseries", "title": "监控异常", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}, "targets": [{"expr": "increase(rag_token_usage_unavailable_total[1h])", "legendFormat": "usage unavailable"}, {"expr": "increase(rag_token_budget_rejected_total[1h])", "legendFormat": "budget rejected"}, {"expr": "increase(rag_token_request_over_limit_total[1h])", "legendFormat": "request over limit"}, {"expr": "increase(rag_token_write_failure_total[1h])", "legendFormat": "sink write failure"}]}
+  ]
+}

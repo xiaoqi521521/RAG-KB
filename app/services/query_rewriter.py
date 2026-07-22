@@ -10,6 +10,8 @@ from typing import Any
 import redis.asyncio as redis
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.services.token_metrics import TokenUsageRecorder, record_chat_usage
+
 logger = logging.getLogger(__name__)
 
 HYDE_MAX_CHARS = 800
@@ -44,6 +46,7 @@ class HydeRewriteResult:
     hyde_answer: str | None
     used_cache: bool
     degraded_reasons: tuple[str, ...]
+    response: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class QueryRewriter:
         redis_client: redis.Redis,
         chat_model_name: str,
         cache_ttl_seconds: int,
+        token_metrics: TokenUsageRecorder | None = None,
     ) -> None:
         """初始化查询改写服务依赖。
 
@@ -79,8 +83,14 @@ class QueryRewriter:
         self.redis = redis_client
         self.chat_model_name = chat_model_name
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.token_metrics = token_metrics
 
-    async def generate_hyde_answer(self, question: str) -> HydeRewriteResult:
+    async def generate_hyde_answer(
+        self,
+        question: str,
+        *,
+        kb_id: str | int = "unknown",
+    ) -> HydeRewriteResult:
         """生成 HyDE 假设性回答，失败时降级为空结果。
 
         Args:
@@ -103,19 +113,23 @@ class QueryRewriter:
             )
 
         try:
-            content = await self._invoke_chat(HYDE_PROMPT_TEMPLATE.format(question=normalized_question))
+            response = await self._invoke_chat(
+                HYDE_PROMPT_TEMPLATE.format(question=normalized_question)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("HyDE generation failed: error=%s", exc)
             degraded_reasons.append("hyde_generation_failed")
             return HydeRewriteResult(normalized_question, None, False, tuple(degraded_reasons))
 
-        hyde_answer = self._clean_text(content, max_chars=HYDE_MAX_CHARS)
+        await self._record_hyde_usage(response=response, kb_id=kb_id)
+        content = getattr(response, "content", None)
+        hyde_answer = self._clean_text(content if isinstance(content, str) else "", max_chars=HYDE_MAX_CHARS)
         if not hyde_answer:
             degraded_reasons.append("hyde_empty")
-            return HydeRewriteResult(normalized_question, None, False, tuple(degraded_reasons))
+            return HydeRewriteResult(normalized_question, None, False, tuple(degraded_reasons), response)
 
         await self._write_cache(cache_key, hyde_answer, "hyde", degraded_reasons)
-        return HydeRewriteResult(normalized_question, hyde_answer, False, tuple(degraded_reasons))
+        return HydeRewriteResult(normalized_question, hyde_answer, False, tuple(degraded_reasons), response)
 
     async def expand_queries(self, question: str) -> MultiQueryRewriteResult:
         """生成多路扩展问题；本阶段暂不接入实际检索链路。
@@ -140,13 +154,18 @@ class QueryRewriter:
             )
 
         try:
-            content = await self._invoke_chat(MULTI_QUERY_PROMPT_TEMPLATE.format(question=normalized_question))
+            response = await self._invoke_chat(
+                MULTI_QUERY_PROMPT_TEMPLATE.format(question=normalized_question)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Multi-query generation failed: error=%s", exc)
             degraded_reasons.append("multi_generation_failed")
             return MultiQueryRewriteResult(normalized_question, [], False, tuple(degraded_reasons))
 
-        expanded_queries = self._parse_expanded_queries(content, normalized_question)
+        content = getattr(response, "content", None)
+        expanded_queries = self._parse_expanded_queries(
+            content if isinstance(content, str) else "", normalized_question
+        )
         if not expanded_queries:
             degraded_reasons.append("multi_empty")
             return MultiQueryRewriteResult(normalized_question, [], False, tuple(degraded_reasons))
@@ -163,17 +182,25 @@ class QueryRewriter:
             return f"rag:rewrite:{REWRITE_CACHE_VERSION}:multi:{MULTI_QUERY_COUNT}:{self.chat_model_name}:{digest}"
         return f"rag:rewrite:{REWRITE_CACHE_VERSION}:{kind}:{self.chat_model_name}:{digest}"
 
-    async def _invoke_chat(self, prompt: str) -> str:
-        """调用聊天模型并返回非空字符串内容。"""
+    async def _invoke_chat(self, prompt: str) -> Any:
+        """调用聊天模型并保留原始响应，供 usage 记录和文本清洗分别使用。"""
         messages = [
             SystemMessage(content="你是企业知识库查询改写助手，只输出改写结果。"),
             HumanMessage(content=prompt),
         ]
-        response = await self.chat_model.ainvoke(messages)
-        content = getattr(response, "content", None)
-        if not isinstance(content, str):
-            return ""
-        return content
+        return await self.chat_model.ainvoke(messages)
+
+    async def _record_hyde_usage(self, *, response: Any, kb_id: str | int) -> None:
+        """记录 HyDE 聊天调用的完整输入和独立输出。"""
+        if self.token_metrics is None:
+            return
+        await record_chat_usage(
+            recorder=self.token_metrics,
+            response=response,
+            model=self.chat_model_name,
+            output_type="hyde",
+            kb_id=kb_id,
+        )
 
     async def _read_cache(self, key: str, kind: str, degraded_reasons: list[str]) -> str | None:
         """读取缓存；缓存是加速层，失败只记录降级原因。"""

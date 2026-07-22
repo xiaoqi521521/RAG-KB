@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Protocol
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
@@ -33,6 +33,11 @@ from app.services.reranker import RerankerService
 from app.services.source_builder import SourceBuilder
 from app.services.ts_query_builder import TsQueryBuilder
 from app.services.token_metrics import TokenMetrics
+from app.services.token_budget import (
+    GlobalTokenBudgetGate,
+    TokenBudgetExhaustedError,
+    TokenBudgetUnavailableError,
+)
 from app.services.query_cache import QueryCacheService
 
 router = APIRouter()
@@ -53,6 +58,11 @@ class RagQueryPipeline(Protocol):
 def get_token_metrics(request: Request) -> TokenMetrics:
     """从应用状态获取单例 TokenMetrics。"""
     return request.app.state.token_metrics
+
+
+def get_token_budget_gate(request: Request) -> GlobalTokenBudgetGate:
+    """从应用状态获取全局 Token 预算闸门。"""
+    return request.app.state.token_budget_gate
 
 
 def get_faithfulness_metrics(request: Request) -> FaithfulnessMetrics:
@@ -101,6 +111,7 @@ def get_rag_query_service(
         get_redis(),
         embedding_config,
         token_metrics=token_metrics,
+        model_name=getattr(settings, "embedding_model", "unknown"),
     )
     source_builder = SourceBuilder(max_context_chars=settings.rag_context_max_tokens * 4)
     chat_model = get_chat_model()
@@ -138,6 +149,7 @@ def get_rag_query_service(
                 redis_client=get_redis(),
                 chat_model_name=settings.chat_model,
                 cache_ttl_seconds=settings.query_cache_ttl_seconds,
+                token_metrics=token_metrics,
             ),
             hybrid_retriever=hybrid_retriever,
             embedding_service=embedding_service,
@@ -177,6 +189,7 @@ def get_rag_query_service(
                 sampling_rate=settings.rag_faithfulness_sample_rate,
                 timeout_seconds=settings.rag_faithfulness_timeout_seconds,
                 metrics=faithfulness_metrics,
+                model_name=settings.chat_model,
             ),
         )
 
@@ -190,6 +203,7 @@ async def query_rag(
     permission_service: PermissionService = Depends(get_permission_service),
     rag_service: RagQueryPipeline = Depends(get_rag_query_service),
     query_cache: QueryCacheService = Depends(get_query_cache_service),
+    token_budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
 ) -> ApiResponse[RagQueryResponse]:
     """执行基础 RAG 查询。
 
@@ -218,11 +232,25 @@ async def query_rag(
         )
         return ApiResponse.ok(response)
 
-    response = await rag_service.query(
-        question=request.question,
-        kb_ids=request.kb_ids,
-        user=user,
-    )
+    try:
+        await token_budget_gate.ensure_available()
+    except TokenBudgetExhaustedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="今日 Token 预算已用尽",
+        ) from exc
+    except TokenBudgetUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Token 预算状态暂不可用",
+        ) from exc
+
+    async with token_budget_gate.request_scope():
+        response = await rag_service.query(
+            question=request.question,
+            kb_ids=request.kb_ids,
+            user=user,
+        )
     await query_cache.put(request.question, request.kb_ids, response)
     return ApiResponse.ok(response.model_copy(update={"latency_ms": _elapsed_ms(started_at)}))
 

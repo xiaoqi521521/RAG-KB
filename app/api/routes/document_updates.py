@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_app_token_metrics, get_current_user
 from app.api.routes.knowledge_bases import _build_index_service, get_permission_service
 from app.core.clients import get_minio
 from app.core.config import Settings, get_settings
@@ -19,6 +19,7 @@ from app.schemas.knowledge_base import DocumentReindexSubmitResponse
 from app.services.document_update import DocumentUpdateService
 from app.services.indexing import IndexService
 from app.services.permissions import PermissionService
+from app.services.token_metrics import TokenUsageRecorder
 
 router = APIRouter()
 
@@ -26,6 +27,7 @@ router = APIRouter()
 def get_document_update_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    token_metrics: TokenUsageRecorder = Depends(get_app_token_metrics),
 ) -> DocumentUpdateService:
     """构建文档更新服务及其索引链路依赖。
 
@@ -44,6 +46,7 @@ def get_document_update_service(
             background_index_service = _build_index_service(
                 background_session,
                 settings,
+                token_metrics=token_metrics,
                 background_service_factory=background_index_service_factory,
                 commit_after_status_change=background_session.commit,
                 rollback_before_failure_status=background_session.rollback,
@@ -58,6 +61,7 @@ def get_document_update_service(
     index_service = _build_index_service(
         session,
         settings,
+        token_metrics=token_metrics,
         background_service_factory=background_index_service_factory,
         commit_before_launch=session.commit,
     )

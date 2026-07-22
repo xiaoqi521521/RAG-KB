@@ -15,6 +15,8 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from app.services.token_metrics import TokenUsageRecorder
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,12 +156,14 @@ class EmbeddingService:
         redis_client: redis.Redis,
         config: EmbeddingConfig | None = None,
         token_metrics: EmbeddingTokenRecorder | None = None,
+        model_name: str = "unknown",
     ) -> None:
         self.embeddings = embeddings
         self.redis = redis_client
         self.config = config or EmbeddingConfig()
         self.codec = EmbeddingVectorCodec(self.config.dimension)
         self.token_metrics = token_metrics
+        self.model_name = model_name
 
     async def embed_documents(
         self,
@@ -167,6 +171,7 @@ class EmbeddingService:
         *,
         namespace: str = "doc",
         cache_enabled: bool = True,
+        kb_id: str | int = "unknown",
     ) -> list[list[float]]:
         """批量向量化文本列表，返回与输入顺序完全一致的向量列表。"""
         if not texts:
@@ -229,17 +234,22 @@ class EmbeddingService:
                 batch_vectors, batch_tokens = await self._embed_batch_with_retry(batch_texts)
                 api_elapsed_ms += (time.perf_counter() - batch_started_at) * 1000
 
+                usage_source = {
+                    "query": "provider",
+                    "hyde": "provider",
+                    "doc": "offline_indexing",
+                }.get(namespace, "internal")
                 if batch_tokens is None:
                     usage_unavailable_batches += 1
-                elif self.token_metrics is not None:
-                    usage_source = {
-                        "query": "provider",
-                        "doc": "offline_indexing",
-                    }.get(namespace, "internal")
-                    await self.token_metrics.record_embedding_tokens(
-                        tokens=batch_tokens,
-                        # 文档索引可能继承请求上下文，但其成本不应归属上传者。
+                    await self._record_embedding_usage_unavailable(
                         source=usage_source,
+                        kb_id=kb_id,
+                    )
+                elif self.token_metrics is not None:
+                    await self._record_embedding_usage(
+                        tokens=batch_tokens,
+                        source=usage_source,
+                        kb_id=kb_id,
                     )
 
                 for cache_key, vector in zip(batch_keys, batch_vectors, strict=True):
@@ -287,12 +297,59 @@ class EmbeddingService:
         *,
         namespace: str = "query",
         cache_enabled: bool = False,
+        kb_id: str | int = "unknown",
     ) -> list[float]:
         """向量化单条查询文本，返回可用于 PGVector 检索的向量。"""
         vectors = await self.embed_documents(
-            [text], namespace=namespace, cache_enabled=cache_enabled
+            [text], namespace=namespace, cache_enabled=cache_enabled, kb_id=kb_id
         )
         return vectors[0]
+
+    async def _record_embedding_usage(
+        self,
+        *,
+        tokens: int,
+        source: str,
+        kb_id: str | int,
+    ) -> None:
+        """把 Embedding usage 写入统一 recorder；旧替身保留可测试性。"""
+        if self.token_metrics is None:
+            return
+        if isinstance(self.token_metrics, TokenUsageRecorder) or hasattr(
+            self.token_metrics, "record_usage"
+        ):
+            await self.token_metrics.record_usage(  # type: ignore[attr-defined]
+                tokens=tokens,
+                model=self.model_name,
+                token_type="embedding",
+                kb_id=kb_id,
+                user_scoped=source == "provider",
+                budget_scoped=source == "provider",
+            )
+            return
+        await self.token_metrics.record_embedding_tokens(tokens=tokens, source=source)
+
+    async def _record_embedding_usage_unavailable(
+        self,
+        *,
+        source: str,
+        kb_id: str | int,
+    ) -> None:
+        """provider usage 缺失时只写 unavailable 观测，不估算 Token。"""
+        if self.token_metrics is None:
+            return
+        if hasattr(self.token_metrics, "record_usage_unavailable"):
+            self.token_metrics.record_usage_unavailable(  # type: ignore[attr-defined]
+                model=self.model_name,
+                token_type="embedding",
+                kb_id=kb_id,
+            )
+            return
+        logger.info(
+            "Embedding token usage unavailable: embedding_token_usage_unavailable=true "
+            "namespace=%s",
+            source,
+        )
 
     def build_cache_key(self, normalized_text: str, *, namespace: str = "doc") -> str:
         """根据缓存版本和文本内容构造短且稳定的 Redis key。"""

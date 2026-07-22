@@ -1,0 +1,52 @@
+groups:
+  - name: rag-kb-token-monitoring
+    rules:
+      - record: rag_token_budget_usage_ratio
+        expr: |
+          rag_token_budget_used_tokens{scope="global"}
+          /
+          rag_token_budget_limit_tokens{scope="global"}
+
+      - alert: RagTokenBudgetWarning
+        expr: rag_token_budget_usage_ratio >= 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG 每日 Token 预算已达到 80%"
+          description: "全局每日 Token 使用量接近预算上限。"
+
+      - alert: RagTokenBudgetExhausted
+        expr: rag_token_budget_usage_ratio >= 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAG 每日 Token 预算已耗尽"
+          description: "新请求将被预算闸门拒绝。"
+
+      - alert: RagSingleRequestTokenLimit
+        expr: increase(rag_token_request_over_limit_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "发现超大 Token 请求"
+          description: "最近 5 分钟存在超过配置阈值的已完成请求。"
+
+      - alert: RagTokenUsageUnavailable
+        expr: increase(rag_token_usage_unavailable_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Provider Token usage 不可用"
+          description: "Token 成本统计可能低估，请检查模型响应 usage。"
+
+      - alert: RagTokenSinkWriteFailure
+        expr: increase(rag_token_write_failure_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Token 统计出口写入失败"
+          description: "Redis 或 Prometheus Token 统计写入出现故障。"

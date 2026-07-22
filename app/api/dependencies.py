@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 import logging
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.config import get_settings
@@ -12,10 +12,16 @@ from app.services.identity import (
     IdentityProviderUnavailableError,
     demo_identity_provider,
 )
+from app.services.token_metrics import TokenUsageRecorder
 
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_v1_prefix}/auth/login")
 logger = logging.getLogger(__name__)
+
+
+def get_app_token_metrics(request: Request) -> TokenUsageRecorder:
+    """从应用生命周期状态获取统一 Token recorder。"""
+    return request.app.state.token_metrics
 
 
 def get_identity_provider() -> IdentityProvider:

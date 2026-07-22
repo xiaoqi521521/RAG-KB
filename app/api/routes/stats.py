@@ -28,6 +28,7 @@ def get_token_cost_service(
         embedding_price=settings.embedding_input_cost_cny_per_1k_tokens,
         chat_input_price=settings.chat_input_cost_cny_per_1k_tokens,
         chat_output_price=settings.chat_output_cost_cny_per_1k_tokens,
+        reranker_price=settings.reranker_cost_cny_per_1k_tokens,
     )
 
 
@@ -48,8 +49,11 @@ async def get_token_stats(
     return ApiResponse.ok(
         TokenStatsResponse(
             embedding_tokens=summary.embedding_tokens,
-            context_tokens=summary.context_tokens,
-            generation_tokens=summary.generation_tokens,
+            input_tokens=summary.input_tokens,
+            answer_generation_tokens=summary.answer_generation_tokens,
+            hyde_tokens=summary.hyde_tokens,
+            reranker_tokens=summary.reranker_tokens,
+            faithfulness_tokens=summary.faithfulness_tokens,
             total_tokens=summary.total_tokens,
             estimated_cost=f"{summary.estimated_cost:.4f}",
         )

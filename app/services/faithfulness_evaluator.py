@@ -90,6 +90,7 @@ class FaithfulnessEvaluator:
         sampling_rate: float,
         timeout_seconds: float,
         metrics: FaithfulnessMetrics | None = None,
+        model_name: str = "unknown",
     ) -> None:
         """初始化复用回答模型的评估器。"""
         self.chat_model = chat_model
@@ -97,6 +98,7 @@ class FaithfulnessEvaluator:
         self.sampling_rate = sampling_rate
         self.timeout_seconds = timeout_seconds
         self.metrics = metrics
+        self.model_name = model_name
 
     async def evaluate(
         self,
@@ -104,6 +106,7 @@ class FaithfulnessEvaluator:
         question: str,
         answer: str,
         context: str,
+        kb_id: str | int = "unknown",
     ) -> FaithfulnessResult:
         """评估回答是否有参考内容依据，失败时返回 error 而非抛出异常。"""
         started_at = time.perf_counter()
@@ -125,7 +128,7 @@ class FaithfulnessEvaluator:
                 timeout=self.timeout_seconds,
             )
             # 评估消费与正常回答分开计量，便于观测质量治理的额外成本。
-            await self._record_token_usage(response)
+            await self._record_token_usage(response, kb_id=kb_id)
             result = self._parse_result(response, started_at)
         except asyncio.TimeoutError:
             result = self._error_result(started_at, "timeout")
@@ -187,7 +190,7 @@ class FaithfulnessEvaluator:
             sampled=True,
         )
 
-    async def _record_token_usage(self, response: object) -> None:
+    async def _record_token_usage(self, response: object, *, kb_id: str | int) -> None:
         """记录评估额外生成 Token，记录故障不影响评估结果。"""
         try:
             await record_generation_usage(
@@ -195,6 +198,8 @@ class FaithfulnessEvaluator:
                 response=response,
                 pipeline="faithfulness_evaluation",
                 source="faithfulness_evaluation",
+                model=self.model_name,
+                kb_id=kb_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("faithfulness_token_metric_failed=true error_type=%s", type(exc).__name__)

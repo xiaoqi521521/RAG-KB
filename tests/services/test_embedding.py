@@ -270,7 +270,7 @@ def test_embed_query_records_provider_token_usage(caplog):
     assert "embedding_token_usage_unavailable=true" not in caplog.text
 
 
-def test_embed_internal_namespace_marks_usage_as_internal():
+def test_embed_hyde_namespace_counts_as_online_provider_usage():
     from app.services.embedding import EmbeddingService
 
     embeddings = FakeUsageAwareEmbeddings([_vector(0.8)], total_tokens=41)
@@ -284,7 +284,7 @@ def test_embed_internal_namespace_marks_usage_as_internal():
     result = asyncio_run(service.embed_query("hyde text", namespace="hyde", cache_enabled=False))
 
     assert result == _vector(0.8)
-    assert token_metrics.calls == [(41, "internal")]
+    assert token_metrics.calls == [(41, "provider")]
 
 
 def test_embed_documents_raises_on_incomplete_provider_result():

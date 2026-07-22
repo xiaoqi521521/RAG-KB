@@ -16,6 +16,7 @@ from app.services.enhanced_retriever import EnhancedRetrieveResult, EnhancedRetr
 from app.services.rag_query import RAG_REFUSAL_ANSWER, SYSTEM_PROMPT_TEMPLATE
 from app.services.source_builder import SourceBuilder
 from app.services.token_metrics import TokenMetrics, record_generation_usage
+from app.services.token_metrics import knowledge_base_scope
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class RagQueryServiceV3:
             hits,
             return_top_n=self.settings.rag_return_top_n,
         )
-        answer = await self._generate_answer(normalized_question, context)
+        answer = await self._generate_answer(normalized_question, context, kb_ids=kb_ids)
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
             "RAG v3 query completed: kb_count=%s hit_count=%s latency_ms=%s",
@@ -123,6 +124,8 @@ class RagQueryServiceV3:
         self,
         question: str,
         context: str,
+        *,
+        kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
@@ -147,6 +150,8 @@ class RagQueryServiceV3:
             recorder=self.token_metrics,
             response=response,
             pipeline="v3",
+            model=getattr(self.settings, "chat_model", "unknown"),
+            kb_id=knowledge_base_scope(kb_ids),
         )
 
         content = getattr(response, "content", None)

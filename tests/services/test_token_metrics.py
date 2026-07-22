@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from prometheus_client import CollectorRegistry
+from prometheus_client.parser import text_string_to_metric_families
 
 from app.core.context import CurrentUser, current_user_var
 from app.services.token_metrics import (
-    TokenMetrics,
+    TokenUsageRecorder,
     TokenMetricsUnavailableError,
     extract_generation_tokens,
+    extract_input_tokens,
+    extract_usage,
     record_generation_usage,
 )
 
@@ -24,9 +27,9 @@ class FakeRedis:
         self.hgetall_calls = 0
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
-        self.calls.append((name, key, amount))
         if self.fail:
             raise RuntimeError("redis unavailable")
+        self.calls.append((name, key, amount))
         return amount
 
     async def hgetall(self, name: str) -> dict[str, str]:
@@ -36,266 +39,149 @@ class FakeRedis:
         return self.hash_values.copy()
 
 
-def _build_metrics() -> tuple[TokenMetrics, FakeRedis, InMemoryMetricReader, MeterProvider]:
-    reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader])
-    redis_client = FakeRedis()
-    metrics = TokenMetrics(
-        redis_client=redis_client,
-        meter=provider.get_meter("tests.token-metrics"),
-    )
-    return metrics, redis_client, reader, provider
+def _build_recorder() -> tuple[TokenUsageRecorder, FakeRedis]:
+    redis = FakeRedis()
+    return TokenUsageRecorder(redis_client=redis, registry=CollectorRegistry()), redis
 
 
-def _metric_value(
-    reader: InMemoryMetricReader,
-    name: str,
-    attributes: dict[str, str],
-) -> int:
-    data = reader.get_metrics_data()
-    assert data is not None
-    for resource_metrics in data.resource_metrics:
-        for scope_metrics in resource_metrics.scope_metrics:
-            for metric in scope_metrics.metrics:
-                if metric.name != name:
-                    continue
-                for point in metric.data.data_points:
-                    if dict(point.attributes) == attributes:
-                        return int(point.value)
-    raise AssertionError(f"metric not found: {name} {attributes}")
+def _metric_values(recorder: TokenUsageRecorder, family_name: str) -> list[object]:
+    families = {
+        family.name: family for family in text_string_to_metric_families(recorder.render_metrics())
+    }
+    return families[family_name].samples if family_name in families else []
 
 
 @pytest.mark.asyncio
-async def test_record_embedding_tokens_writes_log_counter_and_user_redis(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
+async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
+    recorder, redis = _build_recorder()
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
-        with caplog.at_level(logging.INFO, logger="app.services.token_metrics"):
-            await metrics.record_embedding_tokens(tokens=120)
-    finally:
-        current_user_var.reset(token)
-        provider.shutdown()
-
-    assert "record_embedding_tokens=120" in caplog.text
-    assert redis_client.calls == [("rag:token-stats:7", "embeddingTokens", 120)]
-    assert _metric_value(reader, "rag.tokens.embedding", {"source": "provider"}) == 120
-
-
-@pytest.mark.asyncio
-async def test_record_context_tokens_uses_v4_local_tiktoken_attributes() -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    token = current_user_var.set(CurrentUser(user_id=8, department_id="eng", role="ADMIN"))
-    try:
-        await metrics.record_context_tokens(tokens=42)
-    finally:
-        current_user_var.reset(token)
-        provider.shutdown()
-
-    assert redis_client.calls == [("rag:token-stats:8", "contextTokens", 42)]
-    assert (
-        _metric_value(
-            reader,
-            "rag.tokens.context",
-            {"pipeline": "v4", "source": "local_tiktoken"},
+        await recorder.record_chat_usage(
+            response=AIMessage(
+                content="answer",
+                usage_metadata={"input_tokens": 120, "output_tokens": 8, "total_tokens": 128},
+            ),
+            model="deepseek-v4-flash",
+            output_type="answer_generation",
+            kb_id="multi",
         )
-        == 42
-    )
-
-
-@pytest.mark.asyncio
-async def test_record_generation_tokens_without_user_only_updates_counter() -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    try:
-        await metrics.record_generation_tokens(tokens=88)
-    finally:
-        provider.shutdown()
-
-    assert redis_client.calls == []
-    assert _metric_value(reader, "rag.tokens.generation", {"source": "provider"}) == 88
-
-
-@pytest.mark.asyncio
-async def test_internal_generation_tokens_are_not_added_to_user_redis() -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    token = current_user_var.set(CurrentUser(user_id=11, department_id="eng", role="ADMIN"))
-    try:
-        await metrics.record_generation_tokens(tokens=13, source="faithfulness_evaluation")
     finally:
         current_user_var.reset(token)
-        provider.shutdown()
 
-    assert redis_client.calls == []
-    assert (
-        _metric_value(reader, "rag.tokens.generation", {"source": "faithfulness_evaluation"}) == 13
-    )
-
-
-@pytest.mark.asyncio
-async def test_offline_embedding_tokens_are_not_added_to_user_redis() -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    token = current_user_var.set(CurrentUser(user_id=12, department_id="eng", role="ADMIN"))
-    try:
-        await metrics.record_embedding_tokens(tokens=17, source="offline_indexing")
-    finally:
-        current_user_var.reset(token)
-        provider.shutdown()
-
-    assert redis_client.calls == []
-    assert _metric_value(reader, "rag.tokens.embedding", {"source": "offline_indexing"}) == 17
+    assert redis.calls == [
+        ("rag:token-stats:v2:7", "inputTokens", 120),
+        ("rag:token-stats:v2:7", "answerGenerationTokens", 8),
+    ]
+    usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
+    assert {
+        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
+        for sample in usage
+    } == {
+        ("deepseek-v4-flash", "input", "multi"): 120.0,
+        ("deepseek-v4-flash", "answer_generation", "multi"): 8.0,
+    }
+    assert all(set(sample.labels) == {"model", "token_type", "kb_id"} for sample in usage)
 
 
 @pytest.mark.asyncio
-async def test_internal_embedding_tokens_are_not_added_to_user_redis() -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    token = current_user_var.set(CurrentUser(user_id=13, department_id="eng", role="ADMIN"))
+async def test_offline_embedding_does_not_write_user_v2() -> None:
+    recorder, redis = _build_recorder()
+    token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
-        await metrics.record_embedding_tokens(tokens=19, source="internal")
-    finally:
-        current_user_var.reset(token)
-        provider.shutdown()
-
-    assert redis_client.calls == []
-    assert _metric_value(reader, "rag.tokens.embedding", {"source": "internal"}) == 19
-
-
-@pytest.mark.asyncio
-async def test_redis_failure_does_not_break_metric_recording(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    redis_client.fail = True
-    token = current_user_var.set(CurrentUser(user_id=9, department_id="eng", role="ADMIN"))
-    try:
-        with caplog.at_level(logging.WARNING, logger="app.services.token_metrics"):
-            await metrics.record_context_tokens(tokens=5)
-    finally:
-        current_user_var.reset(token)
-        provider.shutdown()
-
-    assert "Redis token metric write failed" in caplog.text
-    assert (
-        _metric_value(
-            reader,
-            "rag.tokens.context",
-            {"pipeline": "v4", "source": "local_tiktoken"},
+        await recorder.record_usage(
+            tokens=17,
+            model="text-embedding-v3",
+            token_type="embedding",
+            kb_id=2,
+            user_scoped=False,
+            budget_scoped=False,
         )
-        == 5
-    )
+    finally:
+        current_user_var.reset(token)
+
+    assert redis.calls == []
+    samples = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
+    assert samples[0].labels == {"model": "text-embedding-v3", "token_type": "embedding", "kb_id": "2"}
 
 
 @pytest.mark.asyncio
-async def test_non_positive_tokens_do_not_increment_counter_or_redis() -> None:
-    metrics, redis_client, reader, provider = _build_metrics()
-    token = current_user_var.set(CurrentUser(user_id=10, department_id="eng", role="ADMIN"))
+async def test_redis_write_failure_does_not_break_prometheus_recording() -> None:
+    recorder, redis = _build_recorder()
+    redis.fail = True
+    token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
-        await metrics.record_context_tokens(tokens=0)
-        await metrics.record_context_tokens(tokens=-1)
-        assert reader.get_metrics_data() is None
+        await recorder.record_usage(
+            tokens=5,
+            model="deepseek-v4-flash",
+            token_type="input",
+            kb_id=2,
+        )
     finally:
         current_user_var.reset(token)
-        provider.shutdown()
 
-    assert redis_client.calls == []
+    assert any(sample.value == 5 for sample in _metric_values(recorder, "rag_token_usage"))
+    assert any(sample.labels["sink"] == "redis" for sample in _metric_values(recorder, "rag_token_write_failure"))
 
 
-def test_extract_generation_tokens_prefers_langchain_usage_metadata() -> None:
+def test_usage_extraction_supports_langchain_and_openai_metadata() -> None:
     response = AIMessage(
         content="answer",
         usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
     )
-
+    assert extract_input_tokens(response) == 12
     assert extract_generation_tokens(response) == 8
+    assert extract_usage(SimpleNamespace(response_metadata={"token_usage": {"prompt_tokens": 9, "completion_tokens": 4}})) == (9, 4)
 
 
-def test_extract_generation_tokens_falls_back_to_response_metadata() -> None:
-    response = AIMessage(
-        content="answer",
-        response_metadata={"token_usage": {"completion_tokens": 9}},
-    )
-
-    assert extract_generation_tokens(response) == 9
-
-
-def test_extract_generation_tokens_returns_none_when_usage_is_unavailable() -> None:
-    assert extract_generation_tokens(AIMessage(content="answer")) is None
+def test_invalid_or_missing_usage_is_not_estimated() -> None:
+    assert extract_usage(SimpleNamespace(usage_metadata={"input_tokens": -1, "output_tokens": "bad"})) == (None, None)
+    assert extract_usage(SimpleNamespace()) == (None, None)
 
 
 @pytest.mark.asyncio
-async def test_record_generation_usage_logs_when_provider_usage_is_unavailable(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_missing_generation_usage_logs_unavailable_signal(caplog: pytest.LogCaptureFixture) -> None:
     class FakeRecorder:
-        def __init__(self) -> None:
-            self.calls: list[int] = []
-
-        async def record_generation_tokens(
-            self,
-            *,
-            tokens: int,
-            source: str = "provider",
-        ) -> None:
-            self.calls.append(tokens)
-
-    recorder = FakeRecorder()
+        async def record_generation_tokens(self, *, tokens: int, source: str = "provider") -> None:
+            raise AssertionError("missing usage must not record a value")
 
     with caplog.at_level(logging.INFO, logger="app.services.token_metrics"):
         await record_generation_usage(
-            recorder=recorder,
+            recorder=FakeRecorder(),
             response=AIMessage(content="answer"),
             pipeline="v4",
         )
 
-    assert recorder.calls == []
-    assert "generation_token_usage_unavailable=true pipeline=v4" in caplog.text
+    assert "token_usage_unavailable=true" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_read_user_tokens_returns_redis_hash_values_and_zero_for_missing_fields() -> None:
-    metrics, redis_client, _, provider = _build_metrics()
-    redis_client.hash_values = {
+async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
+    recorder, redis = _build_recorder()
+    redis.hash_values = {
         "embeddingTokens": "125",
-        "generationTokens": "8",
+        "inputTokens": "890",
+        "answerGenerationTokens": "8",
+        "legacyGenerationTokens": "999",
     }
-    try:
-        usage = await metrics.read_user_tokens(7)
-    finally:
-        provider.shutdown()
+
+    usage = await recorder.read_user_tokens(7)
 
     assert usage.embedding_tokens == 125
-    assert usage.context_tokens == 0
-    assert usage.generation_tokens == 8
+    assert usage.input_tokens == 890
+    assert usage.answer_generation_tokens == 8
+    assert usage.hyde_tokens == 0
+    assert usage.reranker_tokens == 0
+    assert usage.faithfulness_tokens == 0
 
 
 @pytest.mark.asyncio
 async def test_read_user_tokens_rejects_unreadable_redis_data() -> None:
-    metrics, redis_client, _, provider = _build_metrics()
-    redis_client.hash_values = {"contextTokens": "not-a-number"}
-    try:
-        with pytest.raises(TokenMetricsUnavailableError):
-            await metrics.read_user_tokens(7)
-    finally:
-        provider.shutdown()
+    recorder, redis = _build_recorder()
+    redis.hash_values = {"inputTokens": "not-a-number"}
+    with pytest.raises(TokenMetricsUnavailableError):
+        await recorder.read_user_tokens(7)
 
-    metrics, redis_client, _, provider = _build_metrics()
-    redis_client.fail = True
-    try:
-        with pytest.raises(TokenMetricsUnavailableError):
-            await metrics.read_user_tokens(7)
-    finally:
-        provider.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_read_user_tokens_retries_redis_failure() -> None:
-    metrics, redis_client, _, provider = _build_metrics()
-    redis_client.fail = True
-    metrics.read_max_retries = 1
-    try:
-        with pytest.raises(TokenMetricsUnavailableError):
-            await metrics.read_user_tokens(7)
-    finally:
-        provider.shutdown()
-
-    assert redis_client.hgetall_calls == 2
+    redis.fail = True
+    with pytest.raises(TokenMetricsUnavailableError):
+        await recorder.read_user_tokens(7)
+    assert redis.hgetall_calls == 3

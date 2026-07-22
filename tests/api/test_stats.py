@@ -23,15 +23,21 @@ class FakeTokenCostService:
         if self.zero:
             return TokenCostSummary(
                 embedding_tokens=0,
-                context_tokens=0,
-                generation_tokens=0,
+                input_tokens=0,
+                answer_generation_tokens=0,
+                hyde_tokens=0,
+                reranker_tokens=0,
+                faithfulness_tokens=0,
                 total_tokens=0,
                 estimated_cost=Decimal("0.0000"),
             )
         return TokenCostSummary(
             embedding_tokens=125_000,
-            context_tokens=890_000,
-            generation_tokens=210_000,
+            input_tokens=890_000,
+            answer_generation_tokens=210_000,
+            hyde_tokens=0,
+            reranker_tokens=0,
+            faithfulness_tokens=0,
             total_tokens=1_225_000,
             estimated_cost=Decimal("1.2195"),
         )
@@ -65,8 +71,11 @@ def test_token_stats_returns_current_user_cost_summary() -> None:
         "message": "success",
         "data": {
             "embedding_tokens": 125_000,
-            "context_tokens": 890_000,
-            "generation_tokens": 210_000,
+            "input_tokens": 890_000,
+            "answer_generation_tokens": 210_000,
+            "hyde_tokens": 0,
+            "reranker_tokens": 0,
+            "faithfulness_tokens": 0,
             "total_tokens": 1_225_000,
             "estimated_cost": "1.2195",
             "currency": "CNY",
@@ -98,8 +107,11 @@ def test_token_stats_returns_zero_for_user_without_usage() -> None:
     assert response.status_code == 200
     assert response.json()["data"] == {
         "embedding_tokens": 0,
-        "context_tokens": 0,
-        "generation_tokens": 0,
+        "input_tokens": 0,
+        "answer_generation_tokens": 0,
+        "hyde_tokens": 0,
+        "reranker_tokens": 0,
+        "faithfulness_tokens": 0,
         "total_tokens": 0,
         "estimated_cost": "0.0000",
         "currency": "CNY",

@@ -307,7 +307,10 @@ class IndexService:
         texts = [chunk.page_content for chunk in chunks]
         try:
             logger.info("Embedding阶段开始了...")
-            vectors = await self.embedding_service.embed_documents(texts)
+            vectors = await self.embedding_service.embed_documents(
+                texts,
+                kb_id=document.kb_id,
+            )
             logger.info("Embedding阶段结束了...")
         except IndexPipelineError:
             raise

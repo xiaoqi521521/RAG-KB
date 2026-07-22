@@ -13,6 +13,7 @@ from app.api.routes.knowledge_bases import get_permission_service
 from app.api.routes.rag import (
     get_faithfulness_metrics,
     get_query_cache_service,
+    get_token_budget_gate,
     get_rag_query_service,
     get_token_metrics,
 )
@@ -31,6 +32,7 @@ from app.services.query_cache import QueryCacheService
 from app.services.streaming_chat import SseEvent, StreamingChatService
 from app.services.synchronous_chat import SynchronousChatService
 from app.services.token_metrics import TokenMetrics
+from app.services.token_budget import GlobalTokenBudgetGate
 
 router = APIRouter()
 
@@ -66,6 +68,7 @@ class SynchronousChatPipeline(Protocol):
 def get_streaming_chat_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
+    token_budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
     faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
     query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> StreamingChatPipeline:
@@ -87,12 +90,14 @@ def get_streaming_chat_service(
         rag_service_factory=build_rag_service,
         query_cache=query_cache,
         timeout_seconds=settings.chat_stream_timeout_seconds,
+        budget_gate=token_budget_gate,
     )
 
 
 def get_synchronous_chat_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
+    token_budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
     faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
     query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> SynchronousChatPipeline:
@@ -114,6 +119,7 @@ def get_synchronous_chat_service(
         rag_service_factory=build_rag_service,
         query_cache=query_cache,
         timeout_seconds=settings.chat_stream_timeout_seconds,
+        budget_gate=token_budget_gate,
     )
 
 

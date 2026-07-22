@@ -16,7 +16,7 @@ from app.repositories.chunks import ChunkRepository, ChunkSearchHit
 from app.schemas.rag import RagQueryResponse
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.source_builder import SourceBuilder
-from app.services.token_metrics import TokenMetrics, record_generation_usage
+from app.services.token_metrics import TokenMetrics, knowledge_base_scope, record_generation_usage
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class RagQueryService:
         normalized_question = question.strip()
         logger.info("RAG query started: kb_count=%s", len(kb_ids))
 
-        query_vector = await self._embed_question(normalized_question, started_at)
+        query_vector = await self._embed_question(normalized_question, kb_ids, started_at)
         hits = await self._retrieve_hits(query_vector, kb_ids)
 
         if not hits:
@@ -96,7 +96,7 @@ class RagQueryService:
             hits,
             return_top_n=self.settings.rag_return_top_n,
         )
-        answer = await self._generate_answer(normalized_question, context)
+        answer = await self._generate_answer(normalized_question, context, kb_ids=kb_ids)
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
             "RAG query completed: kb_count=%s hit_count=%s latency_ms=%s",
@@ -114,12 +114,16 @@ class RagQueryService:
     async def _embed_question(
         self,
         question: str,
+        kb_ids: list[int],
         started_at: float,
     ) -> list[float]:
         """向量化用户问题，返回可用于 PGVector 检索的向量。"""
         embedding_started_at = time.perf_counter()
         try:
-            query_vector = await self.embedding_service.embed_query(question)
+            query_vector = await self.embedding_service.embed_query(
+                question,
+                kb_id=knowledge_base_scope(kb_ids),
+            )
         except EmbeddingError as exc:
             logger.warning(
                 "RAG query embedding failed: elapsed_ms=%s error_type=%s",
@@ -172,6 +176,8 @@ class RagQueryService:
         self,
         question: str,
         context: str,
+        *,
+        kb_ids: list[int],
     ) -> str:
         """调用聊天模型生成答案，并校验模型返回内容可用。"""
         generation_started_at = time.perf_counter()
@@ -196,6 +202,8 @@ class RagQueryService:
             recorder=self.token_metrics,
             response=response,
             pipeline="v1",
+            model=getattr(self.settings, "chat_model", "unknown"),
+            kb_id=knowledge_base_scope(kb_ids),
         )
 
         content = getattr(response, "content", None)

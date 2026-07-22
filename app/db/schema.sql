@@ -104,7 +104,7 @@ CREATE INDEX idx_chunk_content_tsv ON kb_doc_chunk USING GIN (content_tsv);
 CREATE INDEX idx_chunk_kb_id ON kb_doc_chunk(kb_id);
 CREATE INDEX idx_chunk_doc_id ON kb_doc_chunk(doc_id);
 
--- 触发器：自动维护全文检索向量
+-- 触发器：自动维护全文检索文档表示（tsvector）
 -- 简单版：用默认英文分词（中文效果一般，但不需要额外扩展）
 -- 注意：中文全文检索效果不佳，主要靠向量检索；全文检索作为补充用于精确词搜索
 CREATE OR REPLACE FUNCTION update_chunk_tsv()

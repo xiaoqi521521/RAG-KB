@@ -26,7 +26,14 @@ class FakeEmbeddingService:
     def __init__(self) -> None:
         self.queries: list[str] = []
 
-    async def embed_query(self, text: str) -> list[float]:
+    async def embed_query(
+        self,
+        text: str,
+        *,
+        namespace: str = "query",
+        cache_enabled: bool = False,
+        kb_id: str | int = "unknown",
+    ) -> list[float]:
         self.queries.append(text)
         return [0.1, 0.2]
 

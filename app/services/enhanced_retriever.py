@@ -8,6 +8,7 @@ from app.services.embedding import EmbeddingService
 from app.services.hybrid_retriever import HybridRetriever
 from app.services.query_rewriter import QueryRewriter
 from app.services.rrf import rrf_fuse
+from app.services.token_metrics import knowledge_base_scope
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,10 @@ class EnhancedRetriever:
         hyde_hits: list[ChunkSearchHit],
     ) -> tuple[str, ...]:
         """生成 HyDE 并执行向量检索；异常统一降级为无 HyDE 结果。"""
-        rewrite_result = await self.query_rewriter.generate_hyde_answer(question)
+        rewrite_result = await self.query_rewriter.generate_hyde_answer(
+            question,
+            kb_id=knowledge_base_scope(kb_ids),
+        )
         degraded_reasons = list(rewrite_result.degraded_reasons)
         if not rewrite_result.hyde_answer:
             return tuple(degraded_reasons)
@@ -105,6 +109,7 @@ class EnhancedRetriever:
                 rewrite_result.hyde_answer,
                 namespace="hyde",
                 cache_enabled=False,
+                kb_id=knowledge_base_scope(kb_ids),
             )
             hyde_hits.extend(
                 await self.chunk_repository.search_by_vector(

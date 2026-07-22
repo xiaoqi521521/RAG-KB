@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from app.core.logging import configure_logging
 from app.core.telemetry import init_metrics, shutdown_metrics
 from app.core.trace_id import register_trace_id_middleware
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
+from app.services.token_budget import GlobalTokenBudgetGate
 from app.services.token_metrics import TokenMetrics
 
 
@@ -24,11 +26,22 @@ async def lifespan(app: FastAPI):
     meter_provider = init_metrics(settings)
     meter = meter_provider.get_meter("rag-kb.token-metrics") if meter_provider is not None else None
     app.state.meter_provider = meter_provider
+    token_budget_gate = GlobalTokenBudgetGate(
+        redis_client=cast(Any, get_redis()),
+        daily_budget=settings.token_budget_daily_tokens,
+        timezone=settings.token_budget_timezone,
+        request_limit=settings.token_request_alert_limit,
+    )
+    app.state.token_budget_gate = token_budget_gate
     app.state.token_metrics = TokenMetrics(
-        redis_client=get_redis(),
-        meter=meter,
+        redis_client=cast(Any, get_redis()),
         read_timeout_seconds=settings.token_stats_timeout_seconds,
         read_max_retries=settings.token_stats_max_retries,
+        budget_gate=token_budget_gate,
+        embedding_price=settings.embedding_input_cost_cny_per_1k_tokens,
+        chat_input_price=settings.chat_input_cost_cny_per_1k_tokens,
+        chat_output_price=settings.chat_output_cost_cny_per_1k_tokens,
+        reranker_price=settings.reranker_cost_cny_per_1k_tokens,
     )
     app.state.faithfulness_metrics = FaithfulnessMetrics(meter=meter)
     try:

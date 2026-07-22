@@ -256,7 +256,14 @@ class FakeEmbeddingService:
         self.exc = exc
         self.calls: list[list[str]] = []
 
-    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(
+        self,
+        texts: list[str],
+        *,
+        namespace: str = "doc",
+        cache_enabled: bool = True,
+        kb_id: str | int = "unknown",
+    ) -> list[list[float]]:
         self.calls.append(texts)
         if self.exc:
             raise self.exc
