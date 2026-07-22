@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
         daily_budget=settings.token_budget_daily_tokens,
         timezone=settings.token_budget_timezone,
         request_limit=settings.token_request_alert_limit,
+        timeout_seconds=settings.token_stats_timeout_seconds,
     )
     app.state.token_budget_gate = token_budget_gate
     app.state.token_metrics = TokenMetrics(

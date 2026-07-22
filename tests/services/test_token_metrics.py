@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 
@@ -23,10 +24,13 @@ class FakeRedis:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
         self.fail = False
+        self.delay_seconds = 0.0
         self.hash_values: dict[str, str] = {}
         self.hgetall_calls = 0
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
         if self.fail:
             raise RuntimeError("redis unavailable")
         self.calls.append((name, key, amount))
@@ -108,6 +112,26 @@ async def test_offline_embedding_does_not_write_user_v2() -> None:
 async def test_redis_write_failure_does_not_break_prometheus_recording() -> None:
     recorder, redis = _build_recorder()
     redis.fail = True
+    token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
+    try:
+        await recorder.record_usage(
+            tokens=5,
+            model="deepseek-v4-flash",
+            token_type="input",
+            kb_id=2,
+        )
+    finally:
+        current_user_var.reset(token)
+
+    assert any(sample.value == 5 for sample in _metric_values(recorder, "rag_token_usage"))
+    assert any(sample.labels["sink"] == "redis" for sample in _metric_values(recorder, "rag_token_write_failure"))
+
+
+@pytest.mark.asyncio
+async def test_redis_write_timeout_does_not_break_prometheus_recording() -> None:
+    recorder, redis = _build_recorder()
+    recorder.write_timeout_seconds = 0.001
+    redis.delay_seconds = 0.01
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
         await recorder.record_usage(

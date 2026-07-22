@@ -128,6 +128,7 @@ class TokenUsageRecorder:
         read_timeout_seconds: float = 1.0,
         read_max_retries: int = 1,
         budget_gate: GlobalTokenBudgetGate | None = None,
+        write_timeout_seconds: float = 1.0,
         embedding_price: Decimal = Decimal("0"),
         chat_input_price: Decimal = Decimal("0"),
         chat_output_price: Decimal = Decimal("0"),
@@ -138,6 +139,9 @@ class TokenUsageRecorder:
         self.read_timeout_seconds = read_timeout_seconds
         self.read_max_retries = read_max_retries
         self.budget_gate = budget_gate
+        if write_timeout_seconds <= 0:
+            raise ValueError("write_timeout_seconds must be positive")
+        self.write_timeout_seconds = write_timeout_seconds
         self._prices = {
             "embedding": embedding_price,
             "input": chat_input_price,
@@ -279,11 +283,12 @@ class TokenUsageRecorder:
             return
 
         try:
-            await self.redis.hincrby(
-                f"{REDIS_KEY_PREFIX}{user.user_id}",
-                _REDIS_FIELDS[token_type],
-                tokens,
-            )
+            async with asyncio.timeout(self.write_timeout_seconds):
+                await self.redis.hincrby(
+                    f"{REDIS_KEY_PREFIX}{user.user_id}",
+                    _REDIS_FIELDS[token_type],
+                    tokens,
+                )
         except Exception as exc:  # noqa: BLE001
             self._record_write_failure(sink="redis", token_type=token_type)
             logger.warning(

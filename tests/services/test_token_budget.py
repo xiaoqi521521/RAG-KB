@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -36,6 +37,12 @@ class FakeRedis:
     async def expire(self, name: str, time: int) -> bool:
         self.expire_calls.append((name, time))
         return True
+
+
+class SlowRedis(FakeRedis):
+    async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> int:
+        await asyncio.sleep(0.01)
+        return await super().eval(script, numkeys, *keys_and_args)
 
 
 @pytest.mark.asyncio
@@ -77,6 +84,36 @@ async def test_budget_redis_failure_is_unavailable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_budget_redis_timeout_is_unavailable() -> None:
+    gate = GlobalTokenBudgetGate(
+        redis_client=SlowRedis(),
+        timeout_seconds=0.001,
+        registry=CollectorRegistry(),
+    )
+
+    with pytest.raises(TokenBudgetUnavailableError):
+        await gate.ensure_available()
+
+
+@pytest.mark.asyncio
+async def test_budget_record_failure_is_non_blocking_and_observable() -> None:
+    redis = FakeRedis()
+    redis.fail = True
+    gate = GlobalTokenBudgetGate(redis_client=redis, registry=CollectorRegistry())
+
+    await gate.record_tokens(10)
+
+    metrics = gate.registry.collect()
+    assert any(
+        sample.name == "rag_token_write_failure_total"
+        and sample.labels == {"sink": "redis", "token_type": "budget"}
+        and sample.value == 1
+        for family in metrics
+        for sample in family.samples
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_scope_marks_completed_request_over_limit_without_rejecting_it() -> None:
     gate = GlobalTokenBudgetGate(
         redis_client=FakeRedis(),
@@ -93,3 +130,27 @@ async def test_request_scope_marks_completed_request_over_limit_without_rejectin
         for family in metrics
         for sample in family.samples
     )
+
+
+@pytest.mark.asyncio
+async def test_background_token_update_shares_request_limit_observation() -> None:
+    gate = GlobalTokenBudgetGate(
+        redis_client=FakeRedis(),
+        request_limit=20_000,
+        registry=CollectorRegistry(),
+    )
+
+    async with gate.request_scope():
+        task = asyncio.create_task(_add_tokens(gate, 20_001))
+        await task
+
+    metrics = gate.registry.collect()
+    assert any(
+        sample.name == "rag_token_request_over_limit_total" and sample.value == 1
+        for family in metrics
+        for sample in family.samples
+    )
+
+
+async def _add_tokens(gate: GlobalTokenBudgetGate, tokens: int) -> None:
+    gate.add_request_tokens(tokens)
