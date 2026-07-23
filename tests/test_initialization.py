@@ -88,6 +88,31 @@ def test_settings_loads_token_cost_and_stats_redis_configuration():
     assert settings.chat_output_cost_cny_per_1k_tokens == Decimal("0.002")
 
 
+def test_metrics_middleware_handles_included_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    """启用 HTTP 指标时，嵌套路由仍应先进入认证层而不是返回 500。"""
+    _set_required_app_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_METRICS", "true")
+
+    from app import main
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        app = main.create_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        try:
+            response = client.post(
+                "/api/v1/chat",
+                json={"question": "测试", "kb_ids": [1]},
+            )
+        finally:
+            client.close()
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 401
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
