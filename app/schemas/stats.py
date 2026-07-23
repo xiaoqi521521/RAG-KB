@@ -14,6 +14,5 @@ class TokenStatsResponse(BaseModel):
     hyde_tokens: int = Field(ge=0)
     reranker_tokens: int = Field(ge=0)
     faithfulness_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
     estimated_cost: str
     currency: Literal["CNY"] = "CNY"

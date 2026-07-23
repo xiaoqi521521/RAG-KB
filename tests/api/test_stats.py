@@ -28,7 +28,6 @@ class FakeTokenCostService:
                 hyde_tokens=0,
                 reranker_tokens=0,
                 faithfulness_tokens=0,
-                total_tokens=0,
                 estimated_cost=Decimal("0.0000"),
             )
         return TokenCostSummary(
@@ -38,7 +37,6 @@ class FakeTokenCostService:
             hyde_tokens=0,
             reranker_tokens=0,
             faithfulness_tokens=0,
-            total_tokens=1_225_000,
             estimated_cost=Decimal("1.2195"),
         )
 
@@ -76,7 +74,6 @@ def test_token_stats_returns_current_user_cost_summary() -> None:
             "hyde_tokens": 0,
             "reranker_tokens": 0,
             "faithfulness_tokens": 0,
-            "total_tokens": 1_225_000,
             "estimated_cost": "1.2195",
             "currency": "CNY",
         },
@@ -112,7 +109,6 @@ def test_token_stats_returns_zero_for_user_without_usage() -> None:
         "hyde_tokens": 0,
         "reranker_tokens": 0,
         "faithfulness_tokens": 0,
-        "total_tokens": 0,
         "estimated_cost": "0.0000",
         "currency": "CNY",
     }

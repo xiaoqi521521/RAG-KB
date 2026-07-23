@@ -57,7 +57,7 @@ async def test_budget_uses_asia_shanghai_daily_key_and_allows_below_limit() -> N
     )
 
     assert gate.current_key(datetime(2026, 7, 22, 23, 59, tzinfo=ZoneInfo("Asia/Shanghai"))) == (
-        "rag:token:v2:budget:2026-07-22"
+        "rag:token:v3:budget:2026-07-22"
     )
     await gate.ensure_available()
 

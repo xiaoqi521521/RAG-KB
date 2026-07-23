@@ -17,6 +17,7 @@ class FakeTokenMetrics:
             hyde_tokens=0,
             reranker_tokens=0,
             faithfulness_tokens=0,
+            estimated_cost_cny=Decimal("1.2195"),
         )
 
     async def read_user_tokens(self, user_id: int) -> UserTokenUsage:
@@ -28,9 +29,6 @@ class FakeTokenMetrics:
 async def test_token_cost_service_calculates_fixed_decimal_estimate() -> None:
     service = TokenCostService(
         token_metrics=FakeTokenMetrics(),
-        embedding_price=Decimal("0.0007"),
-        chat_input_price=Decimal("0.0008"),
-        chat_output_price=Decimal("0.002"),
     )
 
     summary = await service.get_user_cost(user_id=7)
@@ -41,7 +39,6 @@ async def test_token_cost_service_calculates_fixed_decimal_estimate() -> None:
     assert summary.hyde_tokens == 0
     assert summary.reranker_tokens == 0
     assert summary.faithfulness_tokens == 0
-    assert summary.total_tokens == 1_225_000
     assert summary.estimated_cost == Decimal("1.2195")
 
 
@@ -56,11 +53,9 @@ async def test_token_cost_service_rounds_half_up_to_four_decimal_places() -> Non
                     hyde_tokens=0,
                     reranker_tokens=0,
                     faithfulness_tokens=0,
+                    estimated_cost_cny=Decimal("0.00005"),
                 )
         ),
-        embedding_price=Decimal("0.00005"),
-        chat_input_price=Decimal("0"),
-        chat_output_price=Decimal("0"),
     )
 
     summary = await service.get_user_cost(user_id=7)
@@ -79,15 +74,11 @@ async def test_token_cost_service_prices_internal_outputs_and_reranker() -> None
                 hyde_tokens=1_000,
                 reranker_tokens=1_000,
                 faithfulness_tokens=1_000,
+                estimated_cost_cny=Decimal("0.0075"),
             )
         ),
-        embedding_price=Decimal("0.0005"),
-        chat_input_price=Decimal("0.001"),
-        chat_output_price=Decimal("0.002"),
-        reranker_price=Decimal("0.0005"),
     )
 
     summary = await service.get_user_cost(user_id=7)
 
-    assert summary.total_tokens == 5_000
     assert summary.estimated_cost == Decimal("0.0075")

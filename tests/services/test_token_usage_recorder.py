@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,16 @@ from app.services.token_metrics import TokenUsageRecorder
 class FakeRedis:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
+        self.values: dict[str, str] = {}
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> list[object]:
+        name, token_field, raw_tokens, cost_field, raw_cost = keys_and_args
+        tokens = int(raw_tokens)
+        cost = Decimal(str(raw_cost))
+        self.calls.append((str(name), str(token_field), tokens))
+        self.values[str(token_field)] = str(int(self.values.get(str(token_field), "0")) + tokens)
+        self.values[str(cost_field)] = str(Decimal(self.values.get(str(cost_field), "0")) + cost)
+        return [self.values[str(token_field)], self.values[str(cost_field)]]
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
         self.calls.append((name, key, amount))
@@ -41,9 +52,10 @@ async def test_record_chat_usage_separates_input_and_answer_output() -> None:
         current_user_var.reset(user_token)
 
     assert redis.calls == [
-        ("rag:token:v2:stats:7", "inputTokens", 120),
-        ("rag:token:v2:stats:7", "answerGenerationTokens", 8),
+        ("rag:token:v3:stats:7", "inputTokens", 120),
+        ("rag:token:v3:stats:7", "answerGenerationTokens", 8),
     ]
+    assert Decimal(redis.values["estimatedCostCny"]) == Decimal("0")
     families = {
         family.name: family
         for family in text_string_to_metric_families(recorder.render_metrics())

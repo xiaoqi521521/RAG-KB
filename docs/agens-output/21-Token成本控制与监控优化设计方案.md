@@ -32,8 +32,8 @@
 - 为六类 Token 增加 `model`、`token_type`、`kb_id` 标签。
 - 单知识库请求使用真实 `kb_id`；多知识库请求使用 `kb_id="multi"`，不复制或按比例估算。
 - Embedding、聊天输入、最终回答、HyDE、Reranker、忠实性检测同步写入用户 Redis 累计。
-- 使用新的 Redis 统计版本，不迁移既有三类统计。
-- 扩展 `/api/v1/stats/tokens` 返回六类 Token、总量和成本估算。
+- 使用新的 Redis v3 统计版本，不迁移既有三类统计或缺少金额字段的 v2 Hash。
+- 扩展 `/api/v1/stats/tokens` 返回六类 Token 和成本估算，不返回跨类型 Token 总量。
 - 增加全局每日 Token 预算闸门、80% 预警、100% 拦截和单次 20,000 Token 异常告警。
 - 增加 Prometheus 规则和 Grafana Dashboard；告警本期只展示状态，不接外部通知。
 
@@ -53,7 +53,7 @@
 当前实现已经具备：
 
 - `TokenMetrics` 使用 OpenTelemetry Counter 记录 Embedding、Context、Generation。
-- Redis 按用户累计三类字段，普通 Token 写入失败不阻断问答。
+- Redis 按用户累计六类 Token 和金额字段，普通 Token 写入失败不阻断问答。
 - Embedding 客户端读取 provider `usage.total_tokens`。
 - LangChain 回答消息读取 `usage_metadata.output_tokens` 或 `response_metadata.token_usage.completion_tokens`。
 - Reranker 客户端解析 `usage.total_tokens`，但尚未写入 TokenMetrics。
@@ -117,8 +117,8 @@ rag_token_write_failure_total{sink,token_type}
 新统计使用版本化命名空间：
 
 ```text
-namespace: rag:token:v2:
-key: rag:token:v2:stats:<user_id>
+namespace: rag:token:v3:
+key: rag:token:v3:stats:<user_id>
 fields:
   embeddingTokens
   inputTokens
@@ -126,9 +126,10 @@ fields:
   hydeTokens
   rerankerTokens
   faithfulnessTokens
+  estimatedCostCny
 ```
 
-旧版本字段不迁移、不参与新统计。Hash 不按模型分桶，不保存单次请求明细，也不设置业务 TTL。没有当前用户的离线索引 Embedding 不写用户 Hash，但仍可写 Prometheus 的知识库维度指标。
+旧版本字段不迁移、不参与新统计。Hash 不按模型分桶，不保存单次请求明细，也不设置业务 TTL。六类 Token 字段保存数量，`estimatedCostCny` 保存按本次调用配置单价累计的人民币金额。没有当前用户的离线索引 Embedding 不写用户 Hash，但仍可写 Prometheus 的知识库维度指标。
 
 ### 5.2 个人统计 API
 
@@ -148,7 +149,6 @@ GET /api/v1/stats/tokens
   "hyde_tokens": 0,
   "reranker_tokens": 0,
   "faithfulness_tokens": 0,
-  "total_tokens": 0,
   "estimated_cost": "0.0000",
   "currency": "CNY"
 }
@@ -180,10 +180,10 @@ answer_cost = answerGenerationTokens / 1000 * chat_output_price
 hyde_cost = hydeTokens / 1000 * chat_output_price
 faithfulness_cost = faithfulnessTokens / 1000 * chat_output_price
 reranker_cost = rerankerTokens / 1000 * reranker_price
-estimated_cost = sum(all six costs)
+estimatedCostCny = sum(all six costs at write time)
 ```
 
-单价必须来自部署配置，不在业务代码中硬编码。Redis 只按 Token 类型累计，不按模型保留价格快照，因此模型或单价改变后，历史累计成本仍是当前配置下的估算，不是供应商账单。
+每次 provider usage 确认后，Recorder 按对应类型单价计算本次金额，并与对应 Token 字段在同一个 Redis Lua 脚本中原子累加；统计 API 直接读取已累计的 `estimatedCostCny`，不再把六类 Token 相加生成 `total_tokens`，也不重新按当前单价回算历史金额。单价必须来自部署配置，不在业务代码中硬编码。累计金额是运行成本估算，不是供应商最终账单。
 
 ## 7. 全局预算闸门
 
@@ -198,10 +198,10 @@ estimated_cost = sum(all six costs)
 预算时区默认 `Asia/Shanghai`，通过配置覆盖。Redis 保存当天全局计数，例如：
 
 ```text
-rag:token:v2:budget:2026-07-22
+rag:token:v3:budget:2026-07-22
 ```
 
-预算计数与用户统计使用同一个 `rag:token:v2:` 根命名空间，通过 `budget` 和 `stats` 子路径并列区分；预算 key 是 Redis String，值是当天已累计 Token 总量，不是人民币金额。用户统计 key 是 Redis Hash，各字段分别保存用户累计 Token。此次命名空间调整直接重置旧 key，不迁移历史数据。
+预算计数与用户统计使用同一个 `rag:token:v3:` 根命名空间，通过 `budget` 和 `stats` 子路径并列区分；预算 key 是 Redis String，值是当天已累计 Token 总量，不是人民币金额。用户统计 key 是 Redis Hash，各字段分别保存用户累计 Token 和累计金额。此次结构升级直接重置旧 key，不迁移历史数据。
 
 当天计数可以设置为日期结束后保留一段时间，用于故障排查；它不是用户账单。
 
@@ -269,7 +269,7 @@ Redis 的原子递增解决的是并发修改，不等于持久化和 exactly-on
 
 ## 10. 实施顺序
 
-1. 新增 Token 类型、usage 提取器、统一 Recorder 和 v2 Redis Hash。
+1. 新增 Token 类型、usage 提取器、统一 Recorder 和 v3 Redis Hash（含累计金额字段）。
 2. 接入 Embedding、聊天输入/输出、HyDE、Reranker、忠实性检测的真实调用点。
 3. 将 Token Counter 从 OpenTelemetry 切换为 `prometheus_client`，保留 `/metrics`。
 4. 扩展用户统计 Schema、成本服务、Reranker 单价配置和 `/stats/tokens`。
@@ -281,7 +281,7 @@ Redis 的原子递增解决的是并发修改，不等于持久化和 exactly-on
 
 - 六类 Token 的 provider usage 提取和错误值处理。
 - HyDE、同步回答、SSE 回答、Reranker、忠实性检测各只记录一次。
-- Redis v2 字段、旧数据不迁移、用户 API 六类响应和成本公式。
+- Redis v3 六类 Token 与金额字段、旧数据不迁移、用户 API 六类响应和持久化成本。
 - 单知识库与多知识库 `multi` 标签归属。
 - 无当前用户的离线 Embedding 只写 Prometheus，不写用户 Redis。
 - Prometheus 指标不出现用户、部门、请求、问题和文档标签。

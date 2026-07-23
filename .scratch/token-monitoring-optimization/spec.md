@@ -13,11 +13,11 @@ Status: implemented
 
 ## Solution
 
-建立统一的 Token Usage Recorder，承接 Embedding、聊天输入、最终回答、HyDE、Reranker 和忠实性检测的 provider usage。每次确认到可靠 usage 后，同时写入 Prometheus Counter 和当前用户 Redis v2 累计；两个数据出口独立失败，不让监控写入故障阻断已经执行的问答。
+建立统一的 Token Usage Recorder，承接 Embedding、聊天输入、最终回答、HyDE、Reranker 和忠实性检测的 provider usage。每次确认到可靠 usage 后，同时写入 Prometheus Counter 和当前用户 Redis v3 累计；两个数据出口独立失败，不让监控写入故障阻断已经执行的问答。
 
 Prometheus 通过现有 `/metrics` 出口提供 Token 指标，标签使用 `model`、`token_type` 和 `kb_id`。单知识库请求使用真实 `kb_id`，多知识库请求使用 `multi`，不重复复制或按比例估算同一批 Token。Grafana 连接 Prometheus 展示总览、Token 类型拆分、模型与知识库对比、成本估算和告警状态。Grafana/Prometheus 只供系统管理员与运维人员使用。
 
-Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据。用户统计接口扩展为六类 Token、总量和人民币成本估算。成本单价来自环境配置；当前 Embedding、聊天输入、聊天输出单价取项目 `.env`，Reranker 使用百炼官方 `qwen3-rerank` 页面确认的 `0.5 元/百万 Token`，即 `0.0005 元/1K Token`。
+Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据或没有金额字段的旧 v2 Hash。用户统计接口扩展为六类 Token 和人民币成本估算，不返回六类 Token 的汇总值。用户 Hash 同时保存六类 Token 和累计 `estimatedCostCny`，金额与 Token 字段在一次 Redis 原子更新中同步增加。成本单价来自环境配置；当前 Embedding、聊天输入、聊天输出单价取项目 `.env`，Reranker 使用百炼官方 `qwen3-rerank` 页面确认的 `0.5 元/百万 Token`，即 `0.0005 元/1K Token`。
 
 增加全局每日 Token 预算闸门。预算默认是北京时间每日 `1,000,000 Token`，达到 80% 告警，达到 100% 拒绝后续新请求，已经开始的请求继续完成。单次请求实际总量超过 `20,000 Token` 时触发异常告警。告警本期只展示 Grafana 状态，不连接外部通知渠道。
 
@@ -39,8 +39,7 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 14. As a 用户, I want to see Reranker Tokens, so that ranking overhead is included in my accumulated online usage.
 15. As a 用户, I want to see faithfulness-check Tokens, so that quality-observation overhead is visible instead of being silently discarded.
 16. As a 用户, I want the six Token buckets to be mutually exclusive, so that their sum does not double count the same provider usage.
-17. As a 用户, I want to see total accumulated Tokens, so that I can understand the overall volume of my online requests.
-18. As a 用户, I want to see an estimated CNY cost, so that I can understand the current configured price impact of my usage.
+17. As a 用户, I want to see an estimated CNY cost, so that I can understand accumulated monetary consumption without mixing Token types with different prices.
 19. As a 用户, I want HyDE and faithfulness-check output to use the configured chat output price, so that internal chat-model calls are priced consistently.
 20. As a 用户, I want Reranker usage to use its configured unit price, so that Reranker cost is not omitted from the estimate.
 21. As a 平台运维人员, I want provider-reported usage to be preferred over local estimates, so that metrics do not present approximate counts as exact provider consumption.
@@ -78,7 +77,7 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 
 - The highest application seam is a unified `TokenUsageRecorder` that receives normalized provider usage and fans it out to Prometheus, user Redis accumulation and the current request's in-memory accumulator.
 - A separate `GlobalTokenBudgetGate` seam performs the global daily Redis budget check after authentication, full knowledge-base read authorization and cache eligibility checks, but before any provider call.
-- The existing authenticated token statistics endpoint remains the public personal-usage seam and is expanded to six Token fields, total Tokens, estimated CNY cost and currency.
+- The existing authenticated token statistics endpoint remains the public personal-usage seam and returns six Token fields, estimated CNY cost and currency; it does not return a cross-type Token sum.
 - The six `token_type` values are `embedding`, `input`, `answer_generation`, `hyde`, `reranker` and `faithfulness_check`.
 - `embedding` is Embedding provider input usage. `input` is complete chat-model input usage containing System Prompt, current question, conversation history and retrieval context. It does not include Embedding or Reranker input.
 - `answer_generation`, `hyde` and `faithfulness_check` are output-only chat-model usage for their respective calls.
@@ -89,8 +88,8 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 - The core Token Counter is `rag_token_usage_total` with only `model`, `token_type` and `kb_id` labels. Other supporting metrics use only fixed low-cardinality labels and never use user, department, request, question, answer, document or object-path values.
 - `kb_id` uses the real single knowledge-base ID for a single-scope request and `multi` for a request spanning multiple knowledge bases. Usage is never duplicated or proportionally allocated to individual knowledge bases.
 - Grafana and Prometheus access is for system administrators and operations staff. The current `/metrics` network access behavior remains unchanged in this scope.
-- User Redis statistics use a new versioned namespace and six type fields. Existing three-field data is not migrated and does not contribute to the new baseline.
-- User Redis totals are not split by model and no request-level Token or cost ledger is stored. The personal cost estimate uses current deployment prices and is not a provider-bill reconciliation.
+- User Redis statistics use a new v3 namespace with six Token fields and `estimatedCostCny`. Existing three-field data and v2 Hashes without the cost field are not migrated and do not contribute to the new baseline.
+- User Redis totals are not split by model and no request-level Token or cost ledger is stored. Each Token field and the aggregate cost field are updated atomically; the aggregate cost uses the configured price at provider-call time and is not a provider-bill reconciliation.
 - The current configured prices are Embedding `0.0005` CNY/1K Tokens, chat input `0.001` CNY/1K Tokens and chat output `0.002` CNY/1K Tokens. Reranker `qwen3-rerank` is `0.5` CNY/million Tokens, or `0.0005` CNY/1K Tokens, based on the official model page supplied during design.
 - HyDE and faithfulness-check output use the chat output price. Reranker uses its dedicated configured price. Prices are environment configuration, not business-code constants.
 - The daily global budget defaults to `1,000,000` Tokens and uses `Asia/Shanghai` by default with an overrideable timezone configuration.
@@ -110,9 +109,9 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 - Recorder tests cover all six type buckets, model and knowledge-base labels, `multi` attribution, current-user Redis writes, offline no-user behavior, zero/negative values and independent sink failures.
 - Integration tests cover synchronous final answer recording, streaming final answer recording exactly once, HyDE usage preservation, Reranker success usage, Reranker timeout/fallback without invented usage and faithfulness usage in a non-blocking observation.
 - Cache-hit tests prove that skipped provider calls do not increment any Token bucket or global budget usage.
-- Redis schema tests prove the v2 namespace, six fields, zero defaults for new users and no migration of the old three-field namespace.
-- Cost service tests verify all six cost components, configured Reranker price, Decimal rounding, total Token calculation and current-price approximation semantics.
-- API tests verify authentication, six response fields, total/cost values, fixed CNY currency, Redis read failure `503` and current-user-only behavior.
+- Redis schema tests prove the v3 namespace, six Token fields plus `estimatedCostCny`, zero defaults for new users and no migration of the old namespaces.
+- Cost service tests verify persisted aggregate cost, Decimal rounding and fixed CNY currency without cross-type Token summation.
+- API tests verify authentication, six response fields, cost without `total_tokens`, fixed CNY currency, Redis read failure `503` and current-user-only behavior.
 - Budget gate tests verify Asia/Shanghai daily key selection, configurable budget, 80%/100% thresholds, atomic concurrent checks, rejection after exhaustion, completion of in-flight requests and Redis gate failure `503`.
 - Request threshold tests verify that actual totals over 20,000 increment the alert counter without rejecting the completed request.
 - Prometheus exposition tests verify that the `/metrics` output includes Token counters and supporting metrics with the allowed labels only.

@@ -28,7 +28,7 @@ def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> A
             raise
         return existing
 
-TOKEN_REDIS_NAMESPACE = "rag:token:v2:"
+TOKEN_REDIS_NAMESPACE = "rag:token:v3:"
 _BUDGET_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}budget:"
 _CHECK_SCRIPT = """
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')

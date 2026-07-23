@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,21 @@ class FakeRedis:
         self.delay_seconds = 0.0
         self.hash_values: dict[str, str] = {}
         self.hgetall_calls = 0
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> list[object]:
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+        if self.fail:
+            raise RuntimeError("redis unavailable")
+        name, token_field, raw_tokens, cost_field, raw_cost = keys_and_args
+        tokens = int(raw_tokens)
+        cost = Decimal(str(raw_cost))
+        self.calls.append((str(name), str(token_field), tokens))
+        token_total = int(self.hash_values.get(str(token_field), "0")) + tokens
+        cost_total = Decimal(self.hash_values.get(str(cost_field), "0")) + cost
+        self.hash_values[str(token_field)] = str(token_total)
+        self.hash_values[str(cost_field)] = str(cost_total)
+        return [token_total, str(cost_total)]
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
         if self.delay_seconds:
@@ -57,7 +73,13 @@ def _metric_values(recorder: TokenUsageRecorder, family_name: str) -> list[objec
 
 @pytest.mark.asyncio
 async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
-    recorder, redis = _build_recorder()
+    redis = FakeRedis()
+    recorder = TokenUsageRecorder(
+        redis_client=redis,
+        registry=CollectorRegistry(),
+        chat_input_price=Decimal("0.001"),
+        chat_output_price=Decimal("0.002"),
+    )
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
         await recorder.record_chat_usage(
@@ -73,9 +95,10 @@ async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
         current_user_var.reset(token)
 
     assert redis.calls == [
-        ("rag:token:v2:stats:7", "inputTokens", 120),
-        ("rag:token:v2:stats:7", "answerGenerationTokens", 8),
+        ("rag:token:v3:stats:7", "inputTokens", 120),
+        ("rag:token:v3:stats:7", "answerGenerationTokens", 8),
     ]
+    assert Decimal(redis.hash_values["estimatedCostCny"]) == Decimal("0.000136")
     usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
     assert {
         (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
@@ -185,6 +208,7 @@ async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
         "embeddingTokens": "125",
         "inputTokens": "890",
         "answerGenerationTokens": "8",
+        "estimatedCostCny": "0.0125",
         "legacyGenerationTokens": "999",
     }
 
@@ -196,6 +220,7 @@ async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
     assert usage.hyde_tokens == 0
     assert usage.reranker_tokens == 0
     assert usage.faithfulness_tokens == 0
+    assert usage.estimated_cost_cny == Decimal("0.0125")
 
 
 @pytest.mark.asyncio
