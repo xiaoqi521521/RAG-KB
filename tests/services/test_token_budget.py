@@ -18,6 +18,7 @@ class FakeRedis:
     def __init__(self, check_result: int = 0) -> None:
         self.check_result = check_result
         self.eval_calls: list[tuple[object, ...]] = []
+        self.incrby_calls: list[tuple[str, int]] = []
         self.value = 0
         self.expire_calls: list[tuple[str, int]] = []
         self.fail = False
@@ -31,6 +32,7 @@ class FakeRedis:
     async def incrby(self, name: str, amount: int) -> int:
         if self.fail:
             raise RuntimeError("redis unavailable")
+        self.incrby_calls.append((name, amount))
         self.value += amount
         return self.value
 
@@ -55,11 +57,11 @@ async def test_budget_uses_asia_shanghai_daily_key_and_allows_below_limit() -> N
     )
 
     assert gate.current_key(datetime(2026, 7, 22, 23, 59, tzinfo=ZoneInfo("Asia/Shanghai"))) == (
-        "rag:token-budget:v1:2026-07-22"
+        "rag:token:v2:budget:2026-07-22"
     )
     await gate.ensure_available()
 
-    assert redis.eval_calls[0][2] == "rag:token-budget:v1:2026-07-22"
+    assert redis.eval_calls[0][2] == gate.current_key()
     assert redis.eval_calls[0][3] == 1_000_000
 
 
@@ -111,6 +113,17 @@ async def test_budget_record_failure_is_non_blocking_and_observable() -> None:
         for family in metrics
         for sample in family.samples
     )
+
+
+@pytest.mark.asyncio
+async def test_budget_record_stores_token_count_in_parallel_budget_key() -> None:
+    redis = FakeRedis()
+    gate = GlobalTokenBudgetGate(redis_client=redis, registry=CollectorRegistry())
+
+    await gate.record_tokens(2_520)
+
+    assert redis.incrby_calls == [(gate.current_key(), 2_520)]
+    assert redis.value == 2_520
 
 
 @pytest.mark.asyncio

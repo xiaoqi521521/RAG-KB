@@ -73,8 +73,8 @@ async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
         current_user_var.reset(token)
 
     assert redis.calls == [
-        ("rag:token-stats:v2:7", "inputTokens", 120),
-        ("rag:token-stats:v2:7", "answerGenerationTokens", 8),
+        ("rag:token:v2:stats:7", "inputTokens", 120),
+        ("rag:token:v2:stats:7", "answerGenerationTokens", 8),
     ]
     usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
     assert {

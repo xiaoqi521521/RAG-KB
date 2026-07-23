@@ -11,7 +11,7 @@ from prometheus_client import CollectorRegistry, Counter, generate_latest
 from prometheus_client.registry import REGISTRY
 
 from app.core.context import current_user_var
-from app.services.token_budget import GlobalTokenBudgetGate
+from app.services.token_budget import GlobalTokenBudgetGate, TOKEN_REDIS_NAMESPACE
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> A
             raise
         return existing
 
-REDIS_KEY_PREFIX = "rag:token-stats:v2:"
+REDIS_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}stats:"
 TOKEN_TYPES = (
     "embedding",
     "input",

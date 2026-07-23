@@ -28,7 +28,8 @@ def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> A
             raise
         return existing
 
-_BUDGET_KEY_PREFIX = "rag:token-budget:v1:"
+TOKEN_REDIS_NAMESPACE = "rag:token:v2:"
+_BUDGET_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}budget:"
 _CHECK_SCRIPT = """
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')
 if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -39,6 +40,8 @@ if current >= tonumber(ARGV[1]) then
 end
 return current
 """
+
+
 @dataclass
 class _RequestTokenAccumulator:
     """保存一次请求的可共享 Token 累计，供后台观测任务继续更新。"""

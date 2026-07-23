@@ -117,7 +117,8 @@ rag_token_write_failure_total{sink,token_type}
 新统计使用版本化命名空间：
 
 ```text
-key: rag:token-stats:v2:<user_id>
+namespace: rag:token:v2:
+key: rag:token:v2:stats:<user_id>
 fields:
   embeddingTokens
   inputTokens
@@ -197,8 +198,10 @@ estimated_cost = sum(all six costs)
 预算时区默认 `Asia/Shanghai`，通过配置覆盖。Redis 保存当天全局计数，例如：
 
 ```text
-rag:token-budget:v1:2026-07-22
+rag:token:v2:budget:2026-07-22
 ```
+
+预算计数与用户统计使用同一个 `rag:token:v2:` 根命名空间，通过 `budget` 和 `stats` 子路径并列区分；预算 key 是 Redis String，值是当天已累计 Token 总量，不是人民币金额。用户统计 key 是 Redis Hash，各字段分别保存用户累计 Token。此次命名空间调整直接重置旧 key，不迁移历史数据。
 
 当天计数可以设置为日期结束后保留一段时间，用于故障排查；它不是用户账单。
 

@@ -41,8 +41,8 @@ async def test_record_chat_usage_separates_input_and_answer_output() -> None:
         current_user_var.reset(user_token)
 
     assert redis.calls == [
-        ("rag:token-stats:v2:7", "inputTokens", 120),
-        ("rag:token-stats:v2:7", "answerGenerationTokens", 8),
+        ("rag:token:v2:stats:7", "inputTokens", 120),
+        ("rag:token:v2:stats:7", "answerGenerationTokens", 8),
     ]
     families = {
         family.name: family
@@ -64,4 +64,3 @@ def test_record_chat_usage_does_not_estimate_missing_provider_usage() -> None:
     recorder = TokenUsageRecorder(redis_client=FakeRedis(), registry=CollectorRegistry())
 
     assert recorder.extract_usage(SimpleNamespace()) == (None, None)
-
