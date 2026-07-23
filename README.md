@@ -97,7 +97,7 @@ curl --request POST http://localhost:8000/api/v1/auth/login \
 | 评估历史 | GET | `/api/v1/eval/{kb_id}/history` |
 | Token 统计 | GET | `/api/v1/stats/tokens` |
 
-启用监控时将 `ENABLE_METRICS=true`，Prometheus 抓取 `/metrics`。监控面板和 Prometheus 查询只对系统管理员与运维开放；应用本身不在本期增加 `/metrics` 网络 ACL。每日 Token 预算、时区和单次异常阈值分别由 `TOKEN_BUDGET_DAILY_TOKENS`、`TOKEN_BUDGET_TIMEZONE` 和 `TOKEN_REQUEST_ALERT_LIMIT` 配置。
+启用监控时将 `ENABLE_METRICS=true`，Prometheus 抓取 `/metrics`。监控面板和 Prometheus 查询只对系统管理员与运维开放；应用本身不在本期增加 `/metrics` 网络 ACL。每日金额预算、时区和单次异常金额阈值分别由 `TOKEN_BUDGET_DAILY_CNY`、`TOKEN_BUDGET_TIMEZONE` 和 `TOKEN_REQUEST_ALERT_COST_CNY` 配置，默认值为 `1.00 CNY` 和 `0.01 CNY`。
 
 反馈接口使用 JSON 请求体，而不是查询参数：
 

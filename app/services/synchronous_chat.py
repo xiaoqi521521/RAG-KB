@@ -80,12 +80,12 @@ class SynchronousChatService(ChatSessionRuntime):
         except TokenBudgetExhaustedError as exc:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="今日 Token 预算已用尽",
+                detail="今日金额预算已用尽",
             ) from exc
         except TokenBudgetUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Token 预算状态暂不可用",
+                detail="金额预算状态暂不可用",
             ) from exc
         except TimeoutError as exc:
             logger.warning("Synchronous chat timed out")

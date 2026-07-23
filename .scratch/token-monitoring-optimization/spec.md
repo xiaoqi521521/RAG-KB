@@ -19,7 +19,7 @@ Prometheus 通过现有 `/metrics` 出口提供 Token 指标，标签使用 `mod
 
 Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据或没有金额字段的旧 v2 Hash。用户统计接口扩展为六类 Token 和人民币成本估算，不返回六类 Token 的汇总值。用户 Hash 同时保存六类 Token 和累计 `estimatedCostCny`，金额与 Token 字段在一次 Redis 原子更新中同步增加。成本单价来自环境配置；当前 Embedding、聊天输入、聊天输出单价取项目 `.env`，Reranker 使用百炼官方 `qwen3-rerank` 页面确认的 `0.5 元/百万 Token`，即 `0.0005 元/1K Token`。
 
-增加全局每日 Token 预算闸门。预算默认是北京时间每日 `1,000,000 Token`，达到 80% 告警，达到 100% 拒绝后续新请求，已经开始的请求继续完成。单次请求实际总量超过 `20,000 Token` 时触发异常告警。告警本期只展示 Grafana 状态，不连接外部通知渠道。
+增加全局每日金额预算闸门。预算默认是北京时间每日 `1.00 CNY`，达到 80% 告警，达到 100% 拒绝后续新请求，已经开始的请求继续完成。单次请求估算成本超过 `0.01 CNY` 时触发异常告警。告警本期只展示 Grafana 状态，不连接外部通知渠道。
 
 ## User Stories
 
@@ -49,12 +49,12 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 25. As a 平台运维人员, I want offline and online usage to remain visible in Prometheus where their knowledge-base scope is known, so that operational capacity planning includes indexing activity.
 26. As a 平台运维人员, I want user statistics to start from a new versioned Redis baseline, so that incompatible legacy Context and Generation semantics are not silently merged.
 27. As a 平台运维人员, I want Redis user totals to remain type-based rather than model-based for now, so that the first implementation does not introduce historical model price buckets.
-28. As a 平台运维人员, I want to configure the daily global Token budget, so that the default budget can be adjusted for a deployment's capacity.
+28. As a 平台运维人员, I want to configure the daily global CNY budget, so that the default budget can be adjusted for a deployment's capacity.
 29. As a 平台运维人员, I want the daily budget to use Asia/Shanghai by default, so that the reset boundary matches the deployment's operating timezone.
 30. As a 平台运维人员, I want the budget gate to warn at 80%, so that I have time to investigate before new traffic is blocked.
 31. As a 平台运维人员, I want the budget gate to reject new requests at 100%, so that subsequent model calls do not continue after the global daily allowance is exhausted.
 32. As a 用户, I want a request that started before budget exhaustion to finish, so that an in-flight answer is not corrupted by a later budget transition.
-33. As a 平台运维人员, I want a request over 20,000 Tokens to trigger an alert, so that abnormal queries and implementation bugs are visible quickly.
+33. As a 平台运维人员, I want a request over 0.01 CNY to trigger an alert, so that abnormal queries and implementation bugs are visible quickly.
 34. As a 平台运维人员, I want budget rejection to be distinguishable from model failure, so that clients and operators can identify quota exhaustion correctly.
 35. As a 平台运维人员, I want the budget gate to fail closed when its Redis state cannot be read, so that an infrastructure outage does not silently bypass the global budget.
 36. As a 用户, I want ordinary Token statistic write failures not to fail my answer, so that observability degradation does not become a RAG availability failure.
@@ -92,11 +92,11 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 - User Redis totals are not split by model and no request-level Token or cost ledger is stored. Each Token field and the aggregate cost field are updated atomically; the aggregate cost uses the configured price at provider-call time and is not a provider-bill reconciliation.
 - The current configured prices are Embedding `0.0005` CNY/1K Tokens, chat input `0.001` CNY/1K Tokens and chat output `0.002` CNY/1K Tokens. Reranker `qwen3-rerank` is `0.5` CNY/million Tokens, or `0.0005` CNY/1K Tokens, based on the official model page supplied during design.
 - HyDE and faithfulness-check output use the chat output price. Reranker uses its dedicated configured price. Prices are environment configuration, not business-code constants.
-- The daily global budget defaults to `1,000,000` Tokens and uses `Asia/Shanghai` by default with an overrideable timezone configuration.
+- The daily global budget defaults to `1.00 CNY` and uses `Asia/Shanghai` by default with an overrideable timezone configuration.
 - The budget uses a daily global Redis aggregate. An atomic gate rejects new requests once the recorded value has reached the configured budget. Requests already in progress complete and may cause a small observable overrun.
 - Budget gate Redis failure returns `503` and prevents provider calls. Ordinary Token statistics write failure is non-blocking and is separately observable.
-- Budget usage reaches Warning at 80% and Critical at 100%. A request whose actual total exceeds 20,000 Tokens increments an over-limit observation and produces a Grafana alert state.
-- Budget rejection uses a distinct rate-limit response, recommended as `429 Too Many Requests`, with a message that the daily Token budget is exhausted.
+- Budget usage reaches Warning at 80% and Critical at 100%. A request whose accumulated estimated cost exceeds `0.01 CNY` increments a cost-over-limit observation and produces a Grafana alert state.
+- Budget rejection uses a distinct rate-limit response, recommended as `429 Too Many Requests`, with a message that the daily CNY budget is exhausted.
 - Prometheus/Grafana alert states are implemented without external notification channels in this scope.
 - Redis atomic increments provide concurrency safety but not durable exactly-once accounting. Redis persistence, replication, backup and eviction policy are deployment responsibilities; the resulting totals are approximate operational statistics rather than billing-grade ledger data.
 - The design does not introduce an independent tenant entity. Knowledge-base scope remains the existing logical isolation boundary; department remains an authorization-subject attribute and is not a metric label.
@@ -112,8 +112,8 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 - Redis schema tests prove the v3 namespace, six Token fields plus `estimatedCostCny`, zero defaults for new users and no migration of the old namespaces.
 - Cost service tests verify persisted aggregate cost, Decimal rounding and fixed CNY currency without cross-type Token summation.
 - API tests verify authentication, six response fields, cost without `total_tokens`, fixed CNY currency, Redis read failure `503` and current-user-only behavior.
-- Budget gate tests verify Asia/Shanghai daily key selection, configurable budget, 80%/100% thresholds, atomic concurrent checks, rejection after exhaustion, completion of in-flight requests and Redis gate failure `503`.
-- Request threshold tests verify that actual totals over 20,000 increment the alert counter without rejecting the completed request.
+- Budget gate tests verify Asia/Shanghai daily key selection, configurable CNY budget, 80%/100% thresholds, atomic concurrent checks, rejection after exhaustion, completion of in-flight requests and Redis gate failure `503`.
+- Request threshold tests verify that estimated costs over `0.01 CNY` increment the alert counter without rejecting the completed request.
 - Prometheus exposition tests verify that the `/metrics` output includes Token counters and supporting metrics with the allowed labels only.
 - Prometheus rule tests or configuration validation verify budget Warning/Critical, single-request over-limit, usage-unavailable and sink-write-failure alert expressions.
 - Grafana provisioning validation verifies the dashboard data source, required panels, variables for model/Token type/knowledge-base scope and visible alert states.
@@ -139,7 +139,7 @@ Redis 使用新的版本化用户统计命名空间，不迁移旧三类数据�
 
 ## Further Notes
 
-- The detailed design and domain vocabulary are recorded in the repository's design output, `CONTEXT.md` and ADR-0006. This Spec is the implementation handoff and uses the established terms `用户 Token 成本统计`, `Token 监控指标`, `输入 Token`, `Token 归属范围`, `监控查看权限` and `全局 Token 预算`.
+- The detailed design and domain vocabulary are recorded in the repository's design output, `CONTEXT.md` and ADR-0006. This Spec is the implementation handoff and uses the established terms `用户 Token 成本统计`, `Token 监控指标`, `输入 Token`, `Token 归属范围`, `监控查看权限` and `全局金额预算`.
 - The old Token cost-control plan describes the earlier three-type baseline and explicitly excluded Prometheus/Grafana and Reranker cost. This Spec supersedes those exclusions for the optimization scope while preserving the old plan as historical implementation context.
 - The official Reranker price source supplied during design is the Bailian `qwen3-rerank` model page: <https://bailian.console.aliyun.com/cn-beijing?tab=model#/model-market/detail/qwen3-rerank?serviceSite=asia-pacific-china>.
 - Redis persistence, replication, backup, no-eviction policy and alerting are deployment responsibilities. The application must expose sink failures so operations can see when accumulated statistics may be incomplete.

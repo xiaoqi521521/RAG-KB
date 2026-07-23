@@ -31,9 +31,9 @@ class Settings(BaseSettings):
     query_cache_max_retries: int = Field(default=1, ge=0)
     token_stats_timeout_seconds: float = Field(default=1.0, gt=0)
     token_stats_max_retries: int = Field(default=1, ge=0)
-    token_budget_daily_tokens: int = Field(default=1_000_000, gt=0)
+    token_budget_daily_cny: Decimal = Field(default=Decimal("1.00"), gt=0)
     token_budget_timezone: str = "Asia/Shanghai"
-    token_request_alert_limit: int = Field(default=20_000, gt=0)
+    token_request_alert_cost_cny: Decimal = Field(default=Decimal("0.01"), gt=0)
 
     embedding_input_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)
     chat_input_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)

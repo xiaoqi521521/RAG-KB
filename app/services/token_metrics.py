@@ -291,8 +291,8 @@ class TokenUsageRecorder:
             )
 
         if self.budget_gate is not None and budget_scoped:
-            await self.budget_gate.record_tokens(tokens)
-            self.budget_gate.add_request_tokens(tokens)
+            await self.budget_gate.record_cost(estimated_cost)
+            self.budget_gate.add_request_cost(estimated_cost)
 
         if not user_scoped:
             return

@@ -3,9 +3,9 @@ groups:
     rules:
       - record: rag_token_budget_usage_ratio
         expr: |
-          rag_token_budget_used_tokens{scope="global"}
+          rag_token_budget_used_cny{scope="global"}
           /
-          rag_token_budget_limit_tokens{scope="global"}
+          rag_token_budget_limit_cny{scope="global"}
 
       - alert: RagTokenBudgetWarning
         expr: rag_token_budget_usage_ratio >= 0.8
@@ -13,8 +13,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "RAG 每日 Token 预算已达到 80%"
-          description: "全局每日 Token 使用量接近预算上限。"
+          summary: "RAG 每日金额预算已达到 80%"
+          description: "全局每日金额使用量已达到配置预算上限的 80%。"
 
       - alert: RagTokenBudgetExhausted
         expr: rag_token_budget_usage_ratio >= 1
@@ -22,16 +22,16 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "RAG 每日 Token 预算已耗尽"
-          description: "新请求将被预算闸门拒绝。"
+          summary: "RAG 每日金额预算已耗尽"
+          description: "新请求将被金额预算闸门拒绝。"
 
-      - alert: RagSingleRequestTokenLimit
-        expr: increase(rag_token_request_over_limit_total[5m]) > 0
+      - alert: RagSingleRequestCostLimit
+        expr: increase(rag_token_request_cost_over_limit_total[5m]) > 0
         labels:
           severity: critical
         annotations:
-          summary: "发现超大 Token 请求"
-          description: "最近 5 分钟存在超过配置阈值的已完成请求。"
+          summary: "发现高成本请求"
+          description: "最近 5 分钟存在成本超过配置单次请求阈值的已完成请求。"
 
       - alert: RagTokenUsageUnavailable
         expr: increase(rag_token_usage_unavailable_total[15m]) > 0

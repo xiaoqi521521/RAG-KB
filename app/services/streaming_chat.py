@@ -91,9 +91,9 @@ class StreamingChatService(ChatSessionRuntime):
         except asyncio.CancelledError:
             raise
         except TokenBudgetExhaustedError:
-            yield SseEvent(event="error", data='{"message":"今日 Token 预算已用尽"}')
+            yield SseEvent(event="error", data='{"message":"今日金额预算已用尽"}')
         except TokenBudgetUnavailableError:
-            yield SseEvent(event="error", data='{"message":"Token 预算状态暂不可用"}')
+            yield SseEvent(event="error", data='{"message":"金额预算状态暂不可用"}')
         except Exception:  # noqa: BLE001
             logger.exception("Streaming chat failed")
             yield SseEvent(event="error", data='{"message":"请求处理失败，请稍后重试"}')

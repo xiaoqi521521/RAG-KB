@@ -61,7 +61,7 @@ def get_token_metrics(request: Request) -> TokenMetrics:
 
 
 def get_token_budget_gate(request: Request) -> GlobalTokenBudgetGate:
-    """从应用状态获取全局 Token 预算闸门。"""
+    """从应用状态获取全局金额预算闸门。"""
     return request.app.state.token_budget_gate
 
 
@@ -237,12 +237,12 @@ async def query_rag(
     except TokenBudgetExhaustedError as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="今日 Token 预算已用尽",
+            detail="今日金额预算已用尽",
         ) from exc
     except TokenBudgetUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Token 预算状态暂不可用",
+            detail="金额预算状态暂不可用",
         ) from exc
 
     async with token_budget_gate.request_scope():

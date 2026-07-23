@@ -72,6 +72,8 @@ def test_settings_loads_token_cost_and_stats_redis_configuration():
         reranker_endpoint="https://example.test/rerank",
         token_stats_timeout_seconds=2,
         token_stats_max_retries=2,
+        token_budget_daily_cny=Decimal("1.25"),
+        token_request_alert_cost_cny=Decimal("0.02"),
         embedding_input_cost_cny_per_1k_tokens=Decimal("0.0007"),
         chat_input_cost_cny_per_1k_tokens=Decimal("0.0008"),
         chat_output_cost_cny_per_1k_tokens=Decimal("0.002"),
@@ -79,6 +81,8 @@ def test_settings_loads_token_cost_and_stats_redis_configuration():
 
     assert settings.token_stats_timeout_seconds == 2
     assert settings.token_stats_max_retries == 2
+    assert settings.token_budget_daily_cny == Decimal("1.25")
+    assert settings.token_request_alert_cost_cny == Decimal("0.02")
     assert settings.embedding_input_cost_cny_per_1k_tokens == Decimal("0.0007")
     assert settings.chat_input_cost_cny_per_1k_tokens == Decimal("0.0008")
     assert settings.chat_output_cost_cny_per_1k_tokens == Decimal("0.002")

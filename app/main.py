@@ -28,9 +28,9 @@ async def lifespan(app: FastAPI):
     app.state.meter_provider = meter_provider
     token_budget_gate = GlobalTokenBudgetGate(
         redis_client=cast(Any, get_redis()),
-        daily_budget=settings.token_budget_daily_tokens,
+        daily_budget_cny=settings.token_budget_daily_cny,
         timezone=settings.token_budget_timezone,
-        request_limit=settings.token_request_alert_limit,
+        request_cost_limit_cny=settings.token_request_alert_cost_cny,
         timeout_seconds=settings.token_stats_timeout_seconds,
     )
     app.state.token_budget_gate = token_budget_gate

@@ -34,7 +34,7 @@
 - Embedding、聊天输入、最终回答、HyDE、Reranker、忠实性检测同步写入用户 Redis 累计。
 - 使用新的 Redis v3 统计版本，不迁移既有三类统计或缺少金额字段的 v2 Hash。
 - 扩展 `/api/v1/stats/tokens` 返回六类 Token 和成本估算，不返回跨类型 Token 总量。
-- 增加全局每日 Token 预算闸门、80% 预警、100% 拦截和单次 20,000 Token 异常告警。
+- 增加全局每日 1.00 CNY 预算闸门、80% 预警、100% 拦截和单次 0.01 CNY 异常告警。
 - 增加 Prometheus 规则和 Grafana Dashboard；告警本期只展示状态，不接外部通知。
 
 ### 2.2 Out of scope
@@ -79,9 +79,10 @@ Token 指标直接使用 `prometheus_client.Counter`，注册到现有默认 reg
 ```text
 rag_token_usage_total{model,token_type,kb_id}
 rag_token_usage_unavailable_total{model,token_type,kb_id}
-rag_token_budget_used_tokens{scope="global"}
-rag_token_request_tokens{kb_id}
-rag_token_request_over_limit_total{kb_id}
+rag_token_budget_used_cny{scope="global"}
+rag_token_budget_limit_cny{scope="global"}
+rag_token_request_cost_cny
+rag_token_request_cost_over_limit_total
 rag_token_budget_rejected_total{reason}
 rag_token_write_failure_total{sink,token_type}
 ```
@@ -90,10 +91,10 @@ rag_token_write_failure_total{sink,token_type}
 
 - `rag_token_usage_total` 是六类 Token 的核心 Counter。
 - `rag_token_usage_unavailable_total` 记录 provider 没有可靠 usage 的调用次数，不把近似值写入 Token Counter。
-- `rag_token_budget_used_tokens` 暴露 Redis 中当天全局预算已用量，供面板展示和告警查询；多实例部署时按同一全局值去重，不做实例求和。
-- `rag_token_request_tokens` 使用 Histogram 观察一次请求的总 Token 分布，不带请求 ID或 `model` 标签，因为一次请求可能调用多个模型。
-- `rag_token_request_over_limit_total` 在一次请求实际总量超过 20,000 时递增，作为告警触发依据，不带 `model` 标签。
-- `rag_token_budget_rejected_total` 记录全局预算拦截次数。
+- `rag_token_budget_used_cny` 和 `rag_token_budget_limit_cny` 暴露当天全局金额预算用量与上限，供面板展示和告警查询；多实例部署时按同一全局值去重，不做实例求和。
+- `rag_token_request_cost_cny` 使用 Histogram 观察一次请求的 CNY 成本分布，不带请求 ID或 `model` 标签，因为一次请求可能调用多个模型。
+- `rag_token_request_cost_over_limit_total` 在一次请求成本超过 `0.01 CNY` 时递增，作为告警触发依据，不带 `model` 标签。
+- `rag_token_budget_rejected_total` 记录全局金额预算拦截次数。
 - `rag_token_write_failure_total` 记录 Redis 或 Prometheus 写入失败，标签只使用固定的 `sink` 和 `token_type`。
 
 所有 Token 指标都不包含用户、部门、请求、问题、回答、文档或对象路径标签。`model` 只使用当前配置的 Embedding、聊天和 Reranker 模型名。`kb_id` 当前 4 个值，多个知识库统一为 `multi`。
@@ -189,19 +190,19 @@ estimatedCostCny = sum(all six costs at write time)
 
 ### 7.1 预算数据
 
-全局每日预算默认：
+全局每日金额预算默认：
 
 ```text
-1,000,000 Token / day
+1.00 CNY / day
 ```
 
 预算时区默认 `Asia/Shanghai`，通过配置覆盖。Redis 保存当天全局计数，例如：
 
 ```text
-rag:token:v3:budget:2026-07-22
+rag:token:v3:budget:cny:2026-07-22
 ```
 
-预算计数与用户统计使用同一个 `rag:token:v3:` 根命名空间，通过 `budget` 和 `stats` 子路径并列区分；预算 key 是 Redis String，值是当天已累计 Token 总量，不是人民币金额。用户统计 key 是 Redis Hash，各字段分别保存用户累计 Token 和累计金额。此次结构升级直接重置旧 key，不迁移历史数据。
+预算计数与用户统计使用同一个 `rag:token:v3:` 根命名空间，通过 `budget` 和 `stats` 子路径并列区分；预算 key 是 Redis String，值是当天已累计 CNY 金额。用户统计 key 是 Redis Hash，各字段分别保存用户累计 Token 和累计金额。此次结构升级直接重置旧 key，不迁移历史数据。
 
 当天计数可以设置为日期结束后保留一段时间，用于故障排查；它不是用户账单。
 
@@ -214,13 +215,13 @@ rag:token:v3:budget:2026-07-22
      -> 已达到预算：拒绝新请求
      -> 未达到预算：进入模型调用
   -> provider 返回 usage
-  -> 写六类 Token、用户 Redis、全局日计数和 Prometheus
-  -> 请求结束，计算本次总量
+  -> 写六类 Token、用户 Redis、全局日金额和 Prometheus
+  -> 请求结束，记录本次金额
 ```
 
-预算达到 80% 时触发 Warning；达到 100% 时拒绝后续新请求。已经开始的请求继续完成，若完成后超过预算，记录超预算状态和告警。并发请求通过 Redis 原子判断避免在已经达到预算后继续启动；允许多个在预算尚未达到时已开始的请求共同造成少量超额。
+预算金额达到 80% 时触发 Warning；达到 100% 时拒绝后续新请求。已经开始的请求继续完成，若完成后超过预算，记录超预算状态和告警。并发请求通过 Redis 原子判断避免在已经达到预算后继续启动；允许多个在预算尚未达到时已开始的请求共同造成少量超额。单次请求成本超过 `0.01 CNY` 时单独触发告警。
 
-预算闸门 Redis 读取或原子判断失败时返回 `503`，不调用模型；普通 Token 统计写入失败仍只记录告警，不阻断已经执行的问答。预算拒绝建议使用 `429 Too Many Requests`，响应消息明确说明今日 Token 预算已用尽。
+预算闸门 Redis 读取或原子判断失败时返回 `503`，不调用模型；普通 Token 统计写入失败仍只记录告警，不阻断已经执行的问答。预算拒绝建议使用 `429 Too Many Requests`，响应消息明确说明今日金额预算已用尽。
 
 ## 8. Prometheus 和 Grafana
 
@@ -239,18 +240,18 @@ Grafana/Prometheus 仅对系统管理员和运维开放。当前阶段不增加 
 
 首版建议提供四组面板：
 
-1. 总览：今日 Token 总量、5 分钟 Token 速率、估算成本、预算使用比例、预算拒绝次数。
+1. 总览：今日金额、5 分钟 Token 速率、估算成本、预算使用比例、预算拒绝次数。
 2. 维度拆分：按 `token_type`、`model`、`kb_id` 筛选和对比 Token 速率、小时增量、日增量。
 3. 阶段成本：Embedding、最终回答、HyDE、Reranker、忠实性检测的 Token 和估算成本。
-4. 异常治理：usage 缺失、单次超过 20,000 Token、预算 80%/100%、Redis 写入失败。
+4. 异常治理：usage 缺失、单次超过 `0.01 CNY`、预算 80%/100%、Redis 写入失败。
 
 成本图表使用当前配置单价计算并明确标注“估算”，不能作为供应商账单。
 
 ### 8.3 告警规则
 
-- `token_budget_warning`：全局当天使用量 `>= 800,000`，Warning。
-- `token_budget_exhausted`：全局当天使用量 `>= 1,000,000`，Critical，并由应用预算闸门拦截后续请求。
-- `single_request_token_limit`：最近窗口出现一次请求总量 `> 20,000`，Critical，提示异常查询或实现 Bug。
+- `token_budget_warning`：全局当天金额 `>= 0.80 CNY`，Warning。
+- `token_budget_exhausted`：全局当天金额 `>= 1.00 CNY`，Critical，并由应用金额预算闸门拦截后续请求。
+- `single_request_cost_limit`：最近窗口出现一次请求成本 `> 0.01 CNY`，Critical，提示异常查询或实现 Bug。
 - `token_usage_unavailable`：usage 不可用次数持续增加，Warning，提示成本可能低估。
 - `token_sink_write_failure`：Redis 或 Prometheus 记录失败，Warning。
 
@@ -287,5 +288,5 @@ Redis 的原子递增解决的是并发修改，不等于持久化和 exactly-on
 - Prometheus 指标不出现用户、部门、请求、问题和文档标签。
 - Redis 统计写失败不阻断问答；预算闸门 Redis 故障返回 `503`。
 - 预算 80% 告警、100% 拦截后续请求、已开始请求可完成。
-- 并发请求下预算判断、单次超过 20,000 Token 告警和 usage 缺失告警。
+- 并发请求下预算判断、单次超过 0.01 CNY 告警和 usage 缺失告警。
 - `/metrics` 可暴露 Token 指标，Grafana 规则可查询六类 Token 和成本估算。

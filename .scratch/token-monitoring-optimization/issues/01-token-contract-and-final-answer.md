@@ -11,6 +11,6 @@
 - [x] `input` 统计完整聊天模型输入，最终回答类型只统计 provider 输出；缺失或非法 usage 不用本地估算冒充精确值。
 - [x] 同步与 SSE 最终回答各只记录一次聊天输入和输出；缓存命中不新增 Token。
 - [x] 使用新版本 Redis 用户统计命名空间，不迁移旧三类字段。
-- [x] `/api/v1/stats/tokens` 返回六类 Token、总量、CNY 成本估算和固定币种；成本使用配置单价及 Decimal 计算。
+- [x] `/api/v1/stats/tokens` 返回六类 Token、已累计 CNY 成本金额和固定币种；不返回六类 Token 的算术总量，成本使用配置单价及 Decimal 计算。
 - [x] Redis 与 Prometheus 任一写入失败不阻断已经执行的问答，并产生无敏感标识的观测信号。
 - [x] 覆盖 usage 提取、最终回答同步/SSE、Redis v2、成本计算、API 响应和 sink 故障测试。
