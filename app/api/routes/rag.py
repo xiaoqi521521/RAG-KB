@@ -87,12 +87,14 @@ def get_rag_query_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
     faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
+    permission_service: PermissionService = Depends(get_permission_service),
 ) -> RagQueryPipeline:
     """根据配置构建 RAG 查询服务及其依赖。
 
     Args:
         session: 当前请求注入的异步数据库会话。
         settings: 应用配置，用于检索 TopK、上下文预算和模型参数。
+        permission_service: 当前请求使用的知识库读权限服务。
 
     Returns:
         已组装依赖的查询管道。`v1` 为基础向量 RAG，`v2` 为混合检索 RAG，
@@ -131,6 +133,7 @@ def get_rag_query_service(
         chunk_repository=chunk_repository,
         ts_query_builder=TsQueryBuilder(),
         settings=settings,
+        permission_service=permission_service,
     )
 
     if settings.rag_query_pipeline == "v2":

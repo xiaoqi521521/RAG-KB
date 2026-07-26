@@ -43,7 +43,12 @@ class FakeRetriever:
         kb_ids: list[int],
     ) -> HybridRetrieveResult:
         self.calls.append({"question": question, "kb_ids": kb_ids})
-        return HybridRetrieveResult(hits=self.hits, vector_count=len(self.hits), fulltext_count=0)
+        return HybridRetrieveResult(
+            hits=self.hits,
+            vector_count=len(self.hits),
+            fulltext_count=0,
+            allowed_kb_ids=kb_ids,
+        )
 
 
 class FakeSourceBuilder:

@@ -64,7 +64,13 @@ class EnhancedRetriever:
 
         # 第二步：HyDE 只做向量检索；失败时不能影响原始混合检索结果。
         hyde_hits: list[ChunkSearchHit] = []
-        degraded_reasons = list(await self._retrieve_hyde_hits(normalized_question, kb_ids, hyde_hits))
+        degraded_reasons = list(
+            await self._retrieve_hyde_hits(
+                normalized_question,
+                original_result.allowed_kb_ids,
+                hyde_hits,
+            )
+        )
 
         fused_hits = rrf_fuse(
             {
@@ -92,13 +98,13 @@ class EnhancedRetriever:
     async def _retrieve_hyde_hits(
         self,
         question: str,
-        kb_ids: list[int],
+        allowed_kb_ids: list[int],
         hyde_hits: list[ChunkSearchHit],
     ) -> tuple[str, ...]:
         """生成 HyDE 并执行向量检索；异常统一降级为无 HyDE 结果。"""
         rewrite_result = await self.query_rewriter.generate_hyde_answer(
             question,
-            kb_id=knowledge_base_scope(kb_ids),
+            kb_id=knowledge_base_scope(allowed_kb_ids),
         )
         degraded_reasons = list(rewrite_result.degraded_reasons)
         if not rewrite_result.hyde_answer:
@@ -109,12 +115,12 @@ class EnhancedRetriever:
                 rewrite_result.hyde_answer,
                 namespace="hyde",
                 cache_enabled=False,
-                kb_id=knowledge_base_scope(kb_ids),
+                kb_id=knowledge_base_scope(allowed_kb_ids),
             )
             hyde_hits.extend(
                 await self.chunk_repository.search_by_vector(
                     query_vector=hyde_vector,
-                    kb_ids=kb_ids,
+                    kb_ids=allowed_kb_ids,
                     top_k=self.hyde_vector_top_k,
                 )
             )

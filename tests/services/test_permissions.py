@@ -232,3 +232,55 @@ async def test_list_accessible_returns_service_unavailable_when_permission_store
         await service.list_accessible(_user())
 
     assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_filter_readable_kb_ids_keeps_readable_scope_and_excludes_missing_or_deleted() -> None:
+    service = _service(
+        knowledge_bases=[
+            KnowledgeBase(
+                id=1,
+                name="Public KB",
+                department_id="engineering",
+                is_public=True,
+                created_by=1,
+            ),
+            KnowledgeBase(id=2, name="Granted KB", department_id="engineering", created_by=1),
+            KnowledgeBase(
+                id=3,
+                name="Deleted KB",
+                department_id="engineering",
+                created_by=1,
+                is_deleted=True,
+            ),
+        ],
+        permissions={
+            (2, PermissionSubjectType.USER.value, "7"): KbPermissionLevel.READ.value,
+        },
+    )
+
+    allowed_kb_ids = await service.filter_readable_kb_ids(
+        [1, 2, 3, 99],
+        _user(user_id=7),
+    )
+
+    assert allowed_kb_ids == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_filter_readable_kb_ids_preserves_permission_store_failure() -> None:
+    class UnavailablePermissionRepository(FakePermissionRepository):
+        async def get_permission(self, kb_id: int, subject_type: str, subject_id: str) -> str | None:
+            raise OperationalError(None, None, OSError("database unavailable"))
+
+    service = PermissionService(
+        knowledge_base_repository=FakeKnowledgeBaseRepository(
+            [KnowledgeBase(id=1, name="KB", department_id="engineering", created_by=1)]
+        ),
+        permission_repository=UnavailablePermissionRepository({}),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.filter_readable_kb_ids([1], _user())
+
+    assert exc_info.value.status_code == 503

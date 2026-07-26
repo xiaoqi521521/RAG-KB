@@ -52,13 +52,19 @@ class FakeQueryRewriter:
 
 
 class FakeHybridRetriever:
-    def __init__(self, hits: list[ChunkSearchHit]) -> None:
+    def __init__(self, hits: list[ChunkSearchHit], allowed_kb_ids: list[int] | None = None) -> None:
         self.hits = hits
+        self.allowed_kb_ids = allowed_kb_ids
         self.calls: list[dict[str, object]] = []
 
     async def retrieve(self, *, question: str, kb_ids: list[int]) -> HybridRetrieveResult:
         self.calls.append({"question": question, "kb_ids": kb_ids})
-        return HybridRetrieveResult(hits=self.hits, vector_count=len(self.hits), fulltext_count=0)
+        return HybridRetrieveResult(
+            hits=self.hits,
+            vector_count=len(self.hits),
+            fulltext_count=0,
+            allowed_kb_ids=self.allowed_kb_ids if self.allowed_kb_ids is not None else kb_ids,
+        )
 
 
 class FakeEmbeddingService:
@@ -164,3 +170,23 @@ async def test_retrieve_degrades_to_original_hybrid_when_hyde_embedding_fails() 
     assert [hit.chunk_id for hit in result.hits] == [10]
     assert result.hyde_count == 0
     assert "hyde_retrieval_failed" in result.degraded_reasons
+
+
+async def test_retrieve_reuses_hybrid_authorized_scope_for_hyde() -> None:
+    rewriter = FakeQueryRewriter("员工申请年假需要在 OA 提交申请。")
+    hybrid = FakeHybridRetriever([_hit(10)], allowed_kb_ids=[2])
+    embedding = FakeEmbeddingService()
+    repository = FakeChunkRepository([_hit(12)])
+    retriever = EnhancedRetriever(
+        query_rewriter=rewriter,
+        hybrid_retriever=hybrid,
+        embedding_service=embedding,
+        chunk_repository=repository,
+        rrf_k=60,
+        hyde_vector_top_k=20,
+    )
+
+    await retriever.retrieve(question="年假怎么申请？", kb_ids=[3, 2])
+
+    assert rewriter.hyde_calls == ["年假怎么申请？"]
+    assert repository.vector_calls == [{"query_vector": [0.1, 0.2], "kb_ids": [2], "top_k": 20}]

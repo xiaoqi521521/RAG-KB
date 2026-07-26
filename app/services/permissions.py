@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 import time
 
 from fastapi import HTTPException, status
@@ -35,6 +36,30 @@ class PermissionService:
     async def require_read(self, kb_id: int, user: CurrentUser) -> None:
         """校验当前用户是否具备知识库读权限。"""
         await self._require(kb_id=kb_id, user=user, action="read")
+
+    async def filter_readable_kb_ids(
+        self,
+        kb_ids: Iterable[int],
+        user: CurrentUser,
+    ) -> list[int]:
+        """逐个过滤当前用户可读的知识库 ID。
+
+        不存在或已删除的知识库不进入检索范围；权限数据源故障继续向上抛出
+        `503`，避免把依赖故障误判为无权限。
+        """
+        readable_kb_ids: list[int] = []
+        for kb_id in kb_ids:
+            try:
+                await self.require_read(kb_id, user)
+            except HTTPException as exc:
+                if exc.status_code in {
+                    status.HTTP_403_FORBIDDEN,
+                    status.HTTP_404_NOT_FOUND,
+                }:
+                    continue
+                raise
+            readable_kb_ids.append(kb_id)
+        return readable_kb_ids
 
     async def require_write(self, kb_id: int, user: CurrentUser) -> None:
         """校验当前用户是否具备知识库写权限。"""
