@@ -2,7 +2,7 @@
 
 本文基于 [13-混合检索——向量检索与全文检索 RRF 融合-plan.md](/D:/Code/python/Practical_Project/rag-kb/docs/plans/13-混合检索——向量检索与全文检索%20RRF%20融合-plan.md)、参考资料 [13-混合检索——向量检索与全文检索 RRF 融合.md](/D:/Code/python/Practical_Project/rag-kb/docs/references/13-混合检索——向量检索与全文检索%20RRF%20融合.md)，以及 [三阶段生成.md](/D:/Code/python/Practical_Project/rag-kb/docs/prompt/三阶段生成.md) 的 Spec 阶段规则，定义 Python / FastAPI / LangChain 版本的混合检索技术方案。
 
-本阶段只升级在线查询管道中的检索层：从单路 PGVector 向量检索升级为“向量检索 + PostgreSQL 全文检索 + RRF 融合”。接口路径、权限入口、Prompt 生成、SourceBuilder 和 ChatOpenAI 调用保持第 12 章基础查询管道的主体形态。Reranker、HyDE、多路查询、精确 token 裁剪、流式输出和多轮对话不在本阶段实现。
+本阶段只升级在线查询管道中的检索层：从单路 PGVector 向量检索升级为“向量检索 + PostgreSQL 全文检索 + RRF 融合”。接口路径、路由层权限入口、Prompt 生成、SourceBuilder 和 ChatOpenAI 调用保持第 12 章基础查询管道的主体形态。混合检索内部的第二层权限范围过滤由后续 [检索层权限过滤 Spec](../../.scratch/hybrid-retrieval-permission-filter/spec.md) 和 [ADR-0007](../adr/0007-filter-retrieval-scope-inside-hybrid-retriever.md) 定义；Reranker、HyDE、多路查询、精确 token 裁剪、流式输出和多轮对话不在本阶段实现。
 
 ## 2.0 Context7 官方用法核对
 
@@ -461,6 +461,10 @@ for source_name, hits in ranked_results.items():
 ```plain
 app/services/hybrid_retriever.py
 ```
+
+本章定义的是初始混合检索能力；当前实现已由检索层权限过滤 Spec 扩展为受保护的 `retrieve(...)` 入口，并通过构造参数注入
+`PermissionService`。原始 `_retrieve(...)` 只接受已过滤的 `allowed_kb_ids`，具体错误语义、审计日志和 HyDE 范围传播以该 Spec
+及 ADR-0007 为准。
 
 建议构造参数：
 

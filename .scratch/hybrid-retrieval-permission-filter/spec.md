@@ -1,7 +1,7 @@
 # 混合检索层权限范围过滤
 
 Type: spec
-Status: ready-for-agent
+Status: implemented
 
 ## Problem Statement
 
@@ -90,4 +90,5 @@ Status: ready-for-agent
 
 - The detailed design and rationale are recorded in the retrieval-layer design output and ADR-0007. The scoped audit-log exception is recorded in ADR-0008.
 - This Spec deliberately distinguishes the route's `知识库范围拒绝` from the retrieval layer's `检索授权范围`; the former protects the caller's requested scope, while the latter protects the data actually queried by the hybrid retriever.
-- This Spec is ready for implementation and should be split into tracer-bullet tickets only after the implementation agent confirms the current dependency assembly can construct the existing permission service for the retriever's database session.
+- The implementation uses `HybridRetriever.retrieve` as the protected entry and `_retrieve` as the internal already-authorized implementation. `get_rag_query_service` injects the existing `PermissionService`; no new authorization store or cache was introduced.
+- The implementation was verified with the full test suite (`383 passed, 3 skipped`) and Ruff. `mypy app` still reports unrelated pre-existing repository errors outside the changed modules.

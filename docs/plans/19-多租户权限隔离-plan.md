@@ -1,12 +1,12 @@
 # 19-多租户权限隔离 Plan
 
-本文基于 [19-多租户权限隔离.md](../references/19-多租户权限隔离.md)、[05-数据库设计.md](../references/05-数据库设计.md) 与本次设计访谈形成。它描述 LangChain / FastAPI 重构项目中的知识库级逻辑隔离方案，不包含代码实现。
+本文基于 [19-多租户权限隔离.md](../references/19-多租户权限隔离.md)、[05-数据库设计.md](../references/05-数据库设计.md) 与本次设计访谈形成。它描述 LangChain / FastAPI 重构项目中的知识库级逻辑隔离方案，并同步记录已落地的检索层权限过滤实现。
 
 ## 1. 目标与边界
 
 参考资料所称的“多租户”并没有独立 `tenant_id` 或租户实体。其实际模型是以知识库为访问边界，通过公开状态、用户授权、部门授权和管理员身份控制数据可见性。本项目严格沿用该模型：`kb_id` 是文档、chunk 和检索的强制范围，`department_id` 是授权主体属性，而不是租户 ID。
 
-本阶段目标是使认证、授权、知识库资源访问、检索和会话访问遵循同一套边界。权限必须在模型调用之前完成，并由仓储 SQL 再次限制数据范围，不能依赖 Prompt、前端传参或 `ContextVar`。
+本阶段目标是使认证、授权、知识库资源访问、检索和会话访问遵循同一套边界。权限必须在模型调用之前完成，并由仓储 SQL 再次限制数据范围，不能依赖 Prompt 或前端传参；`ContextVar` 只传递当前用户身份，不能直接充当授权范围。
 
 相关架构决策见 [ADR-0003](../adr/0003-use-knowledge-base-scoped-logical-isolation.md)，术语见 [CONTEXT.md](../../CONTEXT.md)。
 
@@ -79,6 +79,7 @@
 ```plain
 require_read(kb_id, user)
 require_write(kb_id, user)
+filter_readable_kb_ids(kb_ids, user)
 get_highest_permission(kb_id, user)
 ```
 
@@ -123,7 +124,7 @@ Authorization: Bearer <JWT>
 
 查询入口先对规范化、去重后的每个 `kb_id` 调用 `require_read`。校验全部成功后，才将这一范围传入查询服务和检索仓储。
 
-混合检索入口还必须执行第二层检索范围过滤。`HybridRetriever.retrieve_with_permission_check(...)` 从当前请求 `ContextVar` 读取用户，复用 `PermissionService` 逐库计算 `allowed_kb_ids`，并在执行 Embedding、向量检索和全文检索前移除无权、不存在或已删除的知识库。部分范围被过滤时继续查询剩余有权范围；全部被过滤时返回 `403`。权限数据源不可用返回 `503`，缺少当前用户上下文返回 `401`。v2/v3/v4 使用该受保护入口，v3/v4 的 HyDE 向量检索复用同一 `allowed_kb_ids`；v1 直接向量管道不新增该 HybridRetriever 内部过滤。
+混合检索入口还必须执行第二层检索范围过滤。`HybridRetriever.retrieve(...)` 从当前请求 `ContextVar` 读取用户，复用 `PermissionService.filter_readable_kb_ids(...)` 逐库计算 `allowed_kb_ids`，并在执行 Embedding、向量检索和全文检索前移除无权、不存在或已删除的知识库；内部 `_retrieve(...)` 只接受已过滤范围。部分范围被过滤时继续查询剩余有权范围；全部被过滤时返回 `403`。权限数据源不可用返回 `503`，缺少当前用户上下文返回 `401`。v2/v3/v4 使用该受保护入口，v3/v4 的 HyDE 向量检索复用同一 `allowed_kb_ids`；v1 直接向量管道不新增该 HybridRetriever 内部过滤。
 
 向量与全文检索必须使用同一范围和文档可用条件：
 
@@ -136,7 +137,7 @@ WHERE kb_doc_chunk.kb_id IN (:allowed_kb_ids)
 
 全文检索只是在上述范围上附加 `content_tsv @@ to_tsquery(...)`；RRF、Reranker、上下文裁剪、引用构建和模型生成只能消费这个受限结果集，不能重新查询或扩大 `kb_ids`。`ContextVar`、Prompt 和前端选择器均不能替代这条 SQL 约束。
 
-当前 `ChunkRepository.search_by_vector(...)` 和 `search_by_fulltext(...)` 已包含知识库、版本、状态和删除过滤。混合检索的原始方法只接收已经过滤的 `allowed_kb_ids`，不读取用户上下文；受保护入口负责计算范围。实施时需要确保所有混合检索下游方法复用同一约束，而不是新增未过滤的业务入口。
+当前 `ChunkRepository.search_by_vector(...)` 和 `search_by_fulltext(...)` 已包含知识库、版本、状态和删除过滤。混合检索的原始方法只接收已经过滤的 `allowed_kb_ids`，不读取用户上下文；受保护入口负责计算范围。所有混合检索下游方法均复用同一约束，不提供未过滤的业务入口。
 
 ### 4.5 会话隔离
 
@@ -163,7 +164,7 @@ add_turn_for_user(session_id, user_id, ...)
 | 身份提供者、权限查询或其数据库不可用 | `503` | 拒绝式失败，不调用下游。 |
 | 其他未预期异常 | `500` | 由统一异常处理器返回通用错误，不泄露内部实现。 |
 
-检索层权限过滤的专用审计日志可记录当前 `user_id`、被过滤的 `denied_kb_ids`、操作类型、允许/拒绝结果、权限来源（系统管理员、公开、用户、部门）及耗时；其他权限与认证日志不得记录用户 ID 或知识库 ID。所有日志仍不得记录 JWT、完整问题、chunk 正文、文件内容、完整会话消息、文档 ID、对象路径或授权密钥。上述标识不得作为 Prometheus/Grafana 指标标签。
+检索层权限过滤的专用审计日志可记录当前 `user_id`、被过滤的 `denied_kb_ids`、操作类型、过滤结果、`permission_source=permission_service`、数量、耗时和错误类型；逐库授权的系统管理员、公开、用户或部门来源仍由无标识的通用权限观测记录。其他权限与认证日志不得记录用户 ID 或知识库 ID。所有日志仍不得记录 JWT、完整问题、chunk 正文、文件内容、完整会话消息、文档 ID、对象路径或授权密钥。上述标识不得作为 Prometheus/Grafana 指标标签。
 
 建议新增计数与耗时指标：
 
@@ -190,7 +191,16 @@ app/core/context.py
   -> 保持请求内 CurrentUser 表达，不把授权范围写入上下文。
 
 app/services/permissions.py
-  -> 保持有效权限计算、读写检查和明确错误边界。
+  -> 保持有效权限计算、读写检查和明确错误边界；提供 `filter_readable_kb_ids(...)` 供混合检索逐库过滤。
+
+app/services/hybrid_retriever.py
+  -> 在 `retrieve(...)` 入口读取当前用户并过滤检索范围；`_retrieve(...)` 只处理已授权范围。
+
+app/services/enhanced_retriever.py
+  -> 将 `HybridRetrieveResult.allowed_kb_ids` 传给 HyDE 向量检索。
+
+app/api/routes/rag.py
+  -> 将请求内的 `PermissionService` 注入 v2/v3/v4 混合检索依赖。
 
 app/repositories/permissions.py
   -> 提供用户、部门授权的批量或单项读取；不在此层实现角色规则。
@@ -281,4 +291,4 @@ uv run ruff check .
 uv run mypy app
 ```
 
-当前阶段仅新增设计文档；完成实现后再执行上述代码验证。若测试文件或静态检查尚未配置，应如实记录缺失项。
+检索层权限过滤已完成实现。已执行 `uv run pytest -q`，结果为 `383 passed, 3 skipped`，并通过 `uv run ruff check .`；`uv run mypy app` 的剩余错误来自既有未修改模块，实施代码未新增类型错误。

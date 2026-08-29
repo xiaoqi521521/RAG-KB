@@ -121,12 +121,15 @@ fused_hits = _rrf_fuse(
 
 ### 路由层无感接入
 
+以下片段是初始 v2 混合检索落地时的核心组装示例；当前实现还会向 `HybridRetriever` 注入 `PermissionService`，详见本文件第 4 节。
+
 ```python
 hybrid_retriever = HybridRetriever(
     embedding_service=embedding_service,
     chunk_repository=chunk_repository,
     ts_query_builder=TsQueryBuilder(),
     settings=settings,
+    permission_service=permission_service,
 )
 return RagQueryServiceV2(
     retriever=hybrid_retriever,
@@ -165,3 +168,34 @@ uv run pytest -v
 ```
 
 结果：112 passed，保留 1 条 FastAPI TestClient 的第三方弃用警告。
+
+## 4. 检索层权限过滤增量
+
+后续根据 [检索层权限过滤 Spec](../../.scratch/hybrid-retrieval-permission-filter/spec.md)、[设计方案](../agens-output/22-检索层权限过滤设计方案.md) 和 ADR-0007，在原有混合检索边界内增加第二层权限防护。该增量不改变 route 层对多知识库请求的整体拒绝语义，也不扩展 v1 直接向量管道。
+
+### 4.1 实际文件变更
+
+- `app/services/permissions.py`：新增 `filter_readable_kb_ids(...)`，逐库复用 `require_read(...)`，跳过不存在或已删除知识库，权限数据源故障保持 `503`。
+- `app/services/hybrid_retriever.py`：`retrieve(...)` 从 `ContextVar` 读取用户，去重并过滤请求范围；空授权范围返回 `403`，缺少上下文返回 `401`。内部 `_retrieve(...)` 只接收 `allowed_kb_ids`。
+- `app/services/enhanced_retriever.py`：HyDE 的 Embedding 和向量仓储复用 `HybridRetrieveResult.allowed_kb_ids`。
+- `app/api/routes/rag.py`：将请求内 `PermissionService` 注入 v2/v3/v4 的混合检索组装。
+- `tests/services/test_permissions.py`、`tests/services/test_hybrid_retriever.py`、`tests/services/test_enhanced_retriever.py`：覆盖授权范围过滤、短路、审计日志和 HyDE 范围传播。
+
+### 4.2 实际执行边界
+
+```plain
+HybridRetriever.retrieve(question, requested_kb_ids)
+  -> ContextVar.CurrentUser
+  -> PermissionService.filter_readable_kb_ids(...)
+  -> allowed_kb_ids 为空时 403
+  -> _retrieve(question, allowed_kb_ids)
+     -> Embedding
+     -> 向量检索和全文检索使用同一 allowed_kb_ids
+     -> RRF
+```
+
+部分范围被过滤时，专用审计事件记录 `user_id` 和 `denied_kb_ids`；这些标识不进入 Prometheus/Grafana 标签，也不扩展到普通认证和权限日志。v3/v4 的 HyDE 不重新读取原始请求范围。
+
+### 4.3 增量验证
+
+增量实现已执行全量测试，结果为 `383 passed, 3 skipped`；`uv run ruff check .` 通过。`uv run mypy app` 的剩余错误来自既有未修改模块。

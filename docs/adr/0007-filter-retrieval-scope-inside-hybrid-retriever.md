@@ -16,3 +16,8 @@ route 层继续对多知识库请求执行全量读权限校验：任一知识�
 - 混合检索过滤后的空范围返回 `403`，权限数据源不可用返回 `503`；不存在或已删除的知识库在检索过滤中被排除。
 - `ContextVar` 未初始化时受保护入口返回 `401`；请求范围去重并保持首次出现顺序。
 - v1 直接向量检索不新增该 HybridRetriever 内部过滤；其在线调用仍依赖 route 层校验。
+
+## Implementation
+
+- `HybridRetriever.retrieve(...)` 是受保护的业务入口，`HybridRetriever._retrieve(...)` 只接受已过滤的 `allowed_kb_ids`。
+- `get_rag_query_service(...)` 注入现有 `PermissionService`；v3/v4 通过 `HybridRetrieveResult.allowed_kb_ids` 将范围传给 HyDE。

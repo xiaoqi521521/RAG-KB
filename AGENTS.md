@@ -140,6 +140,7 @@ docs/
 - 有效权限由系统管理员、公开知识库、用户授权和部门授权共同决定：公开知识库仅提供 `READ`，用户与部门授权取 `READ < WRITE < ADMIN` 中的最高等级；知识库 `ADMIN` 只在对应 `kb_id` 内生效。
 - 请求指定多个知识库时，任一 `kb_id` 无读权限就整体拒绝，不得静默过滤为部分范围。无认证为 `401`，资源不存在或不归属当前用户为 `404`，明确无权为 `403`，身份或权限数据源不可用为 `503`。
 - 检索 SQL 必须包含完整已授权 `kb_id` 范围、当前文档版本、`DONE` 状态和未删除条件。向量检索、全文检索及其后的 RRF、Reranker、上下文裁剪、引用和生成都不得扩大该范围。
+- `HybridRetriever.retrieve` 是混合检索的受保护入口：从当前请求 `ContextVar` 读取用户，复用 `PermissionService` 过滤并去重 `kb_ids`；内部 `_retrieve` 只接受已过滤的 `allowed_kb_ids`。v3/v4 的 HyDE 必须复用结果中的授权范围；v1 直接向量管道不纳入该内部过滤。
 - 管理员跨知识库查询也要通过显式权限列表实现。
 - 严禁把“只能访问某知识库”作为纯 Prompt 规则。
 - 引用元数据至少包含：`document_id`、`document_name`、`kb_id`、`chunk_id`、`page_number` 或 `section_title`。
