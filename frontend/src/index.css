@@ -1,0 +1,254 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --paper: #f3f4f0;
+  --card: #fbfbf9;
+  --ink: #1f2628;
+  --soft: #5f6b6a;
+  --faint: #8b9694;
+  --line: #dfe2d9;
+  --pine: #2f5d50;
+  --pine-deep: #24493f;
+  --pine-wash: #e6ede9;
+  --seal: #bf3b2b;
+  --seal-wash: #f7e9e6;
+  --amber: #a8752c;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* antd App 组件会包一层 div，需要续上高度链，否则 h-full 页面塌缩 */
+#root > .ant-app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', 'Noto Sans SC', sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-data {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 眉注：小型 mono 标签，用于分区说明与档案编号 */
+.eyebrow {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* 档案卡：直角细线卡面，全站基础容器 */
+.archive-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+
+.archive-card.hoverable {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.archive-card.hoverable:hover {
+  border-color: #b9bfb2;
+  box-shadow: 0 2px 8px rgba(31, 38, 40, 0.05);
+}
+
+/* 引用印章：回答内 [参考N] 的唯一视觉出口 */
+.cite-seal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin: 0 2px;
+  padding: 0 3px;
+  border: 1px solid var(--seal);
+  border-radius: 2px;
+  background: var(--seal-wash);
+  color: var(--seal);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: 2px;
+  transition: transform 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.cite-seal:hover,
+.cite-seal.active {
+  background: var(--seal);
+  color: var(--card);
+  transform: scale(1.12);
+}
+
+/* 拒答章：未检出内容时的官方印记 */
+.refusal-stamp {
+  display: inline-flex;
+  align-items: center;
+  border: 2px solid var(--seal);
+  border-radius: 2px;
+  color: var(--seal);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.3em;
+  padding: 4px 8px 4px 12px;
+}
+
+.markdown-body {
+  line-height: 1.75;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+.markdown-body p {
+  margin: 0 0 0.6em;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body code {
+  background: var(--pine-wash);
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.86em;
+  color: var(--pine-deep);
+}
+
+.markdown-body pre {
+  background: #232b29;
+  border-radius: 2px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  color: #d8e2dc;
+  padding: 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4em;
+  margin: 0 0 0.6em;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid var(--pine);
+  padding-left: 10px;
+  margin: 8px 0;
+  color: var(--soft);
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+/* 流式生成光标 */
+.stream-caret {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  background: var(--pine);
+  vertical-align: -2px;
+  animation: caret-blink 1s steps(2) infinite;
+}
+
+@keyframes caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* 检索状态行 */
+.retrieval-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--soft);
+  font-size: 12.5px;
+}
+
+.retrieval-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+/* 相关度条 */
+.score-track {
+  height: 3px;
+  background: var(--pine-wash);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.score-fill {
+  height: 100%;
+  background: var(--pine);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c9cec3;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--pine);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

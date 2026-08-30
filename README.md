@@ -72,6 +72,16 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 curl http://localhost:8000/api/v1/health
 ```
 
+### Docker Compose 部署
+
+复制 `.env.production.example` 为服务器上的 `.env`，填入实际凭据后执行：
+
+```bash
+docker compose up -d --build
+```
+
+首次初始化数据库时会自动导入 `app/db/ragkb_full_dump.sql`。详细的监控访问和数据库初始化说明见 `deploy/README.md`。
+
 ## 常用接口
 
 所有需要认证的接口使用 `Authorization: Bearer <token>`。演示登录接口：
