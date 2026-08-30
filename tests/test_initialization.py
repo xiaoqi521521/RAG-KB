@@ -57,6 +57,11 @@ def test_settings_loads_required_rag_defaults():
     assert settings.ragas_timeout_seconds == 60
     assert settings.max_upload_file_size_mb == 50
     assert settings.max_upload_request_size_mb == 100
+    assert settings.server_host == "127.0.0.1"
+    assert settings.server_port == 8000
+    assert settings.server_limit_concurrency == 100
+    assert settings.server_timeout_keep_alive_seconds == 10
+    assert settings.server_timeout_graceful_shutdown_seconds == 30
 
 
 def test_settings_loads_token_cost_and_stats_redis_configuration():
@@ -212,6 +217,8 @@ async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monk
     assert clients._clients["minio"].kwargs["endpoint"] == "localhost:9000"
     assert chat_kwargs["api_key"] == "chat-key"
     assert chat_kwargs["base_url"] == "https://llm.example.test/v1"
+    assert chat_kwargs["timeout"] == 60.0
+    assert chat_kwargs["max_retries"] == 0
     assert embedding_kwargs["api_key"] == "embedding-key"
     assert embedding_kwargs["base_url"] == "https://embedding.example.test/v1"
     assert embedding_kwargs["max_retries"] == 0
@@ -257,6 +264,34 @@ def test_fastapi_health_endpoint(monkeypatch: pytest.MonkeyPatch):
     assert response.status_code == 200
     assert response.json() == {"status": "UP"}
     assert UUID(response.headers["X-Trace-Id"]).version == 4
+
+
+def test_fastapi_readiness_endpoint_reports_dependency_state(monkeypatch: pytest.MonkeyPatch):
+    _set_required_app_env(monkeypatch)
+
+    from app.api.routes import health
+    from app.core.config import get_settings
+    from app.main import create_app
+
+    async def ready() -> bool:
+        return True
+
+    async def unavailable() -> bool:
+        return False
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(health, "_check_database", ready)
+    monkeypatch.setattr(health, "_check_redis", ready)
+    monkeypatch.setattr(health, "_check_minio", unavailable)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/v1/health/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "NOT_READY",
+        "checks": {"database": True, "redis": True, "minio": False},
+    }
 
 
 def test_debug_reload_setting_does_not_expose_unhandled_error_details(
@@ -378,5 +413,8 @@ def test_start_runs_uvicorn_with_application_entrypoint(monkeypatch):
         "host": "127.0.0.1",
         "port": 8000,
         "reload": True,
+        "limit_concurrency": 100,
+        "timeout_keep_alive": 10,
+        "timeout_graceful_shutdown": 30,
         "log_level": "info",
     }

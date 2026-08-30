@@ -82,10 +82,13 @@ def start() -> None:
     settings = get_settings()
     uvicorn.run(
         "app.main:app",
-        host="127.0.0.1",
-        port=8000,
+        host=settings.server_host,
+        port=settings.server_port,
         reload=settings.debug,
-        log_level="info",
+        limit_concurrency=settings.server_limit_concurrency,
+        timeout_keep_alive=settings.server_timeout_keep_alive_seconds,
+        timeout_graceful_shutdown=settings.server_timeout_graceful_shutdown_seconds,
+        log_level=settings.log_level.lower(),
     )
 
 

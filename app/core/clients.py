@@ -29,6 +29,9 @@ async def init_clients(settings: Settings) -> None:
             base_url=settings.openai_base_url,
             temperature=settings.chat_temperature,
             max_tokens=settings.chat_max_tokens,
+            timeout=settings.chat_stream_timeout_seconds,
+            # 重试由各业务服务统一控制，避免模型 SDK 重试叠加放大请求耗时。
+            max_retries=0,
         )
 
     embedding_api_key = settings.embedding_api_key or settings.dashscope_api_key

@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     enable_metrics: bool = False
 
+    # 生产环境通过环境变量覆盖监听地址和资源上限；本地默认只监听回环地址。
+    server_host: str = "127.0.0.1"
+    server_port: int = Field(default=8000, ge=1, le=65535)
+    server_limit_concurrency: int = Field(default=100, gt=0)
+    server_timeout_keep_alive_seconds: int = Field(default=10, gt=0)
+    server_timeout_graceful_shutdown_seconds: int = Field(default=30, gt=0)
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_file_encoding="utf-8",

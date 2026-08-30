@@ -1,0 +1,130 @@
+name: rag-kb
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.0-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ragkb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragkb123}
+      POSTGRES_DB: ${POSTGRES_DB:-ragkb}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./deploy/postgres/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro
+      - ./app/db/ragkb_full_dump.sql:/tmp/ragkb_full_dump.sql:ro
+      - ./deploy/postgres/01-ragkb-full-dump.sql:/docker-entrypoint-initdb.d/01-ragkb-full-dump.sql:ro
+      - ./deploy/postgres/99-sequence-sync.sql:/docker-entrypoint-initdb.d/99-sequence-sync.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    image: ${BACKEND_IMAGE:-rag-kb-backend:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 只对云服务器本机开放，配合 SSH 隧道访问监控端点。
+    ports:
+      - "127.0.0.1:18080:8000"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      ENABLE_METRICS: "true"
+      SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
+      SERVER_PORT: ${SERVER_PORT:-8000}
+      SERVER_LIMIT_CONCURRENCY: ${SERVER_LIMIT_CONCURRENCY:-100}
+      SERVER_TIMEOUT_KEEP_ALIVE_SECONDS: ${SERVER_TIMEOUT_KEEP_ALIVE_SECONDS:-10}
+      SERVER_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS: ${SERVER_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS:-30}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ragkb}:${POSTGRES_PASSWORD:-ragkb123}@db:5432/${POSTGRES_DB:-ragkb}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ragkb}:${POSTGRES_PASSWORD:-ragkb123}@db:5432/${POSTGRES_DB:-ragkb}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_SECURE: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-rag-kb-frontend:local}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin123}
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  redis-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:
