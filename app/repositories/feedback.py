@@ -94,7 +94,21 @@ class FeedbackRepository:
         result = await self.session.execute(upsert_statement)
         return result.scalar_one()
 
-    def set_message_feedback(self, message: ChatMessage, feedback: int) -> None:
+    async def clear_feedback(self, *, message_id: int, user_id: int) -> AnswerFeedback | None:
+        """将当前反馈置为 0，保留记录以维持差评候选的来源追溯。"""
+        result = await self.session.execute(
+            update(AnswerFeedback)
+            .where(
+                AnswerFeedback.message_id == message_id,
+                AnswerFeedback.user_id == user_id,
+                AnswerFeedback.feedback.in_([-1, 1]),
+            )
+            .values(feedback=0, comment=None)
+            .returning(AnswerFeedback)
+        )
+        return result.scalar_one_or_none()
+
+    def set_message_feedback(self, message: ChatMessage, feedback: int | None) -> None:
         """同步助手消息上的快捷反馈值。"""
         message.feedback = feedback
 

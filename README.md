@@ -102,7 +102,7 @@ curl --request POST http://localhost:8000/api/v1/auth/login \
 | RAG 查询 | POST | `/api/v1/rag/query` |
 | 同步会话问答 | POST | `/api/v1/chat` |
 | 流式会话问答 | GET | `/api/v1/chat/stream` |
-| 提交回答反馈 | POST | `/api/v1/feedback/{message_id}` |
+| 提交或取消回答反馈 | POST（取消传 `feedback: null`）/DELETE | `/api/v1/feedback/{message_id}` |
 | 评估运行 | POST | `/api/v1/eval/{kb_id}/run?version={eval_version}` |
 | 评估历史 | GET | `/api/v1/eval/{kb_id}/history` |
 | Token 统计 | GET | `/api/v1/stats/tokens` |
@@ -118,7 +118,7 @@ curl --request POST http://localhost:8000/api/v1/feedback/34 \
   --data '{"feedback":1}'
 ```
 
-反馈只能提交给当前用户自己的、未删除会话中的助手消息。
+反馈只能提交给当前用户自己的、未删除会话中的助手消息。反馈表使用 `1=有用`、`-1=待改进`、`0=已取消`。再次点击已选中的“有用”或“待改进”会通过 `POST /api/v1/feedback/{message_id}` 携带 `{"feedback": null}` 取消反馈，`DELETE` 也兼容支持；系统将反馈值改为 `0`、清空评论并保留记录，以维持差评候选的来源追溯。
 
 ## 评估配置
 

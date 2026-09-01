@@ -34,7 +34,7 @@ def _target(*, kb_ids: list[int] | None = None, question: str | None = "用户�
 class FakeFeedbackRepository:
     def __init__(self, target: FeedbackTarget | None) -> None:
         self.target = target
-        self.feedback = AnswerFeedback(
+        self.feedback: AnswerFeedback | None = AnswerFeedback(
             id=30,
             message_id=20,
             user_id=7,
@@ -43,9 +43,10 @@ class FakeFeedbackRepository:
             created_at=datetime(2026, 7, 15),
         )
         self.upserts: list[dict[str, object]] = []
-        self.message_values: list[int] = []
+        self.message_values: list[int | None] = []
         self.candidate_upserts: list[dict[str, object]] = []
         self.candidate_archives: list[int] = []
+        self.clear_calls: list[dict[str, object]] = []
         self.flush_count = 0
 
     async def get_feedback_target(self, *, message_id: int, user_id: int):
@@ -53,11 +54,19 @@ class FakeFeedbackRepository:
 
     async def upsert_feedback(self, **kwargs: object) -> AnswerFeedback:
         self.upserts.append(kwargs)
+        assert self.feedback is not None
         self.feedback.feedback = int(kwargs["feedback"])
         self.feedback.comment = kwargs["comment"]  # type: ignore[assignment]
         return self.feedback
 
-    def set_message_feedback(self, message: ChatMessage, feedback: int) -> None:
+    async def clear_feedback(self, **kwargs: object) -> AnswerFeedback | None:
+        self.clear_calls.append(kwargs)
+        if self.feedback is not None:
+            self.feedback.feedback = 0
+            self.feedback.comment = None
+        return self.feedback
+
+    def set_message_feedback(self, message: ChatMessage, feedback: int | None) -> None:
         message.feedback = feedback
         self.message_values.append(feedback)
 
@@ -141,6 +150,35 @@ async def test_downvote_without_unambiguous_scope_and_question_does_not_create_c
     )
 
     assert repository.candidate_upserts == []
+    assert repository.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_downvote_clears_feedback_message_and_archives_candidate() -> None:
+    repository = FakeFeedbackRepository(_target(kb_ids=[3]))
+    service = FeedbackService(repository)  # type: ignore[arg-type]
+
+    await service.remove(message_id=20, user=_user())
+
+    assert repository.clear_calls == [{"message_id": 20, "user_id": 7}]
+    assert repository.message_values == [None]
+    assert repository.feedback is not None
+    assert repository.feedback.feedback == 0
+    assert repository.feedback.comment is None
+    assert repository.candidate_archives == [30]
+    assert repository.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_without_existing_feedback_still_clears_message_without_archiving() -> None:
+    repository = FakeFeedbackRepository(_target(kb_ids=[3]))
+    repository.feedback = None
+    service = FeedbackService(repository)  # type: ignore[arg-type]
+
+    await service.remove(message_id=20, user=_user())
+
+    assert repository.message_values == [None]
+    assert repository.candidate_archives == []
     assert repository.flush_count == 1
 
 

@@ -13,6 +13,7 @@ class FakeFeedbackService:
     def __init__(self, status_code: int | None = None) -> None:
         self.status_code = status_code
         self.calls: list[tuple[int, object, int]] = []
+        self.remove_calls: list[tuple[int, int]] = []
 
     async def submit(self, *, message_id: int, request: object, user: CurrentUser):
         self.calls.append((message_id, request, user.user_id))
@@ -26,6 +27,11 @@ class FakeFeedbackService:
             comment="原因",
             created_at=datetime(2026, 7, 15),
         )
+
+    async def remove(self, *, message_id: int, user: CurrentUser) -> None:
+        self.remove_calls.append((message_id, user.user_id))
+        if self.status_code is not None:
+            raise HTTPException(status_code=self.status_code, detail="回答消息不存在")
 
 
 def _client(service: FakeFeedbackService) -> TestClient:
@@ -64,6 +70,7 @@ def test_feedback_api_rejects_invalid_value_and_client_controlled_context() -> N
 
     with _client(service) as client:
         invalid_value = client.post("/api/v1/feedback/20", json={"feedback": 0})
+        missing_value = client.post("/api/v1/feedback/20", json={})
         controlled = client.post(
             "/api/v1/feedback/20",
             json={
@@ -76,8 +83,31 @@ def test_feedback_api_rejects_invalid_value_and_client_controlled_context() -> N
         )
 
     assert invalid_value.status_code == 422
+    assert missing_value.status_code == 422
     assert controlled.status_code == 422
     assert service.calls == []
+
+
+def test_feedback_api_supports_removing_feedback_with_post_null_value() -> None:
+    service = FakeFeedbackService()
+
+    with _client(service) as client:
+        response = client.post("/api/v1/feedback/20", json={"feedback": None})
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert service.remove_calls == [(20, 7)]
+
+
+def test_feedback_api_supports_removing_feedback_with_delete() -> None:
+    service = FakeFeedbackService()
+
+    with _client(service) as client:
+        response = client.delete("/api/v1/feedback/20")
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert service.remove_calls == [(20, 7)]
 
 
 def test_feedback_api_preserves_not_found_semantics() -> None:
@@ -85,5 +115,7 @@ def test_feedback_api_preserves_not_found_semantics() -> None:
 
     with _client(service) as client:
         response = client.post("/api/v1/feedback/20", json={"feedback": 1})
+        remove_response = client.delete("/api/v1/feedback/20")
 
     assert response.status_code == 404
+    assert remove_response.status_code == 404

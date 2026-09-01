@@ -83,6 +83,8 @@ export const feedbackApi = {
       feedback,
       comment: comment || null,
     }),
+  remove: (messageId: number) =>
+    request.post<ApiResponse<void>>(`/feedback/${messageId}`, { feedback: null }),
 };
 
 export const statsApi = {

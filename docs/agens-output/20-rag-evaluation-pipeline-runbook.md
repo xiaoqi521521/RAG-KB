@@ -27,9 +27,13 @@ RAGAS 导入失败时不得启动正式评估。评估复用应用现有回答�
 1. `app/db/migrations/20260715_extend_eval_dataset.sql`
 2. `app/db/migrations/20260715_extend_eval_result.sql`
 3. `app/db/migrations/20260715_extend_answer_feedback.sql`
+4. `app/db/migrations/20260901_allow_feedback_cancellation.sql`
+5. `app/db/migrations/20260902_store_cancelled_feedback_as_zero.sql`
 
 第一项增加标准问题状态、审核原因和反馈来源；第二项增加可空指标、结果状态和约束；
-第三项保存助手回答实际使用的知识库范围并约束反馈值。三项均只扩展现有表。
+第三项保存助手回答实际使用的知识库范围并约束反馈值；第四项曾为取消反馈临时放开空值；
+第五项将历史空值归一化为 `0`，恢复反馈字段非空，并约束反馈值为 `-1/0/1`。当前取消反馈
+会将已有反馈记录的 `feedback` 更新为 `0`，而不是写入 `NULL`。
 新建环境使用 `app/db/schema.sql`，不要再重复执行增量 SQL。
 
 ## 2. 管理员正式评估工作流
@@ -96,9 +100,13 @@ Content-Type: application/json
 }
 ```
 
-单知识库点踩创建或恢复一个 `CANDIDATE`。多知识库、历史消息没有知识库范围，或找不到
-上一条用户问题时只保存反馈。候选只保存问题和 `source_feedback_id`，回答与引用仍以
-`kb_chat_message` 为唯一副本。
+再次点击已选反馈时，客户端发送相同路径的 `POST` 请求并传 `{"feedback": null}` 取消反馈；服务端也兼容 `DELETE /api/v1/feedback/{assistant_message_id}`。
+
+反馈表中 `1` 表示有用、`-1` 表示待改进、`0` 表示已取消。单知识库点踩创建或恢复一个
+`CANDIDATE`。多知识库、历史消息没有知识库范围，或找不到上一条用户问题时只保存反馈。取消
+反馈时，原反馈记录的值改为 `0`、评论清空，尚未审核的候选转为 `ARCHIVED`；记录本身保留，
+以保证 `source_feedback_id` 可继续追溯。候选只保存问题和
+`source_feedback_id`，回答与引用仍以 `kb_chat_message` 为唯一副本。
 
 管理员可用下列只读 SQL 追溯候选。查询会返回敏感问题、回答、引用和评论，只能在受控
 数据库会话中执行，不得复制到日志、监控标签或工单。`:kb_id` 和 `:dataset_id` 是绑定参数。

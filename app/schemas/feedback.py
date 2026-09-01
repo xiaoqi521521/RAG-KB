@@ -7,11 +7,11 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class FeedbackRequest(BaseModel):
-    """用户对助手回答可提交的反馈字段。"""
+    """用户对助手回答可提交或取消的反馈字段。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    feedback: Literal[-1, 1]
+    feedback: Literal[-1, 1] | None
     comment: str | None = None
 
     @field_validator("comment")

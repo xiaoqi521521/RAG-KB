@@ -241,7 +241,7 @@ class AnswerFeedback(Base):
             name="uq_answer_feedback_message_user",
         ),
         CheckConstraint(
-            "feedback IN (-1, 1)",
+            "feedback IN (-1, 0, 1)",
             name="ck_answer_feedback_value",
         ),
     )

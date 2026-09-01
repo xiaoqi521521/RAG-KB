@@ -193,6 +193,7 @@ def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
         ChatMessage.__table__.columns["kb_ids"].type.compile(dialect=postgresql.dialect())
         == "BIGINT[]"
     )
+    assert AnswerFeedback.__table__.columns["feedback"].nullable is False
     assert {constraint.name for constraint in AnswerFeedback.__table__.constraints} >= {
         "uq_answer_feedback_message_user",
         "ck_answer_feedback_value",
@@ -201,10 +202,29 @@ def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
     schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
     assert "kb_ids          BIGINT[]" in schema_sql
     assert "uq_answer_feedback_message_user" in schema_sql
-    assert "ck_answer_feedback_value" in schema_sql
+    assert "feedback        SMALLINT        NOT NULL" in schema_sql
+    assert "feedback IN (-1, 0, 1)" in schema_sql
+
+    dump_sql = Path("app/db/ragkb_full_dump.sql").read_text(encoding="utf-8")
+    assert '"feedback" int2 NOT NULL' in dump_sql
+    assert "feedback = ANY (ARRAY['-1'::integer, 0, 1])" in dump_sql
 
     migration_sql = Path(
         "app/db/migrations/20260715_extend_answer_feedback.sql"
     ).read_text(encoding="utf-8")
     assert "ADD COLUMN IF NOT EXISTS kb_ids BIGINT[]" in migration_sql
     assert "ck_answer_feedback_value" in migration_sql
+
+    cancellation_migration_sql = Path(
+        "app/db/migrations/20260901_allow_feedback_cancellation.sql"
+    ).read_text(encoding="utf-8")
+    assert "ALTER COLUMN feedback DROP NOT NULL" in cancellation_migration_sql
+    assert "feedback IS NULL OR feedback IN (-1, 1)" in cancellation_migration_sql
+
+    zero_state_migration_sql = Path(
+        "app/db/migrations/20260902_store_cancelled_feedback_as_zero.sql"
+    ).read_text(encoding="utf-8")
+    assert "DROP CONSTRAINT IF EXISTS ck_answer_feedback_value" in zero_state_migration_sql
+    assert "SET feedback = 0" in zero_state_migration_sql
+    assert "ALTER COLUMN feedback SET NOT NULL" in zero_state_migration_sql
+    assert "feedback IN (-1, 0, 1)" in zero_state_migration_sql

@@ -232,7 +232,7 @@ comment
 created_at
 ```
 
-数据库和 ORM 模型都必须具备 `(message_id, user_id)` 唯一约束。`feedback` 只允许 `1` 或 `-1`。
+数据库和 ORM 模型都必须具备 `(message_id, user_id)` 唯一约束。`feedback` 只允许 `-1`、`0` 或 `1`，其中 `0` 表示用户已取消反馈。
 
 ### 5.5 三类回答数据的区分
 
@@ -528,14 +528,15 @@ excerpt            # 最多 200 字
 ### 12.4 用户反馈
 
 ```plain
-POST /api/v1/feedback/{message_id}
+POST   /api/v1/feedback/{message_id}
+DELETE /api/v1/feedback/{message_id}
 ```
 
-请求只包含 `feedback=1|-1` 和可选评论。Service 在同一事务中：
+`POST` 请求包含 `feedback=1|-1` 和可选评论；客户端取消时传 `feedback=null`，`DELETE` 也可取消当前用户已有反馈。Service 在同一事务中：
 
 1. 校验消息所有权和助手角色。
-2. 新增或更新 `kb_answer_feedback`。
-3. 同步更新助手消息的 `feedback` 字段。
+2. 提交时新增或更新 `kb_answer_feedback`；取消时将其反馈值改为 `0` 并清空评论，以保留候选来源追溯。
+3. 同步更新助手消息的 `feedback` 字段，取消时仍写入 `NULL` 供前端判断未选中状态。
 4. 按本轮 `kb_ids` 和反馈变化创建、恢复或归档候选。
 
 ## 13. 聚合报告

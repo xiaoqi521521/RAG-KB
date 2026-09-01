@@ -101,6 +101,36 @@ async def test_feedback_upsert_uses_message_user_unique_key_and_returns_same_row
 
 
 @pytest.mark.asyncio
+async def test_feedback_clear_uses_message_user_key_and_returns_cleared_row() -> None:
+    feedback = AnswerFeedback(
+        id=30,
+        message_id=20,
+        user_id=7,
+        feedback=-1,
+        created_at=datetime(2026, 7, 15),
+    )
+    session = RecordingSession([FakeResult(feedback)])
+    repository = FeedbackRepository(session)  # type: ignore[arg-type]
+
+    returned = await repository.clear_feedback(message_id=20, user_id=7)
+
+    statement = _sql(session.statements[0])
+    literal_statement = str(
+        session.statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert returned is feedback
+    assert "UPDATE kb_answer_feedback SET feedback=0" in literal_statement
+    assert "comment=NULL" in literal_statement
+    assert "kb_answer_feedback.message_id =" in statement
+    assert "kb_answer_feedback.user_id =" in statement
+    assert "kb_answer_feedback.feedback IN (-1, 1)" in literal_statement
+    assert "RETURNING kb_answer_feedback" in statement
+
+
+@pytest.mark.asyncio
 async def test_candidate_upsert_restores_only_archived_and_archive_updates_only_candidate() -> None:
     session = RecordingSession([FakeResult(40), FakeResult(40)])
     repository = FeedbackRepository(session)  # type: ignore[arg-type]

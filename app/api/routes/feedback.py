@@ -26,6 +26,21 @@ async def submit_feedback(
     user: CurrentUser = Depends(get_current_user),
     service: FeedbackService = Depends(get_feedback_service),
 ) -> ApiResponse[FeedbackResponse]:
-    """提交或覆盖当前用户对指定助手回答的反馈。"""
+    """提交、覆盖或取消当前用户对指定助手回答的反馈。"""
+    if request.feedback is None:
+        await service.remove(message_id=message_id, user=user)
+        return ApiResponse.ok()
+
     feedback = await service.submit(message_id=message_id, request=request, user=user)
     return ApiResponse.ok(FeedbackResponse.model_validate(feedback))
+
+
+@router.delete("/{message_id}")
+async def remove_feedback(
+    message_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    service: FeedbackService = Depends(get_feedback_service),
+) -> ApiResponse[None]:
+    """取消当前用户对指定助手回答的反馈。"""
+    await service.remove(message_id=message_id, user=user)
+    return ApiResponse.ok()

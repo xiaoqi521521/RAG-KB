@@ -830,7 +830,7 @@ ALTER TABLE "public"."kb_answer_feedback" ADD CONSTRAINT "kb_answer_feedback_mes
 -- ----------------------------
 -- Checks structure for table kb_answer_feedback
 -- ----------------------------
-ALTER TABLE "public"."kb_answer_feedback" ADD CONSTRAINT "ck_answer_feedback_value" CHECK (feedback = ANY (ARRAY['-1'::integer, 1]));
+ALTER TABLE "public"."kb_answer_feedback" ADD CONSTRAINT "ck_answer_feedback_value" CHECK (feedback = ANY (ARRAY['-1'::integer, 0, 1]));
 
 -- ----------------------------
 -- Primary Key structure for table kb_answer_feedback

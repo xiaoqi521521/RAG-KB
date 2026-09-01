@@ -93,6 +93,7 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSessionItem[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [inputValue, setInputValue] = useState('');
+  const [pendingFeedbackIds, setPendingFeedbackIds] = useState<Set<string>>(() => new Set());
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -289,13 +290,27 @@ export default function ChatPage() {
       if (typeof messageId !== 'number') {
         return;
       }
-      setMessageFeedback(chatMessage.id, feedback);
+
+      const nextFeedback = chatMessage.feedback === feedback ? null : feedback;
+      setPendingFeedbackIds((ids) => new Set(ids).add(chatMessage.id));
+      setMessageFeedback(chatMessage.id, nextFeedback);
       try {
-        await feedbackApi.submit(messageId, feedback);
-        message.success(feedback === 1 ? '已记录“有用”' : '已记录“待改进”');
+        if (nextFeedback === null) {
+          await feedbackApi.remove(messageId);
+          message.success('已取消反馈');
+        } else {
+          await feedbackApi.submit(messageId, nextFeedback);
+          message.success(nextFeedback === 1 ? '已记录“有用”' : '已记录“待改进”');
+        }
       } catch {
         setMessageFeedback(chatMessage.id, chatMessage.feedback);
         message.error('提交反馈失败');
+      } finally {
+        setPendingFeedbackIds((ids) => {
+          const next = new Set(ids);
+          next.delete(chatMessage.id);
+          return next;
+        });
       }
     },
     [message, setMessageFeedback],
@@ -459,6 +474,7 @@ export default function ChatPage() {
                             icon={
                               chatMessage.feedback === 1 ? <LikeFilled /> : <LikeOutlined />
                             }
+                            disabled={pendingFeedbackIds.has(chatMessage.id)}
                             onClick={() => handleFeedback(chatMessage, 1)}
                           />
                         </Tooltip>
@@ -473,6 +489,7 @@ export default function ChatPage() {
                                 <DislikeOutlined />
                               )
                             }
+                            disabled={pendingFeedbackIds.has(chatMessage.id)}
                             onClick={() => handleFeedback(chatMessage, -1)}
                           />
                         </Tooltip>

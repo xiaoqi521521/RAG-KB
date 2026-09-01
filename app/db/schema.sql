@@ -188,11 +188,11 @@ CREATE TABLE kb_answer_feedback (
     id              BIGSERIAL PRIMARY KEY,
     message_id      BIGINT          NOT NULL,
     user_id         BIGINT          NOT NULL,
-    feedback        SMALLINT        NOT NULL,           -- 1=有用 -1=无用
+    feedback        SMALLINT        NOT NULL,           -- 1=有用 -1=待改进 0=已取消
     comment         TEXT,                              -- 可选的文字反馈
     created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     CONSTRAINT uq_answer_feedback_message_user UNIQUE (message_id, user_id),
-    CONSTRAINT ck_answer_feedback_value CHECK (feedback IN (-1, 1))
+    CONSTRAINT ck_answer_feedback_value CHECK (feedback IN (-1, 0, 1))
 );
 
 -- ================================================================

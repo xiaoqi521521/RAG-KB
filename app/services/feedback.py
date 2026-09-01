@@ -26,6 +26,12 @@ class FeedbackService:
         user: CurrentUser,
     ) -> AnswerFeedback:
         """覆盖当前用户反馈，并在同一事务内维护候选状态。"""
+        if request.feedback is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="feedback must be -1 or 1 when submitting",
+            )
+
         target = await self.repository.get_feedback_target(
             message_id=message_id,
             user_id=user.user_id,
@@ -67,3 +73,34 @@ class FeedbackService:
             candidate_action,
         )
         return feedback
+
+    async def remove(self, *, message_id: int, user: CurrentUser) -> None:
+        """取消当前用户反馈，并归档尚未审核的差评候选。"""
+        target = await self.repository.get_feedback_target(
+            message_id=message_id,
+            user_id=user.user_id,
+        )
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="回答消息不存在",
+            )
+
+        feedback = await self.repository.clear_feedback(
+            message_id=message_id,
+            user_id=user.user_id,
+        )
+        self.repository.set_message_feedback(target.assistant_message, None)
+
+        candidate_action = "unchanged"
+        if feedback is not None:
+            # clear_feedback 返回的是已更新为 0 的记录；候选归档本身只影响 CANDIDATE。
+            candidate_action = await self.repository.archive_candidate(
+                source_feedback_id=feedback.id
+            )
+
+        await self.repository.flush()
+        logger.info(
+            "answer_feedback_removed=true candidate_action=%s",
+            candidate_action,
+        )
