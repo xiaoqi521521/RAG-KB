@@ -55,7 +55,7 @@
 | 主题 | 决策 |
 | --- | --- |
 | 缓存资格 | 仅无历史消息的首轮问答可读写缓存；存在任意历史消息时完全跳过缓存 |
-| 缓存身份 | 去除问题首尾空白后，与升序 `kb_ids` 组合并计算 SHA-256；不做大小写、标点或语义归一化 |
+| 缓存身份 | 去除问题首尾空白后，与升序 `kb_ids` 组合并计算 MD5；不做大小写、标点或语义归一化 |
 | 权限边界 | 每次请求先实时校验全部知识库读权限，再允许读取缓存；任一知识库无权则整体拒绝 |
 | 缓存内容 | 只缓存有引用来源的成功回答；拒答和失败不缓存 |
 | 一致性 | TTL 默认 10 分钟，不随文档内容变更主动失效，接受有效期内暂时不一致 |
@@ -137,11 +137,13 @@ status(RETRIEVING, session_id)
 ```plain
 normalized_question = question.strip()
 sorted_kb_ids = sorted(kb_ids)
-digest = sha256(canonical_json([normalized_question, sorted_kb_ids]))
-redis_key = rag:query:<digest>
+digest = md5(canonical_json([normalized_question, sorted_kb_ids]))
+redis_key = rag:query:user-question:<digest>
 ```
 
 使用结构化 JSON 序列化，避免字符串拼接在特殊字符或列表边界上产生歧义。`kb_ids` 在路由层去重并校验为正整数，缓存层仍排序以保证集合顺序不影响命中。
+
+旧版首轮 key 使用 SHA-256，无法仅凭摘要转换为 MD5；运行时会按当前问题重新计算旧 SHA-256 key，命中后通过 Redis `RENAMENX` 原子迁移到新 MD5 key，并保留原值 TTL。迁移脚本仅扫描并迁移可直接映射的 HyDE 旧 key，首轮结果由访问时完成迁移。
 
 缓存键不包含 `user_id`、`department_id` 或权限来源，因此相同问题可以在对同一知识库范围具有读权限的用户之间复用。每次读取前的实时权限校验是共享缓存成立的必要条件。缓存键摘要、问题、用户 ID 和知识库 ID 均不得写入日志或指标。
 
@@ -316,7 +318,7 @@ GET /api/v1/stats/tokens
 
 - 问题仅去除首尾空白，内部空白、大小写和标点变化产生不同键。
 - 相同 `kb_ids` 的不同顺序产生相同键，范围不同产生不同键。
-- Redis key 使用 SHA-256 摘要，不包含原始问题。
+- Redis key 使用 MD5 摘要，不包含原始问题。
 - 缓存值可以完整恢复答案、引用和命中数量，但不恢复历史耗时。
 - TTL 使用配置值。
 - 脏值、读失败按未命中降级；写失败不抛给问答调用方。

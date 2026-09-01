@@ -12,6 +12,7 @@ class FakeRedis:
         self.values: dict[str, str] = {}
         self.get_calls: list[str] = []
         self.setex_calls: list[dict[str, object]] = []
+        self.renamenx_calls: list[tuple[str, str]] = []
         self.fail_get = False
         self.fail_setex = False
 
@@ -26,6 +27,13 @@ class FakeRedis:
         if self.fail_setex:
             raise RuntimeError("redis setex failed")
         self.values[key] = value
+
+    async def renamenx(self, source: str, destination: str) -> bool:
+        self.renamenx_calls.append((source, destination))
+        if source not in self.values or destination in self.values:
+            return False
+        self.values[destination] = self.values.pop(source)
+        return True
 
 
 class FakeChatModel:
@@ -51,7 +59,7 @@ async def test_generate_hyde_answer_uses_cache_without_calling_chat() -> None:
         cache_ttl_seconds=600,
     )
     cache_key = rewriter._cache_key("hyde", "年假怎么申请？")
-    assert cache_key == "rag:hyde:2f39b46980f2eca748542564863ee76b"
+    assert cache_key == "rag:query:user-question-hyde:2f39b46980f2eca748542564863ee76b"
     redis.values[cache_key] = "员工需要在 OA 提交年假申请。"
 
     result = await rewriter.generate_hyde_answer(" 年假怎么申请？ ")
@@ -61,6 +69,28 @@ async def test_generate_hyde_answer_uses_cache_without_calling_chat() -> None:
     assert result.used_cache is True
     assert result.degraded_reasons == ()
     assert len(rewriter.chat_model.messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_hyde_answer_migrates_legacy_cache_key() -> None:
+    redis = FakeRedis()
+    rewriter = QueryRewriter(
+        chat_model=FakeChatModel("should not be used"),
+        redis_client=redis,
+        chat_model_name="qwen-plus",
+        cache_ttl_seconds=600,
+    )
+    legacy_key = "rag:hyde:2f39b46980f2eca748542564863ee76b"
+    cache_key = rewriter._cache_key("hyde", "年假怎么申请？")
+    redis.values[legacy_key] = "员工需要在 OA 提交年假申请。"
+
+    result = await rewriter.generate_hyde_answer("年假怎么申请？")
+
+    assert result.hyde_answer == "员工需要在 OA 提交年假申请。"
+    assert result.used_cache is True
+    assert redis.renamenx_calls == [(legacy_key, cache_key)]
+    assert legacy_key not in redis.values
+    assert redis.values[cache_key] == "员工需要在 OA 提交年假申请。"
 
 
 @pytest.mark.asyncio
