@@ -3,6 +3,12 @@ import { message } from 'antd';
 import type { ApiResponse } from '@/types';
 import { TOKEN_STORAGE_KEY, USER_STORAGE_KEY } from '@/store/useAuthStore';
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    skipGlobalErrorMessage?: boolean;
+  }
+}
+
 const instance = axios.create({
   baseURL: '/api/v1',
   timeout: 60000,
@@ -13,6 +19,10 @@ instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = localStorage.getItem(TOKEN_STORAGE_KEY);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  // FormData 需要由浏览器自动补充 multipart boundary，不能沿用全局 JSON 请求头。
+  if (config.data instanceof FormData) {
+    config.headers.delete('Content-Type');
   }
   return config;
 });
@@ -30,7 +40,7 @@ instance.interceptors.response.use(
       if (window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
-    } else if (detail) {
+    } else if (detail && !error.config?.skipGlobalErrorMessage) {
       message.error(detail);
     }
 

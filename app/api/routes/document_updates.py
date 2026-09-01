@@ -14,6 +14,7 @@ from app.core.context import CurrentUser
 from app.core.database import AsyncSessionLocal, get_db
 from app.integrations.minio import MinioStorageService
 from app.repositories.documents import DocumentRepository
+from app.repositories.knowledge_bases import KnowledgeBaseRepository
 from app.schemas.common import ApiResponse
 from app.schemas.knowledge_base import DocumentReindexSubmitResponse
 from app.services.document_update import DocumentUpdateService
@@ -67,6 +68,7 @@ def get_document_update_service(
     )
     return DocumentUpdateService(
         document_repository=DocumentRepository(session),
+        knowledge_base_repository=KnowledgeBaseRepository(session),
         storage_service=MinioStorageService(client=get_minio(), bucket=settings.minio_bucket),
         index_service=index_service,
         max_upload_file_size_mb=settings.max_upload_file_size_mb,

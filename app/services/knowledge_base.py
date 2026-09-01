@@ -72,7 +72,11 @@ class KnowledgeBaseService:
         if file_size > self.max_upload_file_size_bytes:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件大小超过限制")
 
-        minio_path = await self.storage_service.upload(kb_id, file)
+        knowledge_base = await self.knowledge_base_repository.get(kb_id)
+        if knowledge_base is None or knowledge_base.is_deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库不存在")
+
+        minio_path = await self.storage_service.upload(kb_id, file, kb_name=knowledge_base.name)
         document: KbDocument | None = None
         try:
             document = await self.document_repository.create(

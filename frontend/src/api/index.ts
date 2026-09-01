@@ -32,6 +32,7 @@ export const kbApi = {
     return request.post<ApiResponse<DocumentUploadResponse>>(
       `/kb/${kbId}/documents`,
       formData,
+      { skipGlobalErrorMessage: true },
     );
   },
   getDocuments: (kbId: number) =>
@@ -39,10 +40,14 @@ export const kbApi = {
   getDocumentStatus: (kbId: number, docId: number) =>
     request.get<ApiResponse<IndexStatusResponse>>(`/kb/${kbId}/documents/${docId}/status`),
   deleteDocument: (kbId: number, docId: number) =>
-    request.delete<ApiResponse<void>>(`/kb/${kbId}/documents/${docId}`),
+    request.delete<ApiResponse<void>>(`/kb/${kbId}/documents/${docId}`, {
+      skipGlobalErrorMessage: true,
+    }),
   reindexDocument: (kbId: number, docId: number) =>
     request.post<ApiResponse<{ doc_id: number; task_id: number; message: string }>>(
       `/kb/${kbId}/documents/${docId}/reindex`,
+      undefined,
+      { skipGlobalErrorMessage: true },
     ),
   downloadDocument: (kbId: number, docId: number) =>
     request.get<Blob>(`/kb/${kbId}/documents/${docId}/download`, {

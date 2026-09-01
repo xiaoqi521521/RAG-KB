@@ -8,6 +8,7 @@ from fastapi import HTTPException, UploadFile, status
 from app.core.context import CurrentUser
 from app.models import DocumentStatus, KbDocument
 from app.repositories.documents import DocumentRepository
+from app.repositories.knowledge_bases import KnowledgeBaseRepository
 from app.schemas.knowledge_base import DocumentReindexSubmitResponse
 from app.services.indexing import IndexService
 
@@ -17,8 +18,8 @@ logger = logging.getLogger(__name__)
 class DocumentObjectStorage(Protocol):
     """文档更新流程依赖的对象存储最小接口。"""
 
-    async def upload(self, kb_id: int, file: UploadFile) -> str:
-        """上传原始文件并返回对象路径。"""
+    async def upload(self, kb_id: int, file: UploadFile, *, kb_name: str) -> str:
+        """按知识库名称上传原始文件并返回对象路径。"""
         ...
 
     async def delete(self, object_key: str) -> None:
@@ -40,6 +41,7 @@ class DocumentUpdateService:
         self,
         *,
         document_repository: DocumentRepository,
+        knowledge_base_repository: KnowledgeBaseRepository,
         storage_service: DocumentObjectStorage,
         index_service: IndexService,
         max_upload_file_size_mb: int,
@@ -48,11 +50,13 @@ class DocumentUpdateService:
 
         Args:
             document_repository: 文档元数据仓储。
+            knowledge_base_repository: 知识库仓储，用于读取对象目录名称。
             storage_service: MinIO 存储服务，需提供 upload/delete。
             index_service: 索引服务，用于提交 REINDEX 任务。
             max_upload_file_size_mb: 允许上传的最大文件大小，单位 MB。
         """
         self.document_repository = document_repository
+        self.knowledge_base_repository = knowledge_base_repository
         self.storage_service = storage_service
         self.index_service = index_service
         self.max_upload_file_size_bytes = max_upload_file_size_mb * 1024 * 1024
@@ -82,9 +86,17 @@ class DocumentUpdateService:
         old_minio_path = document.minio_path
         new_minio_path: str | None = None
 
+        knowledge_base = await self.knowledge_base_repository.get(kb_id)
+        if knowledge_base is None or knowledge_base.is_deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库不存在")
+
         try:
             # 新文件只放入任务 payload，索引成功前不覆盖当前发布版本。
-            new_minio_path = await self.storage_service.upload(kb_id, file)
+            new_minio_path = await self.storage_service.upload(
+                kb_id,
+                file,
+                kb_name=knowledge_base.name,
+            )
             task_id = await self.index_service.reindex_document(
                 doc_id,
                 payload={

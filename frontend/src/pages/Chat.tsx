@@ -102,6 +102,14 @@ export default function ChatPage() {
     [messages, panelMessageKey],
   );
 
+  const selectedPanelSources = useMemo(
+    () =>
+      [...(selectedPanelMessage?.sources ?? [])].sort(
+        (left, right) => left.reference_index - right.reference_index,
+      ),
+    [selectedPanelMessage?.sources],
+  );
+
   const fetchSessions = useCallback(async () => {
     setSessionsLoading(true);
     try {
@@ -552,8 +560,8 @@ export default function ChatPage() {
               </Button>
             </div>
             <div className="flex-1 overflow-auto p-3 space-y-2.5">
-              {selectedPanelMessage?.sources?.length ? (
-                selectedPanelMessage.sources.map((source) => (
+              {selectedPanelSources.length ? (
+                selectedPanelSources.map((source) => (
                   <SourceArchiveCard
                     key={source.chunk_id}
                     source={source}

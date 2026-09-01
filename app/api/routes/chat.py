@@ -80,6 +80,7 @@ def get_streaming_chat_service(
             settings=settings,
             token_metrics=token_metrics,
             faithfulness_metrics=faithfulness_metrics,
+            permission_service=get_permission_service(session=session),
         )
         if not isinstance(rag_service, RagQueryServiceV4):
             raise RuntimeError("流式问答仅支持 rag_query_pipeline=v4")
@@ -109,6 +110,7 @@ def get_synchronous_chat_service(
             settings=settings,
             token_metrics=token_metrics,
             faithfulness_metrics=faithfulness_metrics,
+            permission_service=get_permission_service(session=session),
         )
         if not isinstance(rag_service, RagQueryServiceV4):
             raise RuntimeError("同步会话问答仅支持 rag_query_pipeline=v4")

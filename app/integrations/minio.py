@@ -11,6 +11,15 @@ from minio import Minio
 logger = logging.getLogger(__name__)
 
 
+def build_kb_folder_name(kb_id: int, kb_name: str) -> str:
+    """构造 MinIO 知识库目录名，避免名称破坏对象路径层级。"""
+    safe_name = "".join(
+        character if character not in "/\\" and ord(character) >= 32 else "_"
+        for character in kb_name.strip()
+    ).strip(" .")
+    return f"{kb_id}-{safe_name or '未命名知识库'}"
+
+
 class MinioStorageService:
     """MinIO 原始文件存储服务，负责上传、下载和删除对象。"""
 
@@ -18,11 +27,12 @@ class MinioStorageService:
         self.client = client
         self.bucket = bucket
 
-    async def upload(self, kb_id: int, file: UploadFile) -> str:
-        """上传文件到 MinIO，返回对象路径。"""
+    async def upload(self, kb_id: int, file: UploadFile, *, kb_name: str) -> str:
+        """按知识库标识上传文件，返回对象路径。"""
         file_name = file.filename or "uploaded-file"
         content = await file.read()
-        object_key = f"kb/{kb_id}/{uuid4().hex[:8]}-{file_name}"
+        folder_name = build_kb_folder_name(kb_id, kb_name)
+        object_key = f"kb/{folder_name}/{uuid4().hex[:8]}-{file_name}"
         content_type = file.content_type or "application/octet-stream"
 
         def _upload() -> None:

@@ -28,6 +28,22 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatIndexError(error: string): string {
+  if (/MinerU SDK request failed|SSL|UNEXPECTED_EOF|解析服务/i.test(error)) {
+    return '文档解析服务暂时不可用，请稍后点击“重建索引”重试。若多次失败，请联系管理员检查解析服务或网络连接。';
+  }
+  if (/empty (MinerU )?document|no valid chunks|有效内容/i.test(error)) {
+    return '未能从文档中提取有效内容，请确认文件不为空且内容可以正常读取。';
+  }
+  if (/embedding|向量化/i.test(error)) {
+    return '文档向量化暂时失败，请稍后点击“重建索引”重试。';
+  }
+  if (/索引任务无法完成|索引处理失败|索引服务暂时不可用/i.test(error)) {
+    return error;
+  }
+  return '索引处理失败，请稍后点击“重建索引”重试。若仍然失败，请联系管理员。';
+}
+
 export default function KbDocumentsPage() {
   const { kbId } = useParams<{ kbId: string }>();
   const navigate = useNavigate();
@@ -107,7 +123,7 @@ export default function KbDocumentsPage() {
     } catch (error: unknown) {
       const detail = (error as { response?: { data?: { detail?: string } } })?.response
         ?.data?.detail;
-      message.error(detail || '上传失败');
+      message.error(detail || '文档上传失败，请检查文件格式和网络连接后重试。');
     } finally {
       setUploading(false);
     }
@@ -164,7 +180,7 @@ export default function KbDocumentsPage() {
             {record.file_type.toUpperCase()} · {formatSize(record.file_size)} · V{record.version}
           </div>
           {record.error_msg && (
-            <div className="text-[12px] text-seal mt-1">{record.error_msg}</div>
+            <div className="text-[12px] text-seal mt-1">{formatIndexError(record.error_msg)}</div>
           )}
         </div>
       ),

@@ -30,6 +30,7 @@ class FakeUploadFile:
 class FakeKnowledgeBaseRepository:
     def __init__(self) -> None:
         self.created: list[dict[str, object]] = []
+        self.knowledge_base = None
 
     async def create(
         self,
@@ -59,7 +60,19 @@ class FakeKnowledgeBaseRepository:
                 "created_by": created_by,
             }
         )
+        self.knowledge_base = kb
         return kb
+
+    async def get(self, kb_id: int):
+        from app.models import KnowledgeBase
+
+        return self.knowledge_base or KnowledgeBase(
+            id=kb_id,
+            name="HR知识库",
+            department_id="HR",
+            is_public=False,
+            created_by=1,
+        )
 
 
 class FakePermissionRepository:
@@ -162,9 +175,9 @@ class FakeStorageService:
         self.deleted: list[str] = []
         self.downloaded: list[str] = []
 
-    async def upload(self, kb_id: int, file: FakeUploadFile) -> str:
+    async def upload(self, kb_id: int, file: FakeUploadFile, *, kb_name: str) -> str:
         self.uploaded.append((kb_id, file.filename))
-        return f"kb/{kb_id}/abc-{file.filename}"
+        return f"kb/{kb_id}-{kb_name}/abc-{file.filename}"
 
     async def download(self, object_key: str) -> bytes:
         self.downloaded.append(object_key)
@@ -262,7 +275,7 @@ async def test_upload_document_stores_file_creates_document_and_submits_index_ta
     assert document.id == 1
     assert document.status == DocumentStatus.PENDING.value
     assert bundle.storage.uploaded == [(10, "handbook.txt")]
-    assert bundle.document_repo.created[0]["minio_path"] == "kb/10/abc-handbook.txt"
+    assert bundle.document_repo.created[0]["minio_path"] == "kb/10-HR知识库/abc-handbook.txt"
     assert bundle.document_repo.created[0]["file_type"] == "TXT"
     assert bundle.index_service.submitted == [1]
 
@@ -289,7 +302,7 @@ async def test_upload_document_marks_document_failed_when_index_submit_fails() -
     document = bundle.document_repo.documents[1]
     assert document.status == DocumentStatus.FAILED.value
     assert document.error_msg == "index submit failed"
-    assert bundle.storage.deleted == ["kb/10/abc-handbook.txt"]
+    assert bundle.storage.deleted == ["kb/10-HR知识库/abc-handbook.txt"]
 
 
 @pytest.mark.asyncio
@@ -327,7 +340,7 @@ async def test_delete_document_soft_deletes_document_hard_deletes_chunks_and_del
 
     assert document.is_deleted is True
     assert bundle.chunk_repo.deleted_doc_ids == [document.id]
-    assert bundle.storage.deleted == ["kb/10/abc-handbook.txt"]
+    assert bundle.storage.deleted == ["kb/10-HR知识库/abc-handbook.txt"]
 
 
 @pytest.mark.asyncio

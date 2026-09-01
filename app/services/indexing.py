@@ -17,6 +17,12 @@ from app.repositories.documents import DocumentRepository
 from app.repositories.evaluations import EvaluationRepository
 from app.repositories.index_tasks import IndexTaskRepository
 from app.services.chunking import ChunkService
+from app.services.document_loader.exceptions import (
+    DocumentParseError,
+    EmptyDocumentError,
+    ExternalParserError,
+    UnsupportedFileTypeError,
+)
 from app.services.document_loader.service import DocumentLoaderService
 from app.services.embedding import EmbeddingService
 
@@ -70,6 +76,23 @@ class RetryableIndexError(IndexPipelineError):
 
 class NonRetryableIndexError(IndexPipelineError):
     """不可恢复失败，保持 FAILED 等待人工处理或后续手动重试。"""
+
+
+def _user_error_message(error: Exception) -> str:
+    """把内部索引异常转换为可展示给用户的处理提示。"""
+    if isinstance(error, ExternalParserError):
+        return "文档解析服务暂时不可用，请稍后重试；如果仍然失败，请联系管理员。"
+    if isinstance(error, EmptyDocumentError):
+        return "未能从文档中提取有效内容，请确认文件不为空且内容可读取。"
+    if isinstance(error, UnsupportedFileTypeError):
+        return "暂不支持该文件类型，请上传 PDF、DOCX、Markdown 或 TXT 文件。"
+    if isinstance(error, DocumentParseError):
+        return "文档解析失败，请确认文件未损坏后重试。"
+    if isinstance(error, RetryableIndexError):
+        return "索引服务暂时不可用，系统将自动重试，请稍后查看状态。"
+    if isinstance(error, NonRetryableIndexError):
+        return "索引任务无法完成，请刷新页面后重试；如果仍然失败，请联系管理员。"
+    return "索引处理失败，系统将自动重试，请稍后查看状态。"
 
 
 class IndexService:
@@ -249,14 +272,14 @@ class IndexService:
             await self._run_task_once(task_id, doc_id)
         except RetryableIndexError as exc:
             # 可重试异常先落失败原因，再把任务改回 PENDING 并调度下一次执行。
-            await self._mark_failed(task_id, doc_id, str(exc))
+            await self._record_failure(task_id, doc_id, exc)
             await self._retry_if_possible(task_id, doc_id, str(exc))
         except NonRetryableIndexError as exc:
             # 不可重试异常只标记失败，避免无意义地反复占用索引执行资源。
-            await self._mark_failed(task_id, doc_id, str(exc))
+            await self._record_failure(task_id, doc_id, exc)
         except Exception as exc:  # noqa: BLE001
             # 未预期异常按临时故障处理，保留自动重试机会，最终仍受 max_retries 约束。
-            await self._mark_failed(task_id, doc_id, str(exc))
+            await self._record_failure(task_id, doc_id, exc)
             await self._retry_if_possible(task_id, doc_id, str(exc))
 
     async def _run_task_once(self, task_id: int, doc_id: int) -> None:
@@ -477,13 +500,33 @@ class IndexService:
             )
         return doc_chunks
 
-    async def _mark_failed(self, task_id: int, doc_id: int, error_msg: str) -> None:
+    async def _record_failure(self, task_id: int, doc_id: int, error: Exception) -> None:
+        """记录技术错误和用户提示，分别服务于排查与页面展示。"""
+        technical_message = str(error)
+        user_message = _user_error_message(error)
+        logger.exception("索引任务失败：task_id=%s doc_id=%s", task_id, doc_id)
+        await self._mark_failed(
+            task_id,
+            doc_id,
+            technical_message,
+            document_error_msg=user_message,
+        )
+
+    async def _mark_failed(
+        self,
+        task_id: int,
+        doc_id: int,
+        error_msg: str,
+        *,
+        document_error_msg: str | None = None,
+    ) -> None:
         """同步标记任务失败，并在文档存在时标记文档失败。
 
         Args:
             task_id: 需要标记失败的任务 ID。
             doc_id: 任务关联的文档 ID。
-            error_msg: 失败原因，写入任务和文档状态便于排查。
+            error_msg: 失败原因，写入任务状态便于排查。
+            document_error_msg: 展示给用户的文档错误提示；未指定时使用技术原因。
         """
         # 发布事务必须先整体回滚，再用新事务记录失败状态，避免版本与标注部分生效。
         if self.rollback_before_failure_status is not None:
@@ -495,7 +538,10 @@ class IndexService:
             return
         if task is not None and self._should_keep_document_published(task.task_type, document):
             return
-        await self.document_repository.mark_failed(doc_id, error_msg)
+        await self.document_repository.mark_failed(
+            doc_id,
+            document_error_msg if document_error_msg is not None else error_msg,
+        )
 
     async def _retry_if_possible(self, task_id: int, doc_id: int, error_msg: str) -> None:
         """在未超过最大重试次数时记录重试并调度下一次执行。

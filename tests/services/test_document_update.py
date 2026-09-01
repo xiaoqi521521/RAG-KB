@@ -25,6 +25,19 @@ class FakeUploadFile:
     content_type: str = "text/plain"
 
 
+class FakeKnowledgeBaseRepository:
+    async def get(self, kb_id: int):
+        from app.models import KnowledgeBase
+
+        return KnowledgeBase(
+            id=kb_id,
+            name="HR知识库",
+            department_id="HR",
+            is_public=False,
+            created_by=1,
+        )
+
+
 class FakeDocumentRepository:
     def __init__(self, document: KbDocument | None) -> None:
         self.document = document
@@ -60,9 +73,9 @@ class FakeStorageService:
         self.uploaded: list[tuple[int, str | None]] = []
         self.deleted: list[str] = []
 
-    async def upload(self, kb_id: int, file: FakeUploadFile) -> str:
+    async def upload(self, kb_id: int, file: FakeUploadFile, *, kb_name: str) -> str:
         self.uploaded.append((kb_id, file.filename))
-        return f"kb/{kb_id}/new-{file.filename}"
+        return f"kb/{kb_id}-{kb_name}/new-{file.filename}"
 
     async def delete(self, object_key: str) -> None:
         self.deleted.append(object_key)
@@ -121,6 +134,7 @@ def _bundle(
     index_service = FakeIndexService(index_exc)
     service = DocumentUpdateService(
         document_repository=document_repo,
+        knowledge_base_repository=FakeKnowledgeBaseRepository(),
         storage_service=storage,
         index_service=index_service,
         max_upload_file_size_mb=50,
@@ -152,7 +166,7 @@ async def test_replace_content_updates_existing_document_submits_reindex_and_del
                     "file_name": "updated.pdf",
                     "file_type": "PDF",
                     "file_size": 256,
-                    "minio_path": "kb/10/new-updated.pdf",
+                    "minio_path": "kb/10-HR知识库/new-updated.pdf",
                 },
                 "old_minio_path": "kb/10/old-handbook.txt",
             },
@@ -202,6 +216,6 @@ async def test_replace_content_marks_failed_and_keeps_new_file_when_reindex_subm
     with pytest.raises(RuntimeError, match="index submit failed"):
         await bundle.service.replace_content(10, 7, FakeUploadFile("updated.txt"), _user())
 
-    assert bundle.storage.deleted == ["kb/10/new-updated.txt"]
+    assert bundle.storage.deleted == ["kb/10-HR知识库/new-updated.txt"]
     assert bundle.document_repo.failed == []
     assert bundle.document.status == DocumentStatus.DONE.value
