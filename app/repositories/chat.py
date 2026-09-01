@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.time import shanghai_now_naive
@@ -92,6 +92,20 @@ class ChatRepository:
             .order_by(ChatSession.last_active_at.desc())
         )
         return list(result.scalars())
+
+    async def soft_delete_session_for_user(self, session_id: str, user_id: int) -> bool:
+        """仅将当前用户仍有效的会话标记为已删除。"""
+        result = await self.session.execute(
+            update(ChatSession)
+            .where(
+                ChatSession.id == session_id,
+                ChatSession.user_id == user_id,
+                ChatSession.is_deleted.is_(False),
+            )
+            .values(is_deleted=True)
+            .returning(ChatSession.id)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def list_messages_for_user(self, session_id: str, user_id: int) -> list[ChatMessage]:
         """按创建时间正序读取当前用户会话的消息。"""

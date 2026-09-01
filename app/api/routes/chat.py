@@ -200,6 +200,17 @@ async def list_chat_sessions(
     return ApiResponse.ok([ChatSessionResponse.model_validate(session) for session in sessions])
 
 
+@router.delete("/sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session_service: ChatSessionService = Depends(get_chat_session_service),
+) -> ApiResponse[None]:
+    """删除当前用户拥有的历史会话。"""
+    await session_service.delete_session(session_id, user)
+    return ApiResponse.ok()
+
+
 @router.get("/sessions/{session_id}/messages")
 async def list_chat_messages(
     session_id: str,

@@ -72,6 +72,12 @@ class ChatSessionService:
         """返回当前用户未删除的对话会话。"""
         return await self.repository.list_sessions(user.user_id)
 
+    async def delete_session(self, session_id: str, user: CurrentUser) -> None:
+        """软删除当前用户的历史会话。"""
+        deleted = await self.repository.soft_delete_session_for_user(session_id, user.user_id)
+        if not deleted:
+            raise self._session_not_found()
+
     async def list_messages(self, session_id: str, user: CurrentUser) -> list[ChatMessage]:
         """返回会话全部消息，供前端恢复历史记录。"""
         await self._require_owned_session(session_id, user)

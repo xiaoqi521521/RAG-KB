@@ -109,6 +109,8 @@ class FakeSynchronousChatService:
 class FakeChatSessionService:
     def __init__(self) -> None:
         self.message_calls: list[tuple[str, int]] = []
+        self.delete_calls: list[tuple[str, int]] = []
+        self.delete_status_code: int | None = None
 
     async def list_sessions(self, user: CurrentUser) -> list[SimpleNamespace]:
         return [
@@ -139,6 +141,11 @@ class FakeChatSessionService:
                 created_at=datetime(2026, 1, 1),
             )
         ]
+
+    async def delete_session(self, session_id: str, user: CurrentUser) -> None:
+        self.delete_calls.append((session_id, user.user_id))
+        if self.delete_status_code is not None:
+            raise HTTPException(status_code=self.delete_status_code, detail="对话会话不存在")
 
 
 def _client(
@@ -282,3 +289,31 @@ def test_session_read_endpoints_return_existing_conversation_in_display_order() 
         }
     ]
     assert session_service.message_calls == [("session-1", 1)]
+
+
+def test_delete_session_deletes_the_current_users_history() -> None:
+    session_service = FakeChatSessionService()
+    with _client(
+        FakePermissionService(),
+        FakeStreamingChatService(),
+        session_service,
+    ) as client:
+        response = client.delete("/api/v1/chat/sessions/session-1")
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert session_service.delete_calls == [("session-1", 1)]
+
+
+def test_delete_session_preserves_not_found_semantics() -> None:
+    session_service = FakeChatSessionService()
+    session_service.delete_status_code = 404
+    with _client(
+        FakePermissionService(),
+        FakeStreamingChatService(),
+        session_service,
+    ) as client:
+        response = client.delete("/api/v1/chat/sessions/another-users-session")
+
+    assert response.status_code == 404
+    assert session_service.delete_calls == [("another-users-session", 1)]

@@ -15,6 +15,7 @@ class FakeChatRepository:
         self.owner_id = owner_id
         self.touched: list[str] = []
         self.saved: list[dict[str, object]] = []
+        self.deleted: list[tuple[str, int]] = []
 
     async def get_active_session_for_user(
         self,
@@ -38,6 +39,10 @@ class FakeChatRepository:
             return False
         self.saved.append({"session_id": session_id, "user_id": user_id, **kwargs})
         return True
+
+    async def soft_delete_session_for_user(self, session_id: str, user_id: int) -> bool:
+        self.deleted.append((session_id, user_id))
+        return user_id == self.owner_id
 
 
 async def test_history_keeps_only_latest_five_complete_conversation_rounds() -> None:
@@ -102,3 +107,23 @@ async def test_saving_a_turn_passes_the_complete_knowledge_base_scope() -> None:
     )
 
     assert repository.saved[0]["kb_ids"] == [2, 3]
+
+
+async def test_deleting_a_session_soft_deletes_only_the_current_users_session() -> None:
+    repository = FakeChatRepository([])
+    service = ChatSessionService(repository)  # type: ignore[arg-type]
+
+    await service.delete_session("session-1", CurrentUser(1, "engineering", "MEMBER"))
+
+    assert repository.deleted == [("session-1", 1)]
+
+
+async def test_deleting_another_users_session_returns_not_found() -> None:
+    repository = FakeChatRepository([])
+    service = ChatSessionService(repository)  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.delete_session("session-1", CurrentUser(2, "sales", "MEMBER"))
+
+    assert exc_info.value.status_code == 404
+    assert repository.deleted == [("session-1", 2)]
