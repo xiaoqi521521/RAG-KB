@@ -409,6 +409,6 @@ mypy 未通过项集中在 `app/core/clients.py` 既有 LangChain 类型 stub �
 - 用户问题向量化不再生成或写入 `rag:emb:query:*` key。
 - 用户问题向量化不再打印 `Embedding completed` 缓存统计日志。
 - 文档 chunk 向量缓存保持不变，继续使用 `rag:emb:doc:{cache_version}:{md5(chunk_content)}`。
-- HyDE 文本缓存由 `QueryRewriter` 使用 `rag:query:user-question-hyde:{md5(question)}` 维护。发布时通过 `scripts/migrate_redis_cache_keys.py --apply` 将旧版 `rag:hyde:{md5(question)}` 原子迁移；运行时读取新 key 未命中时仍会兼容迁移，二者均保留原值 TTL。首轮查询结果缓存使用 `rag:query:user-question:{md5}`，旧 MD5 key 由迁移脚本或运行时按当前问题命中后迁移。HyDE 文本 Embedding 本身不缓存。
+- HyDE 文本缓存由 `QueryRewriter` 使用 `rag:query:user-question-hyde:{md5(question)}` 维护；首轮查询结果缓存使用 `rag:query:user-question:{md5}`。HyDE 文本 Embedding 本身不缓存。
 
 本次同步后的目标行为由 `tests/services/test_embedding.py::test_embed_query_does_not_use_cache_or_write_completion_log` 覆盖。

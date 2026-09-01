@@ -17,7 +17,6 @@ class FakeRedis:
         self.fail_setex = False
         self.fail_delete = False
         self.get_calls = 0
-        self.renamenx_calls: list[tuple[str, str]] = []
 
     async def get(self, key: str) -> str | None:
         self.get_calls += 1
@@ -35,14 +34,6 @@ class FakeRedis:
         if self.fail_delete:
             raise RuntimeError("redis unavailable")
         self.values.pop(key, None)
-
-    async def renamenx(self, source: str, destination: str) -> bool:
-        self.renamenx_calls.append((source, destination))
-        if source not in self.values or destination in self.values:
-            return False
-        self.values[destination] = self.values.pop(source)
-        return True
-
 
 def _response() -> RagQueryResponse:
     return RagQueryResponse(
@@ -85,32 +76,6 @@ async def test_query_cache_builds_stable_key_and_round_trips_cacheable_response(
     assert redis.setex_calls[0][0] == key
     assert redis.setex_calls[0][1] == 600
     assert json.loads(redis.setex_calls[0][2])["version"] == 2
-
-
-@pytest.mark.asyncio
-async def test_query_cache_migrates_legacy_cache_key() -> None:
-    redis = FakeRedis()
-    service = QueryCacheService(redis, ttl_seconds=600)
-    cache_key = service.build_cache_key("员工手册？", [2, 3])
-    legacy_key = "rag:query:6c9967d91700110374648aa167fa24d0"
-    response = _response()
-    redis.values[legacy_key] = json.dumps(
-        {
-            "version": 2,
-            "answer": response.answer,
-            "sources": [source.model_dump(mode="json") for source in response.sources],
-            "hit_count": response.hit_count,
-        },
-        ensure_ascii=False,
-    )
-
-    cached = await service.get("员工手册？", [3, 2])
-
-    assert cached is not None
-    assert cached.answer == "年假需要提前申请。（来源：[参考1]）"
-    assert redis.renamenx_calls == [(legacy_key, cache_key)]
-    assert legacy_key not in redis.values
-    assert cache_key in redis.values
 
 
 @pytest.mark.asyncio
@@ -190,13 +155,13 @@ async def test_query_cache_rejects_missing_version_and_empty_sources() -> None:
     assert await service.get("版本缺失", [2]) is None
     assert key not in redis.values
 
-    legacy_key = service.build_cache_key("旧版本", [2]).replace("rag:query:user-question:", "rag:query:")
-    legacy_payload = json.loads(_response().model_dump_json())
-    legacy_payload["version"] = 1
-    redis.values[legacy_key] = json.dumps(legacy_payload, ensure_ascii=False)
+    outdated_key = service.build_cache_key("旧版本", [2])
+    outdated_payload = json.loads(_response().model_dump_json())
+    outdated_payload["version"] = 1
+    redis.values[outdated_key] = json.dumps(outdated_payload, ensure_ascii=False)
 
     assert await service.get("旧版本", [2]) is None
-    assert legacy_key not in redis.values
+    assert outdated_key not in redis.values
 
     empty_key = service.build_cache_key("空引用", [2])
     redis.values[empty_key] = json.dumps(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -20,7 +19,6 @@ MULTI_QUERY_COUNT = 3
 MULTI_QUERY_MAX_CHARS = 200
 REWRITE_CACHE_VERSION = "v1"
 HYDE_CACHE_PREFIX = "rag:query:user-question-hyde:"
-LEGACY_HYDE_CACHE_PREFIX = "rag:hyde:"
 
 HYDE_PROMPT_TEMPLATE = """请根据以下问题生成一个简洁的假设性回答，用于企业知识库检索。
 要求：
@@ -107,12 +105,6 @@ class QueryRewriter:
         cache_key = self._cache_key("hyde", normalized_question)
 
         cached = await self._read_cache(cache_key, "hyde", degraded_reasons)
-        if cached is None:
-            cached = await self._migrate_legacy_hyde_cache(
-                normalized_question,
-                cache_key,
-                degraded_reasons,
-            )
         if cached:
             return HydeRewriteResult(
                 original_question=normalized_question,
@@ -190,52 +182,6 @@ class QueryRewriter:
         if kind == "multi":
             return f"rag:rewrite:{REWRITE_CACHE_VERSION}:multi:{MULTI_QUERY_COUNT}:{self.chat_model_name}:{digest}"
         return f"rag:rewrite:{REWRITE_CACHE_VERSION}:{kind}:{self.chat_model_name}:{digest}"
-
-    async def _migrate_legacy_hyde_cache(
-        self,
-        question: str,
-        cache_key: str,
-        degraded_reasons: list[str],
-    ) -> str | None:
-        """将命中的旧版 HyDE 缓存原子迁移到新 key，并保留原有 TTL。"""
-        legacy_key = f"{LEGACY_HYDE_CACHE_PREFIX}{hashlib.md5(question.encode('utf-8')).hexdigest()}"
-        try:
-            legacy_value = await self._read_redis_key(legacy_key)
-            if legacy_value is None:
-                return None
-            if await self._rename_redis_key(legacy_key, cache_key):
-                return legacy_value
-            migrated_value = await self._read_redis_key(cache_key)
-            return migrated_value
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("HyDE cache migration failed: error=%s", exc)
-            degraded_reasons.append("hyde_cache_migration_failed")
-            return None
-
-    async def _read_redis_key(self, key: str) -> str | None:
-        """以固定超时和一次重试读取迁移所需的 Redis 值。"""
-        for attempt in range(2):
-            try:
-                async with asyncio.timeout(1.0):
-                    value = await self.redis.get(key)
-                if isinstance(value, bytes):
-                    return value.decode("utf-8")
-                return value if isinstance(value, str) else None
-            except Exception:
-                if attempt == 1:
-                    raise
-        return None
-
-    async def _rename_redis_key(self, source: str, destination: str) -> bool:
-        """以固定超时和一次重试原子迁移 Redis key，保留原有 TTL。"""
-        for attempt in range(2):
-            try:
-                async with asyncio.timeout(1.0):
-                    return await self.redis.renamenx(source, destination)
-            except Exception:
-                if attempt == 1:
-                    raise
-        return False
 
     async def _invoke_chat(self, prompt: str) -> Any:
         """调用聊天模型并保留原始响应，供 usage 记录和文本清洗分别使用。"""
