@@ -22,7 +22,11 @@ from app.services.faithfulness_evaluator import FaithfulnessEvaluator, Faithfuln
 from app.services.rag_prompt import build_v4_system_prompt
 from app.services.rag_query import RAG_REFUSAL_ANSWER, RAG_REFUSAL_MARKER
 from app.services.reranker import RerankerService
-from app.services.source_builder import CitationSelectionStatus, SourceBuilder
+from app.services.source_builder import (
+    CitationSelectionStatus,
+    FinalizedAnswer,
+    SourceBuilder,
+)
 from app.services.token_metrics import TokenMetrics, knowledge_base_scope, record_generation_usage
 
 logger = logging.getLogger(__name__)
@@ -134,12 +138,14 @@ class RagQueryServiceV4:
             prepared_context,
             kb_ids=kb_ids,
         )
-        sources = self._resolve_answer_sources(
+        finalized = self._resolve_answer_sources(
             answer=answer,
             prepared_context=prepared_context,
         )
-        if sources is None:
+        if finalized is None:
             return self._refusal_execution(started_at, prepared_context)
+        answer = finalized.answer
+        sources = finalized.sources
 
         latency_ms = self._elapsed_ms(started_at)
         logger.info(
@@ -171,27 +177,27 @@ class RagQueryServiceV4:
         prepared_context: PreparedRagContext,
         user: CurrentUser,
         kb_ids: list[int],
-    ) -> list[SourceCitation] | None:
+    ) -> FinalizedAnswer | None:
         """解析回答引用并触发忠实性观测，拒答时返回 None。"""
-        sources = self._resolve_answer_sources(
+        finalized = self._resolve_answer_sources(
             answer=answer,
             prepared_context=prepared_context,
         )
-        if sources is not None:
+        if finalized is not None:
             self._schedule_faithfulness_observation(
                 question=question,
-                answer=answer,
+                answer=finalized.answer,
                 context=prepared_context.context,
                 kb_id=knowledge_base_scope(kb_ids),
             )
-        return sources
+        return finalized
 
     def _resolve_answer_sources(
         self,
         *,
         answer: str,
         prepared_context: PreparedRagContext,
-    ) -> list[SourceCitation] | None:
+    ) -> FinalizedAnswer | None:
         """按模型回答解析最终引用，明确拒答时返回 None。"""
         if self._is_explicit_refusal(answer):
             logger.info(
@@ -215,7 +221,7 @@ class RagQueryServiceV4:
             citation_result.valid_count,
             citation_result.invalid_count,
         )
-        return sources
+        return FinalizedAnswer(answer=citation_result.answer or answer, sources=sources)
 
     async def prepare_context(
         self,

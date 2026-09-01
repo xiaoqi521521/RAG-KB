@@ -3,7 +3,7 @@ import type { SourceCitation } from '@/types';
 export type ChatStreamEvent =
   | { kind: 'status'; status: string; message: string; sessionId?: string }
   | { kind: 'token'; content: string }
-  | { kind: 'done'; sources: SourceCitation[]; latencyMs: number }
+  | { kind: 'done'; answer?: string; sources: SourceCitation[]; latencyMs: number }
   | { kind: 'error'; message: string };
 
 interface StreamChatParams {
@@ -97,6 +97,7 @@ export async function streamChat(params: StreamChatParams): Promise<void> {
         const payload = JSON.parse(data);
         params.onEvent({
           kind: 'done',
+          answer: typeof payload.answer === 'string' ? payload.answer : undefined,
           sources: Array.isArray(payload.sources) ? payload.sources : [],
           latencyMs: payload.latency_ms ?? 0,
         });

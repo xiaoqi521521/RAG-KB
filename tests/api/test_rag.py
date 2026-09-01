@@ -82,7 +82,7 @@ class FakeQueryCache:
         self.put_calls.append((question, kb_ids))
         if response.sources:
             self.entries[(question.strip(), tuple(sorted(kb_ids)))] = QueryCacheEntry(
-                version=1,
+                version=2,
                 answer=response.answer,
                 sources=response.sources,
                 hit_count=response.hit_count,
@@ -399,9 +399,9 @@ def test_get_faithfulness_metrics_reads_application_state() -> None:
 @pytest.mark.parametrize(
     ("model_answer", "expected_answer", "expected_chunk_ids"),
     [
-        ("第二条内容有效（来源：[参考2]）。", "第二条内容有效（来源：[参考2]）。", [11]),
+        ("第二条内容有效（来源：[参考2]）。", "第二条内容有效（来源：[参考1]）。", [11]),
         ("两条内容都需要参考。", "两条内容都需要参考。", [10, 11]),
-        ("第二条有效（来源：[参考2][参考99]）。", "第二条有效（来源：[参考2][参考99]）。", [11]),
+        ("第二条有效（来源：[参考2][参考99]）。", "第二条有效（来源：[参考1][参考99]）。", [11]),
         ("引用编号错误（来源：[参考99]）。", "引用编号错误（来源：[参考99]）。", []),
         ("在知识库中未找到相关内容。", RAG_REFUSAL_ANSWER, []),
     ],

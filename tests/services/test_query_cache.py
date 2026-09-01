@@ -76,7 +76,7 @@ async def test_query_cache_builds_stable_key_and_round_trips_cacheable_response(
     assert cached.hit_count == 1
     assert redis.setex_calls[0][0] == key
     assert redis.setex_calls[0][1] == 600
-    assert json.loads(redis.setex_calls[0][2])["version"] == 1
+    assert json.loads(redis.setex_calls[0][2])["version"] == 2
 
 
 @pytest.mark.asyncio
@@ -149,16 +149,24 @@ async def test_query_cache_rejects_missing_version_and_empty_sources() -> None:
     service = QueryCacheService(redis, ttl_seconds=600)
     key = service.build_cache_key("版本缺失", [2])
     payload = json.loads(_response().model_dump_json())
-    payload["version"] = 1
+    payload["version"] = 2
     payload.pop("version")
     redis.values[key] = json.dumps(payload, ensure_ascii=False)
 
     assert await service.get("版本缺失", [2]) is None
     assert key not in redis.values
 
+    legacy_key = service.build_cache_key("旧版本", [2])
+    legacy_payload = json.loads(_response().model_dump_json())
+    legacy_payload["version"] = 1
+    redis.values[legacy_key] = json.dumps(legacy_payload, ensure_ascii=False)
+
+    assert await service.get("旧版本", [2]) is None
+    assert legacy_key not in redis.values
+
     empty_key = service.build_cache_key("空引用", [2])
     redis.values[empty_key] = json.dumps(
-        {"version": 1, "answer": "拒答", "sources": [], "hit_count": 0},
+        {"version": 2, "answer": "拒答", "sources": [], "hit_count": 0},
         ensure_ascii=False,
     )
 

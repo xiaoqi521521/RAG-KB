@@ -29,6 +29,15 @@ class CitationSelectionResult:
     referenced_count: int
     valid_count: int
     invalid_count: int
+    answer: str = ""
+
+
+@dataclass(frozen=True)
+class FinalizedAnswer:
+    """回答引用最终化结果，包含已连续化的正文编号和来源。"""
+
+    answer: str
+    sources: list[SourceCitation]
 
 
 @dataclass(frozen=True)
@@ -141,6 +150,7 @@ class SourceBuilder:
                 referenced_count=0,
                 valid_count=0,
                 invalid_count=0,
+                answer=answer,
             )
         if not referenced_numbers:
             return CitationSelectionResult(
@@ -149,6 +159,7 @@ class SourceBuilder:
                 referenced_count=0,
                 valid_count=0,
                 invalid_count=0,
+                answer=answer,
             )
 
         source_by_index = {
@@ -159,6 +170,20 @@ class SourceBuilder:
             for number in referenced_numbers
             if number in source_by_index
         ]
+        # 公开引用按原始编号升序连续化，保持与前端数字顺序一致。
+        sources.sort(key=lambda source: source.reference_index)
+        reference_mapping = {
+            str(source.reference_index): index
+            for index, source in enumerate(sources, start=1)
+        }
+        sources = [
+            source.model_copy(update={"reference_index": index})
+            for index, source in enumerate(sources, start=1)
+        ]
+        normalized_answer = self.citation_parser.rewrite_reference_numbers(
+            answer,
+            reference_mapping,
+        )
         return CitationSelectionResult(
             status=(
                 CitationSelectionStatus.EXACT
@@ -169,6 +194,7 @@ class SourceBuilder:
             referenced_count=len(referenced_numbers),
             valid_count=len(sources),
             invalid_count=len(referenced_numbers) - len(sources),
+            answer=normalized_answer,
         )
 
     def _format_prefix(self, reference_index: int, hit: ChunkSearchHit) -> str:

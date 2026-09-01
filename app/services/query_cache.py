@@ -92,7 +92,7 @@ class QueryCacheService:
             return
 
         entry = QueryCacheEntry(
-            version=1,
+            version=2,
             answer=response.answer,
             sources=response.sources,
             hit_count=response.hit_count,

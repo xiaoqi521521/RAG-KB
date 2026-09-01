@@ -74,7 +74,7 @@ def test_build_truncates_context_by_character_budget() -> None:
     assert len(sources[0].excerpt) < len("很长的制度内容" * 30)
 
 
-def test_resolve_citations_returns_valid_sources_in_answer_order() -> None:
+def test_resolve_citations_returns_valid_sources_in_reference_order() -> None:
     builder = SourceBuilder(max_context_chars=1000)
     _, available_sources = builder.build(
         [_hit(chunk_id=10), _hit(chunk_id=11), _hit(chunk_id=12)],
@@ -87,8 +87,26 @@ def test_resolve_citations_returns_valid_sources_in_answer_order() -> None:
     )
 
     assert result.status is CitationSelectionStatus.EXACT
-    assert [source.reference_index for source in result.sources] == [2, 1]
-    assert [source.chunk_id for source in result.sources] == [11, 10]
+    assert [source.reference_index for source in result.sources] == [1, 2]
+    assert [source.chunk_id for source in result.sources] == [10, 11]
+    assert result.answer == "先执行检查（来源：[参考2][参考1]）。"
+
+
+def test_resolve_citations_normalizes_sparse_reference_numbers() -> None:
+    builder = SourceBuilder(max_context_chars=1000)
+    _, available_sources = builder.build(
+        [_hit(chunk_id=10), _hit(chunk_id=11), _hit(chunk_id=12), _hit(chunk_id=13)],
+        return_top_n=4,
+    )
+
+    result = builder.resolve_citations(
+        "第一项（来源：[参考1]），第四项（来源：[参考4]）。",
+        available_sources,
+    )
+
+    assert result.answer == "第一项（来源：[参考1]），第四项（来源：[参考2]）。"
+    assert [source.reference_index for source in result.sources] == [1, 2]
+    assert [source.chunk_id for source in result.sources] == [10, 13]
 
 
 def test_resolve_citations_returns_all_sources_when_answer_has_no_markers() -> None:
@@ -120,7 +138,7 @@ def test_resolve_citations_ignores_invalid_indices_when_valid_sources_exist() ->
     )
 
     assert result.status is CitationSelectionStatus.EXACT
-    assert [source.reference_index for source in result.sources] == [2]
+    assert [source.reference_index for source in result.sources] == [1]
     assert result.referenced_count == 2
     assert result.valid_count == 1
     assert result.invalid_count == 1

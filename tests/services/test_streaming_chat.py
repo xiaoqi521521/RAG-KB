@@ -9,6 +9,7 @@ from app.core.context import CurrentUser
 from app.schemas.query_cache import QueryCacheEntry
 from app.schemas.rag import SourceCitation
 from app.services.rag_query_v4 import PreparedRagContext
+from app.services.source_builder import FinalizedAnswer
 from app.services.streaming_chat import SseEvent, StreamingChatService
 
 
@@ -116,12 +117,14 @@ class FakeRagService:
         prepared_context: PreparedRagContext | None,
         *,
         final_sources: list[SourceCitation] | None | object = ..., 
+        final_answer: str | None = None,
         chat_model: FakeChatModel | None = None,
     ) -> None:
         self.prepared_context = prepared_context
         self.final_sources = (
             prepared_context.sources if final_sources is ... and prepared_context is not None else final_sources
         )
+        self.final_answer = final_answer
         self.chat_model = chat_model or FakeChatModel()
         self.token_metrics = FakeTokenMetrics()
         self.received_history: list[object] | None = None
@@ -141,8 +144,13 @@ class FakeRagService:
         self.received_history = history
         return [*(history or []), question]
 
-    def finalize_answer(self, **kwargs: object) -> list[SourceCitation] | None:
-        return self.final_sources if isinstance(self.final_sources, list) else None
+    def finalize_answer(self, **kwargs: object) -> FinalizedAnswer | None:
+        if not isinstance(self.final_sources, list):
+            return None
+        return FinalizedAnswer(
+            answer=self.final_answer if self.final_answer is not None else str(kwargs["answer"]),
+            sources=self.final_sources,
+        )
 
 
 class InMemoryStreamingChatService(StreamingChatService):
@@ -197,7 +205,7 @@ def _prepared_context() -> PreparedRagContext:
 
 def _cache_entry() -> QueryCacheEntry:
     return QueryCacheEntry(
-        version=1,
+        version=2,
         answer="缓存回答。[参考1]",
         sources=_prepared_context().sources,
         hit_count=1,
@@ -246,6 +254,31 @@ async def test_stream_saves_complete_turn_and_injects_recent_history() -> None:
     assert rag_service.token_metrics.tokens == [4]
     assert service.query_cache.get_calls == []
     assert service.query_cache.put_calls == []
+
+
+async def test_stream_uses_normalized_answer_from_finalization_in_done_and_persistence() -> None:
+    source = _prepared_context().sources[0].model_copy(update={"reference_index": 1})
+    rag_service = FakeRagService(
+        _prepared_context(),
+        final_sources=[source],
+        final_answer="根据员工手册（来源：[参考1]）。",
+        chat_model=FakeChatModel(chunks=[FakeChunk(content="根据员工手册（来源：[参考4]）。")]),
+    )
+    service = InMemoryStreamingChatService(rag_service)
+
+    events = [
+        event
+        async for event in service.stream(
+            question="年假怎么申请？",
+            kb_ids=[2],
+            session_id="session-1",
+            user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        )
+    ]
+
+    assert events[-1].event == "done"
+    assert '"answer":"根据员工手册（来源：[参考1]）。"' in events[-1].data
+    assert service.saved_turns[0]["answer"] == "根据员工手册（来源：[参考1]）。"
 
 
 async def test_stream_returns_refusal_without_saving_turn_when_context_is_missing() -> None:

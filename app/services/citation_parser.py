@@ -37,3 +37,19 @@ class CitationParser:
                 # 超长数字仍是引用标记，但无法安全转换为 Python int。
                 continue
         return indices
+
+    def rewrite_reference_numbers(
+        self,
+        answer: str,
+        reference_mapping: dict[str, int],
+    ) -> str:
+        """按给定映射重写回答中的有效引用编号。"""
+
+        def replace(match: re.Match[str]) -> str:
+            number = match.group(1).lstrip("0") or "0"
+            normalized = reference_mapping.get(number)
+            if normalized is None:
+                return match.group(0)
+            return f"[参考{normalized}]"
+
+        return self._citation_pattern.sub(replace, answer)

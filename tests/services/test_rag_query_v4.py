@@ -144,6 +144,7 @@ class FakeSourceBuilder:
             referenced_count=0,
             valid_count=0,
             invalid_count=0,
+            answer=answer,
         )
 
 
@@ -445,7 +446,8 @@ async def test_query_uses_v4_prompt_and_returns_only_answer_citations() -> None:
     response = await service.query(question="哪条内容有效？", kb_ids=[2], user=_user())
 
     assert [source.chunk_id for source in response.sources] == [11]
-    assert response.sources[0].reference_index == 2
+    assert response.sources[0].reference_index == 1
+    assert response.answer == "第二条内容有效（来源：[参考1]）。"
     assert response.hit_count == 1
     assert chat.messages is not None
     assert "每条事实后都要标注来源" in chat.messages[0].content

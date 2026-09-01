@@ -236,7 +236,10 @@ export default function ChatPage() {
             finalAnswer += event.content;
             appendLastAssistant(event.content);
           } else if (event.kind === 'done') {
-            setLastAssistantDone(event.sources, event.latencyMs);
+            if (event.answer !== undefined) {
+              finalAnswer = event.answer;
+            }
+            setLastAssistantDone(event.sources, event.latencyMs, event.answer);
             if (event.sources.length > 0) {
               openPanel(`assistant-${now}`, event.sources[0]?.reference_index);
             }

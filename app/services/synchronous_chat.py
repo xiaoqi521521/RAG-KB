@@ -167,13 +167,18 @@ class SynchronousChatService(ChatSessionRuntime):
             kb_ids=kb_ids,
         )
         answer = response.content.strip()
-        sources = rag_service.finalize_answer(
+        finalized = rag_service.finalize_answer(
             question=question,
             answer=answer,
             prepared_context=prepared_context,
             user=user,
             kb_ids=kb_ids,
         )
+        if finalized is not None:
+            answer = finalized.answer
+            sources = finalized.sources
+        else:
+            sources = None
         latency_ms = self._elapsed_ms(started_at)
         if sources is None:
             return ChatQueryResponse(

@@ -12,7 +12,7 @@ class QueryCacheEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[1]
+    version: Literal[2]
     answer: str
     sources: list[SourceCitation]
     hit_count: int = Field(ge=0)

@@ -6,6 +6,7 @@ from app.core.context import CurrentUser
 from app.schemas.query_cache import QueryCacheEntry
 from app.schemas.rag import SourceCitation
 from app.services.rag_query_v4 import PreparedRagContext
+from app.services.source_builder import FinalizedAnswer
 from app.services.synchronous_chat import SynchronousChatService
 
 
@@ -74,8 +75,10 @@ class FakeRagService:
         self.received_history = history
         return [*(history or []), question]
 
-    def finalize_answer(self, **kwargs: object) -> list[SourceCitation] | None:
-        return self.prepared_context.sources if self.prepared_context is not None else None
+    def finalize_answer(self, **kwargs: object) -> FinalizedAnswer | None:
+        if self.prepared_context is None:
+            return None
+        return FinalizedAnswer(answer=str(kwargs["answer"]), sources=self.prepared_context.sources)
 
 
 class InMemorySynchronousChatService(SynchronousChatService):
@@ -110,7 +113,7 @@ class FailingSaveSynchronousChatService(InMemorySynchronousChatService):
 
 def _cache_entry() -> QueryCacheEntry:
     return QueryCacheEntry(
-        version=1,
+        version=2,
         answer="缓存回答。[参考1]",
         sources=_prepared_context().sources,
         hit_count=1,

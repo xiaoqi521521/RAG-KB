@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
@@ -144,7 +145,7 @@ class StreamingChatService(ChatSessionRuntime):
                     event="done",
                     data=(
                         '{"sources":'
-                        f"{self._json_sources(source_data)},\"latency_ms\":{latency_ms}" + "}"
+                        f"{self._json_sources(source_data)},\"answer\":{json.dumps(cached.answer, ensure_ascii=False)},\"latency_ms\":{latency_ms}" + "}"
                     ),
                 )
                 return
@@ -205,19 +206,22 @@ class StreamingChatService(ChatSessionRuntime):
                 kb_id=knowledge_base_scope(kb_ids),
             )
 
-        sources = rag_service.finalize_answer(
+        finalized = rag_service.finalize_answer(
             question=question,
             answer=answer,
             prepared_context=prepared_context,
             user=user,
             kb_ids=kb_ids,
         )
-        if sources is None:
+        if finalized is None:
             yield SseEvent(
                 event="done",
                 data=f'{{"sources":[],"latency_ms":{self._elapsed_ms(started_at)}}}',
             )
             return
+
+        answer = finalized.answer
+        sources = finalized.sources
 
         latency_ms = self._elapsed_ms(started_at)
         source_data = [source.model_dump(mode="json") for source in sources]
@@ -246,15 +250,13 @@ class StreamingChatService(ChatSessionRuntime):
             event="done",
             data=(
                 '{"sources":'
-                f"{self._json_sources(source_data)},\"latency_ms\":{latency_ms}" + "}"
+                f"{self._json_sources(source_data)},\"answer\":{json.dumps(answer, ensure_ascii=False)},\"latency_ms\":{latency_ms}" + "}"
             ),
         )
 
     @staticmethod
     def _json_sources(sources: list[dict[str, object]]) -> str:
         """把持久化来源转换为 SSE JSON 数组。"""
-        import json
-
         return json.dumps(sources, ensure_ascii=False, separators=(",", ":"))
 
     async def _ensure_budget(self) -> None:
