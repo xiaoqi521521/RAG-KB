@@ -92,7 +92,7 @@ async def test_query_cache_migrates_legacy_cache_key() -> None:
     redis = FakeRedis()
     service = QueryCacheService(redis, ttl_seconds=600)
     cache_key = service.build_cache_key("员工手册？", [2, 3])
-    legacy_key = "rag:query:3a6547e7469a3f9ad1abe4af53b1e826883f9615887b3aea3b3b5599c664704a"
+    legacy_key = "rag:query:6c9967d91700110374648aa167fa24d0"
     response = _response()
     redis.values[legacy_key] = json.dumps(
         {
@@ -190,7 +190,7 @@ async def test_query_cache_rejects_missing_version_and_empty_sources() -> None:
     assert await service.get("版本缺失", [2]) is None
     assert key not in redis.values
 
-    legacy_key = service.build_cache_key("旧版本", [2])
+    legacy_key = service.build_cache_key("旧版本", [2]).replace("rag:query:user-question:", "rag:query:")
     legacy_payload = json.loads(_response().model_dump_json())
     legacy_payload["version"] = 1
     redis.values[legacy_key] = json.dumps(legacy_payload, ensure_ascii=False)

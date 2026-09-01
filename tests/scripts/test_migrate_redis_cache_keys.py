@@ -28,10 +28,10 @@ class FakeRedis:
 
 def test_build_target_key_only_accepts_legacy_hyde_keys() -> None:
     hyde_digest = "a" * 32
-    query_digest = "b" * 64
+    query_digest = "b" * 32
 
     assert build_target_key(f"rag:hyde:{hyde_digest}") == f"rag:query:user-question-hyde:{hyde_digest}"
-    assert build_target_key(f"rag:query:{query_digest}") is None
+    assert build_target_key(f"rag:query:{query_digest}") == f"rag:query:user-question:{query_digest}"
     assert build_target_key("rag:query:user-question:already-migrated") is None
     assert build_target_key("rag:query:not-a-sha256") is None
 
@@ -39,8 +39,8 @@ def test_build_target_key_only_accepts_legacy_hyde_keys() -> None:
 @pytest.mark.asyncio
 async def test_migrate_cache_keys_renames_matching_keys_without_overwriting_new_values() -> None:
     hyde_digest = "a" * 32
-    query_digest = "b" * 64
-    existing_digest = "c" * 64
+    query_digest = "b" * 32
+    existing_digest = "c" * 32
     redis = FakeRedis(
         {
             f"rag:hyde:{hyde_digest}": "hyde value",
@@ -52,9 +52,9 @@ async def test_migrate_cache_keys_renames_matching_keys_without_overwriting_new_
 
     summary = await migrate_cache_keys(redis, apply=True)
 
-    assert summary.planned == 1
-    assert summary.migrated == 1
-    assert summary.skipped == 0
+    assert summary.planned == 3
+    assert summary.migrated == 2
+    assert summary.skipped == 1
     assert redis.values[f"rag:query:user-question-hyde:{hyde_digest}"] == "hyde value"
-    assert redis.values[f"rag:query:{query_digest}"] == "query value"
+    assert redis.values[f"rag:query:user-question:{query_digest}"] == "query value"
     assert redis.values[f"rag:query:{existing_digest}"] == "old query value"

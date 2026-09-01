@@ -126,12 +126,7 @@ class QueryCacheService:
         key: str,
     ) -> str | bytes | None:
         """将命中的旧版查询缓存原子迁移到新 key，并保留原有 TTL。"""
-        legacy_key = self._build_cache_key(
-            self.LEGACY_KEY_PREFIX,
-            question,
-            kb_ids,
-            algorithm="sha256",
-        )
+        legacy_key = self._build_cache_key(self.LEGACY_KEY_PREFIX, question, kb_ids)
         legacy_value = await self._read(legacy_key)
         if legacy_value is None:
             return None

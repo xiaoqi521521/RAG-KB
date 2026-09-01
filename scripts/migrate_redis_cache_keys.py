@@ -11,6 +11,9 @@ from app.core.config import get_settings
 
 LEGACY_HYDE_PREFIX = "rag:hyde:"
 HYDE_PREFIX = "rag:query:user-question-hyde:"
+LEGACY_QUERY_PREFIX = "rag:query:"
+QUERY_PREFIX = "rag:query:user-question:"
+MD5_HEX_LENGTH = 32
 
 
 class RedisKeyMigrationClient(Protocol):
@@ -37,6 +40,11 @@ def build_target_key(source_key: str) -> str | None:
         if len(digest) == 32 and all(char in "0123456789abcdef" for char in digest):
             return f"{HYDE_PREFIX}{digest}"
 
+    if source_key.startswith(LEGACY_QUERY_PREFIX):
+        digest = source_key.removeprefix(LEGACY_QUERY_PREFIX)
+        if len(digest) == MD5_HEX_LENGTH and all(char in "0123456789abcdef" for char in digest):
+            return f"{QUERY_PREFIX}{digest}"
+
     return None
 
 
@@ -49,18 +57,19 @@ async def migrate_cache_keys(
     planned = 0
     migrated = 0
     skipped = 0
-    async for raw_key in redis_client.scan_iter(match=f"{LEGACY_HYDE_PREFIX}*", count=100):
-        source_key = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else raw_key
-        target_key = build_target_key(source_key)
-        if target_key is None:
-            continue
-        planned += 1
-        if not apply:
-            continue
-        if await redis_client.renamenx(source_key, target_key):
-            migrated += 1
-        else:
-            skipped += 1
+    for pattern in (f"{LEGACY_HYDE_PREFIX}*", f"{LEGACY_QUERY_PREFIX}*"):
+        async for raw_key in redis_client.scan_iter(match=pattern, count=100):
+            source_key = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else raw_key
+            target_key = build_target_key(source_key)
+            if target_key is None:
+                continue
+            planned += 1
+            if not apply:
+                continue
+            if await redis_client.renamenx(source_key, target_key):
+                migrated += 1
+            else:
+                skipped += 1
     return CacheKeyMigrationSummary(planned=planned, migrated=migrated, skipped=skipped)
 
 
