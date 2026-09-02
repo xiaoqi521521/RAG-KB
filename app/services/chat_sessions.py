@@ -39,13 +39,15 @@ class ChatSessionService:
         self,
         *,
         session_id: str,
-        kb_ids: list[int],
+        kb_ids: list[int] | None,
         question: str,
         answer: str,
         sources: list[dict[str, object]],
         token_count: int,
         latency_ms: int,
         user: CurrentUser,
+        answer_mode: str = "knowledge_base",
+        knowledge_base_searched: bool = True,
     ) -> ChatMessage:
         """仅保存完整生成成功的用户问题和助手回答。"""
         saved = await self.repository.add_turn_for_user(
@@ -57,6 +59,8 @@ class ChatSessionService:
             sources=sources,
             token_count=token_count,
             latency_ms=latency_ms,
+            answer_mode=answer_mode,
+            knowledge_base_searched=knowledge_base_searched,
         )
         if not saved:
             raise self._session_not_found()

@@ -72,6 +72,13 @@ class ChatMessageRole(StrEnum):
     ASSISTANT = "ASSISTANT"
 
 
+class ChatAnswerMode(StrEnum):
+    KNOWLEDGE_BASE = "knowledge_base"
+    SESSION_META = "session_meta"
+    GENERAL_CHAT = "general_chat"
+    UNCERTAIN = "uncertain"
+
+
 class EvalDatasetStatus(StrEnum):
     CANDIDATE = "CANDIDATE"
     ACTIVE = "ACTIVE"
@@ -227,6 +234,8 @@ class ChatMessage(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, default=0, server_default="0")
     feedback: Mapped[int | None] = mapped_column(SmallInteger)
     kb_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
+    answer_mode: Mapped[str] = mapped_column(String(30), nullable=False, default="knowledge_base", server_default="knowledge_base")
+    knowledge_base_searched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )

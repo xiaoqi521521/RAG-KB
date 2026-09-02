@@ -15,7 +15,14 @@ interface ChatState {
   addMessage: (message: ChatMessage) => void;
   appendLastAssistant: (content: string) => void;
   setLastAssistantStatus: (status: string | null) => void;
-  setLastAssistantDone: (sources: SourceCitation[], latencyMs: number, answer?: string) => void;
+  setLastAssistantDone: (
+    sources: SourceCitation[],
+    latencyMs: number,
+    answer?: string,
+    answerMode?: string,
+    knowledgeBaseSearched?: boolean,
+    notice?: string | null,
+  ) => void;
   setLastAssistantMessageId: (messageId: number) => void;
   setStreaming: (streaming: boolean) => void;
   setStreamStatus: (status: string | null) => void;
@@ -64,11 +71,14 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: updateLastAssistant(s.messages, (m) => ({ ...m, status })),
     })),
 
-  setLastAssistantDone: (sources, latencyMs, answer) =>
+  setLastAssistantDone: (sources, latencyMs, answer, answerMode, knowledgeBaseSearched, notice) =>
     set((s) => ({
       messages: updateLastAssistant(s.messages, (m) => ({
         ...m,
         ...(answer !== undefined ? { content: answer } : {}),
+        ...(answerMode !== undefined ? { answerMode } : {}),
+        ...(knowledgeBaseSearched !== undefined ? { knowledgeBaseSearched } : {}),
+        ...(notice !== undefined ? { notice } : {}),
         sources,
         latencyMs,
         streaming: false,

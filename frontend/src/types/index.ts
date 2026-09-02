@@ -81,10 +81,13 @@ export interface RagResponse {
   sources: SourceCitation[];
   hit_count: number;
   latency_ms: number;
+  answer_mode?: string;
+  knowledge_base_searched?: boolean;
+  notice?: string | null;
 }
 
 export interface ChatQueryResponse extends RagResponse {
-  session_id: string;
+  session_id: string | null;
 }
 
 export interface ChatMessage {
@@ -98,6 +101,9 @@ export interface ChatMessage {
   streaming: boolean;
   status: string | null;
   timestamp: number;
+  answerMode?: string;
+  knowledgeBaseSearched?: boolean;
+  notice?: string | null;
 }
 
 export interface ChatSessionItem {
@@ -120,6 +126,8 @@ export interface ChatMessageItem {
   latency_ms: number | null;
   feedback: number | null;
   created_at: string;
+  answer_mode?: string;
+  knowledge_base_searched?: boolean;
 }
 
 export interface EvaluationReport {

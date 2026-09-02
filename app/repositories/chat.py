@@ -34,12 +34,14 @@ class ChatRepository:
         *,
         session_id: str,
         user_id: int,
-        kb_ids: list[int],
+        kb_ids: list[int] | None,
         question: str,
         answer: str,
         sources: list[dict[str, object]],
         token_count: int,
         latency_ms: int,
+        answer_mode: str = "knowledge_base",
+        knowledge_base_searched: bool = True,
     ) -> ChatMessage | None:
         """为会话所有者保存完整问答轮次。
 
@@ -58,6 +60,8 @@ class ChatRepository:
             token_count=token_count,
             latency_ms=latency_ms,
             kb_ids=kb_ids,
+            answer_mode=answer_mode,
+            knowledge_base_searched=knowledge_base_searched,
         )
         self.session.add_all(
             [
@@ -65,6 +69,9 @@ class ChatRepository:
                     session_id=session_id,
                     role=ChatMessageRole.USER.value,
                     content=question,
+                    kb_ids=None,
+                    answer_mode=answer_mode,
+                    knowledge_base_searched=knowledge_base_searched,
                 ),
                 assistant_message,
             ]

@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
-from app.schemas.rag import ChatQueryResponse
+from app.schemas.rag import ChatIntent, ChatQueryResponse
 
 
 def _user() -> CurrentUser:
@@ -25,6 +25,16 @@ class FakePermissionService:
         self.read_checks.append(kb_id)
         if kb_id == self.forbidden_kb_id:
             raise HTTPException(status_code=403, detail="无权访问该知识库")
+
+
+class FakeIntentClassifier:
+    def __init__(self, intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY) -> None:
+        self.intent = intent
+        self.questions: list[str] = []
+
+    async def classify(self, question: str) -> ChatIntent:
+        self.questions.append(question)
+        return self.intent
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,7 @@ class FakeStreamingChatService:
         session_id: str | None,
         user: CurrentUser,
         started_at: float | None = None,
+        intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
     ) -> AsyncIterator[FakeStreamEvent]:
         self.calls.append(
             {
@@ -53,6 +64,7 @@ class FakeStreamingChatService:
                 "session_id": session_id,
                 "user_id": user.user_id,
                 "started_at": started_at,
+                "intent": intent,
             }
         )
         yield FakeStreamEvent(
@@ -87,6 +99,7 @@ class FakeSynchronousChatService:
         session_id: str | None,
         user: CurrentUser,
         started_at: float | None = None,
+        intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
     ) -> ChatQueryResponse:
         self.calls.append(
             {
@@ -95,6 +108,7 @@ class FakeSynchronousChatService:
                 "session_id": session_id,
                 "user_id": user.user_id,
                 "started_at": started_at,
+                "intent": intent,
             }
         )
         return ChatQueryResponse(
@@ -111,6 +125,19 @@ class FakeChatSessionService:
         self.message_calls: list[tuple[str, int]] = []
         self.delete_calls: list[tuple[str, int]] = []
         self.delete_status_code: int | None = None
+        self.messages: list[SimpleNamespace] = [
+            SimpleNamespace(
+                id=1,
+                session_id="session-1",
+                role="USER",
+                content="年假怎么申请？",
+                sources=None,
+                token_count=0,
+                latency_ms=0,
+                feedback=None,
+                created_at=datetime(2026, 1, 1),
+            )
+        ]
 
     async def list_sessions(self, user: CurrentUser) -> list[SimpleNamespace]:
         return [
@@ -128,19 +155,7 @@ class FakeChatSessionService:
 
     async def list_messages(self, session_id: str, user: CurrentUser) -> list[SimpleNamespace]:
         self.message_calls.append((session_id, user.user_id))
-        return [
-            SimpleNamespace(
-                id=1,
-                session_id=session_id,
-                role="USER",
-                content="年假怎么申请？",
-                sources=None,
-                token_count=0,
-                latency_ms=0,
-                feedback=None,
-                created_at=datetime(2026, 1, 1),
-            )
-        ]
+        return self.messages
 
     async def delete_session(self, session_id: str, user: CurrentUser) -> None:
         self.delete_calls.append((session_id, user.user_id))
@@ -153,6 +168,7 @@ def _client(
     streaming_service: FakeStreamingChatService,
     chat_session_service: FakeChatSessionService | None = None,
     synchronous_service: FakeSynchronousChatService | None = None,
+    intent_classifier: FakeIntentClassifier | None = None,
 ) -> TestClient:
     from app.api.routes import chat
 
@@ -164,6 +180,7 @@ def _client(
         app.dependency_overrides[chat.get_synchronous_chat_service] = lambda: synchronous_service
     if chat_session_service is not None:
         app.dependency_overrides[chat.get_chat_session_service] = lambda: chat_session_service
+    app.dependency_overrides[chat.get_intent_classifier] = lambda: intent_classifier or FakeIntentClassifier()
     app.dependency_overrides[chat.get_current_user] = lambda: _user()
     return TestClient(app)
 
@@ -192,6 +209,7 @@ def test_sync_endpoint_returns_complete_answer_and_session_id() -> None:
     assert call["session_id"] is None
     assert call["user_id"] == 1
     assert isinstance(call["started_at"], float)
+    assert call["intent"] == ChatIntent.KNOWLEDGE_BASE_QUERY
 
 
 def test_sync_endpoint_stops_before_session_creation_when_permission_denied() -> None:
@@ -244,6 +262,43 @@ def test_stream_endpoint_returns_ordered_sse_events_for_first_question() -> None
     assert call["session_id"] is None
     assert call["user_id"] == 1
     assert isinstance(call["started_at"], float)
+    assert call["intent"] == ChatIntent.KNOWLEDGE_BASE_QUERY
+
+
+def test_sync_general_chat_skips_kb_permissions_and_forwards_intent() -> None:
+    permission_service = FakePermissionService(forbidden_kb_id=3)
+    synchronous_service = FakeSynchronousChatService()
+    classifier = FakeIntentClassifier(ChatIntent.GENERAL_CHAT)
+
+    with _client(
+        permission_service,
+        FakeStreamingChatService(),
+        synchronous_service=synchronous_service,
+        intent_classifier=classifier,
+    ) as client:
+        response = client.post(
+            "/api/v1/chat",
+            json={"question": "写一段欢迎词", "kb_ids": [3]},
+        )
+
+    assert response.status_code == 200
+    assert classifier.questions == ["写一段欢迎词"]
+    assert permission_service.read_checks == []
+    assert synchronous_service.calls[0]["intent"] == ChatIntent.GENERAL_CHAT
+
+
+def test_stream_session_meta_requires_session_id_before_pipeline() -> None:
+    streaming_service = FakeStreamingChatService()
+
+    with _client(
+        FakePermissionService(),
+        streaming_service,
+        intent_classifier=FakeIntentClassifier(ChatIntent.SESSION_META),
+    ) as client:
+        response = client.get("/api/v1/chat/stream", params={"question": "我刚才问了什么？"})
+
+    assert response.status_code == 422
+    assert streaming_service.calls == []
 
 
 def test_stream_endpoint_checks_each_kb_before_starting_stream() -> None:
@@ -289,6 +344,22 @@ def test_session_read_endpoints_return_existing_conversation_in_display_order() 
         }
     ]
     assert session_service.message_calls == [("session-1", 1)]
+
+
+def test_history_messages_keep_non_knowledge_base_answer_metadata() -> None:
+    session_service = FakeChatSessionService()
+    session_service.messages[0].answer_mode = "general_chat"
+    session_service.messages[0].knowledge_base_searched = False
+    with _client(
+        FakePermissionService(),
+        FakeStreamingChatService(),
+        session_service,
+    ) as client:
+        response = client.get("/api/v1/chat/sessions/session-1/messages")
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["answer_mode"] == "general_chat"
+    assert response.json()["data"][0]["knowledge_base_searched"] is False
 
 
 def test_delete_session_deletes_the_current_users_history() -> None:

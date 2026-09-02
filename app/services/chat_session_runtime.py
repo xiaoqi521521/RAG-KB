@@ -55,7 +55,7 @@ class ChatSessionRuntime:
         self,
         *,
         session_id: str,
-        kb_ids: list[int],
+        kb_ids: list[int] | None,
         question: str,
         answer: str,
         sources: list[dict[str, object]],
@@ -63,6 +63,8 @@ class ChatSessionRuntime:
         latency_ms: int,
         user: CurrentUser,
         started_at: float | None = None,
+        answer_mode: str = "knowledge_base",
+        knowledge_base_searched: bool = True,
     ) -> None:
         """使用独立事务保存已完成的问答轮次。"""
         async with self.session_factory() as session:
@@ -75,6 +77,8 @@ class ChatSessionRuntime:
                 sources=sources,
                 token_count=token_count,
                 latency_ms=latency_ms,
+                answer_mode=answer_mode,
+                knowledge_base_searched=knowledge_base_searched,
                 user=user,
             )
             if started_at is not None and isinstance(saved_message, ChatMessage):

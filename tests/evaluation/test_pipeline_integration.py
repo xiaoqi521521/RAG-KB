@@ -383,6 +383,8 @@ async def _create_pipeline_temp_tables(connection: AsyncConnection) -> None:
                 latency_ms INT DEFAULT 0,
                 feedback SMALLINT,
                 kb_ids BIGINT[],
+                answer_mode VARCHAR(30) NOT NULL DEFAULT 'knowledge_base',
+                knowledge_base_searched BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMP NOT NULL DEFAULT now()
             ) ON COMMIT DROP
         """,

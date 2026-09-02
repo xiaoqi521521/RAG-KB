@@ -173,6 +173,8 @@ CREATE TABLE kb_chat_message (
     latency_ms      INT             DEFAULT 0,          -- 生成耗时（毫秒）
     feedback        SMALLINT,                          -- 用户反馈：1=好 -1=差 NULL=未反馈
     kb_ids          BIGINT[],                          -- 本轮助手回答使用的完整知识库范围
+    answer_mode     VARCHAR(30) NOT NULL DEFAULT 'knowledge_base',
+    knowledge_base_searched BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now())
 );
 

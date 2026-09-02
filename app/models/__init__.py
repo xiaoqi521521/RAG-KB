@@ -3,6 +3,7 @@
 from app.models.kb import (
     AnswerFeedback,
     ChatMessage,
+    ChatAnswerMode,
     ChatMessageRole,
     ChatSession,
     DocChunk,
@@ -24,6 +25,7 @@ from app.models.kb import (
 __all__ = [
     "AnswerFeedback",
     "ChatMessage",
+    "ChatAnswerMode",
     "ChatMessageRole",
     "ChatSession",
     "DocChunk",

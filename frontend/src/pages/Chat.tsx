@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Select, Tooltip } from 'antd';
+import { App, Button, Popconfirm, Select, Tooltip } from 'antd';
 import {
   ArrowUpOutlined,
+  DeleteOutlined,
   DislikeFilled,
   DislikeOutlined,
   LikeFilled,
@@ -46,6 +47,8 @@ function mapHistoryMessages(items: ChatMessageItem[]): ChatMessage[] {
     sources: item.role === 'ASSISTANT' ? normalizeSources(item.sources) : null,
     latencyMs: item.latency_ms,
     feedback: item.feedback,
+    answerMode: item.answer_mode,
+    knowledgeBaseSearched: item.knowledge_base_searched,
     streaming: false,
     status: null,
     timestamp: new Date(item.created_at).getTime(),
@@ -94,6 +97,7 @@ export default function ChatPage() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [pendingFeedbackIds, setPendingFeedbackIds] = useState<Set<string>>(() => new Set());
+  const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(() => new Set());
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -181,16 +185,34 @@ export default function ChatPage() {
     [setLastAssistantMessageId],
   );
 
+  const handleDeleteSession = useCallback(
+    async (targetSessionId: string) => {
+      setDeletingSessionIds((ids) => new Set(ids).add(targetSessionId));
+      try {
+        await chatApi.deleteSession(targetSessionId);
+        setSessions((items) => items.filter((item) => item.id !== targetSessionId));
+        if (sessionId === targetSessionId) {
+          clearMessages();
+        }
+        message.success('历史会话已删除');
+      } catch {
+        message.error('删除历史会话失败');
+      } finally {
+        setDeletingSessionIds((ids) => {
+          const next = new Set(ids);
+          next.delete(targetSessionId);
+          return next;
+        });
+      }
+    },
+    [clearMessages, message, sessionId],
+  );
+
   const handleSend = useCallback(async () => {
     const question = inputValue.trim();
     if (!question || isStreaming) {
       return;
     }
-    if (selectedKbIds.length === 0) {
-      message.warning('请选择至少一个知识库');
-      return;
-    }
-
     const now = Date.now();
     addMessage({
       id: `user-${now}`,
@@ -248,7 +270,14 @@ export default function ChatPage() {
             if (event.answer !== undefined) {
               finalAnswer = event.answer;
             }
-            setLastAssistantDone(event.sources, event.latencyMs, event.answer);
+            setLastAssistantDone(
+              event.sources,
+              event.latencyMs,
+              event.answer,
+              event.answerMode,
+              event.knowledgeBaseSearched,
+              event.notice,
+            );
             if (event.sources.length > 0) {
               openPanel(`assistant-${now}`, event.sources[0]?.reference_index);
             }
@@ -372,25 +401,48 @@ export default function ChatPage() {
                 暂无历史会话。发送第一个问题后，这里会保留会话线索。
               </div>
             )}
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                type="button"
-                onClick={() => loadSession(session.id)}
-                className={`w-full text-left px-2.5 py-2 rounded-[2px] border transition-colors ${
-                  sessionId === session.id
-                    ? 'border-pine bg-pine-wash'
-                    : 'border-transparent hover:bg-[#f0f2ec]'
-                }`}
-              >
-                <div className="text-[12.5px] line-clamp-2">
-                  {session.title || '未命名会话'}
+            {sessions.map((session) => {
+              const isDeleting = deletingSessionIds.has(session.id);
+              const isCurrentSession = sessionId === session.id;
+              return (
+                <div key={session.id} className="group flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => loadSession(session.id)}
+                    className={`min-w-0 flex-1 text-left px-2.5 py-2 rounded-[2px] border transition-colors ${
+                      isCurrentSession
+                        ? 'border-pine bg-pine-wash'
+                        : 'border-transparent hover:bg-[#f0f2ec]'
+                    }`}
+                  >
+                    <div className="text-[12.5px] line-clamp-2">
+                      {session.title || '未命名会话'}
+                    </div>
+                    <div className="font-data text-[10.5px] text-faint mt-1">
+                      {dayjs(session.last_active_at).format('MM-DD HH:mm')}
+                    </div>
+                  </button>
+                  <Popconfirm
+                    title="删除历史会话"
+                    description="删除后将无法再从历史记录中访问该会话。"
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => handleDeleteSession(session.id)}
+                  >
+                    <Button
+                      type="text"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      aria-label="删除历史会话"
+                      disabled={isDeleting || (isCurrentSession && isStreaming)}
+                      className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                    />
+                  </Popconfirm>
                 </div>
-                <div className="font-data text-[10.5px] text-faint mt-1">
-                  {dayjs(session.last_active_at).format('MM-DD HH:mm')}
-                </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </aside>
 
@@ -454,6 +506,10 @@ export default function ChatPage() {
                         }
                       />
                     ) : null}
+
+                    {chatMessage.notice && (
+                      <p className="mt-3 text-[12px] text-faint">{chatMessage.notice}</p>
+                    )}
 
                     {chatMessage.streaming && (
                       <div className="retrieval-line mt-3">

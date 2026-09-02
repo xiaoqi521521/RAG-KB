@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from app.core.context import CurrentUser
 from app.schemas.query_cache import QueryCacheEntry
-from app.schemas.rag import SourceCitation
+from app.schemas.rag import ChatIntent, SourceCitation
 from app.services.rag_query_v4 import PreparedRagContext
 from app.services.source_builder import FinalizedAnswer
 from app.services.synchronous_chat import SynchronousChatService
@@ -95,8 +95,10 @@ class InMemorySynchronousChatService(SynchronousChatService):
         )
         self.history: list[object] = ["earlier-user", "earlier-assistant"]
         self.saved_turns: list[dict[str, object]] = []
+        self.session_calls: list[dict[str, object]] = []
 
     async def _get_or_create_session(self, **kwargs: object) -> str:
+        self.session_calls.append(kwargs)
         return "session-1"
 
     async def _load_history(self, session_id: str, user: CurrentUser) -> list[object]:
@@ -258,3 +260,72 @@ async def test_persistence_failure_does_not_create_first_turn_cache_entry() -> N
         raise AssertionError("expected message persistence failure")
 
     assert query_cache.put_calls == []
+
+
+async def test_general_chat_skips_retrieval_cache_and_saves_without_kb_scope() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    query_cache = FakeQueryCache(_cache_entry())
+    service = InMemorySynchronousChatService(rag_service, query_cache)
+
+    response = await service.query(
+        question="写一段欢迎词",
+        kb_ids=[2],
+        session_id=None,
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        intent=ChatIntent.GENERAL_CHAT,
+    )
+
+    assert response.answer.startswith("根据员工手册。")
+    assert response.notice == "本条答案未经过知识库检索，请自行辨别真伪。"
+    assert response.answer_mode == "general_chat"
+    assert response.knowledge_base_searched is False
+    assert response.sources == []
+    assert rag_service.prepare_calls == 0
+    assert query_cache.get_calls == []
+    assert query_cache.put_calls == []
+    assert service.session_calls == [{"session_id": None, "kb_ids": [], "user": CurrentUser(user_id=1, department_id="engineering", role="ADMIN")}]
+    assert service.saved_turns[0]["kb_ids"] is None
+    assert service.saved_turns[0]["answer_mode"] == "general_chat"
+    assert service.saved_turns[0]["knowledge_base_searched"] is False
+
+
+async def test_session_meta_uses_history_without_creating_or_saving_turn() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    service = InMemorySynchronousChatService(rag_service)
+
+    response = await service.query(
+        question="我刚才问了什么？",
+        kb_ids=[],
+        session_id="session-1",
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        intent=ChatIntent.SESSION_META,
+    )
+
+    assert response.answer == "根据员工手册。"
+    assert response.answer_mode == "session_meta"
+    assert response.knowledge_base_searched is False
+    assert rag_service.prepare_calls == 0
+    assert service.session_calls == []
+    assert service.saved_turns == []
+    assert service.query_cache.get_calls == []
+
+
+async def test_uncertain_returns_fixed_answer_without_session_or_model() -> None:
+    rag_service = FakeRagService(_prepared_context())
+    service = InMemorySynchronousChatService(rag_service)
+
+    response = await service.query(
+        question="查年假制度并写一首诗",
+        kb_ids=[2],
+        session_id=None,
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+        intent=ChatIntent.UNCERTAIN,
+    )
+
+    assert response.session_id is None
+    assert response.answer == "你的问题同时包含知识库查询和通用问题，请拆分后分别提问。"
+    assert response.answer_mode == "uncertain"
+    assert rag_service.prepare_calls == 0
+    assert service.session_calls == []
+    assert service.saved_turns == []
+    assert service.query_cache.get_calls == []

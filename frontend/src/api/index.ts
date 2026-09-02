@@ -59,6 +59,10 @@ export const chatApi = {
   syncQuery: (data: { question: string; kb_ids: number[]; session_id?: string | null }) =>
     request.post<ApiResponse<ChatQueryResponse>>('/chat', data),
   listSessions: () => request.get<ApiResponse<ChatSessionItem[]>>('/chat/sessions'),
+  deleteSession: (sessionId: string) =>
+    request.delete<ApiResponse<void>>(`/chat/sessions/${sessionId}`, {
+      skipGlobalErrorMessage: true,
+    }),
   getMessages: (sessionId: string) =>
     request.get<ApiResponse<ChatMessageItem[]>>(`/chat/sessions/${sessionId}/messages`),
 };

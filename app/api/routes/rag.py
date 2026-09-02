@@ -221,6 +221,9 @@ async def query_rag(
     """
     started_at = time.perf_counter()
 
+    if not request.kb_ids:
+        raise HTTPException(status_code=422, detail="kb_ids must not be empty")
+
     # 读权限必须在缓存读取、向量化和检索之前完成，避免无权限范围泄露缓存命中状态。
     for kb_id in request.kb_ids:
         await permission_service.require_read(kb_id, user)

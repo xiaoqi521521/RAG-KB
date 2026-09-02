@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class ChatIntent(StrEnum):
+    KNOWLEDGE_BASE_QUERY = "KNOWLEDGE_BASE_QUERY"
+    SESSION_META = "SESSION_META"
+    GENERAL_CHAT = "GENERAL_CHAT"
+    UNCERTAIN = "UNCERTAIN"
 
 
 class RagQueryRequest(BaseModel):
@@ -16,7 +24,7 @@ class RagQueryRequest(BaseModel):
     """
 
     question: str = Field(min_length=1, max_length=2000)
-    kb_ids: list[int] = Field(min_length=1, max_length=20)
+    kb_ids: list[int] = Field(default_factory=list, max_length=20)
     session_id: str | None = None
 
     @field_validator("question")
@@ -41,8 +49,6 @@ class RagQueryRequest(BaseModel):
                 continue
             seen.add(kb_id)
             normalized.append(kb_id)
-        if not normalized:
-            raise ValueError("kb_ids must not be empty")
         return normalized
 
 
@@ -88,6 +94,9 @@ class RagQueryResponse(BaseModel):
     sources: list[SourceCitation]
     hit_count: int
     latency_ms: int
+    answer_mode: str = "knowledge_base"
+    knowledge_base_searched: bool = True
+    notice: str | None = None
 
 
 class ChatQueryResponse(RagQueryResponse):
@@ -97,7 +106,7 @@ class ChatQueryResponse(RagQueryResponse):
         session_id: 本轮使用的会话 ID，前端应在后续追问时原样传回。
     """
 
-    session_id: str
+    session_id: str | None
 
 
 class ChatSessionResponse(BaseModel):
@@ -129,3 +138,16 @@ class ChatMessageResponse(BaseModel):
     latency_ms: int | None
     feedback: int | None
     created_at: datetime
+    answer_mode: str | None = None
+    knowledge_base_searched: bool | None = None
+
+    @model_validator(mode="after")
+    def hide_default_knowledge_base_metadata(self) -> "ChatMessageResponse":
+        """隐藏历史知识库消息的默认元数据，保持既有历史接口响应兼容。"""
+        if (
+            self.answer_mode == "knowledge_base"
+            and self.knowledge_base_searched is True
+        ):
+            self.answer_mode = None
+            self.knowledge_base_searched = None
+        return self

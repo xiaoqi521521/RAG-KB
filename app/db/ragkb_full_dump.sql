@@ -845,6 +845,10 @@ CREATE INDEX "idx_message_session" ON "public"."kb_chat_message" USING btree (
   "created_at" "pg_catalog"."timestamp_ops" ASC NULLS LAST
 );
 
+ALTER TABLE "public"."kb_chat_message"
+  ADD COLUMN IF NOT EXISTS "answer_mode" varchar(30) NOT NULL DEFAULT 'knowledge_base',
+  ADD COLUMN IF NOT EXISTS "knowledge_base_searched" bool NOT NULL DEFAULT true;
+
 -- ----------------------------
 -- Primary Key structure for table kb_chat_message
 -- ----------------------------

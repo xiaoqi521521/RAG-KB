@@ -4,7 +4,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,12 +18,13 @@ from app.api.routes.rag import (
     get_token_metrics,
 )
 from app.core.config import Settings, get_settings
+from app.core.clients import get_chat_model
 from app.core.context import CurrentUser
 from app.core.database import AsyncSessionLocal
 from app.core.database import get_db
 from app.repositories.chat import ChatRepository
 from app.schemas.common import ApiResponse
-from app.schemas.rag import ChatMessageResponse, ChatQueryResponse, ChatSessionResponse, RagQueryRequest
+from app.schemas.rag import ChatIntent, ChatMessageResponse, ChatQueryResponse, ChatSessionResponse, RagQueryRequest
 from app.services.chat_sessions import ChatSessionService
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.permissions import PermissionService
@@ -33,6 +34,7 @@ from app.services.streaming_chat import SseEvent, StreamingChatService
 from app.services.synchronous_chat import SynchronousChatService
 from app.services.token_metrics import TokenMetrics
 from app.services.token_budget import GlobalTokenBudgetGate
+from app.services.intent_classifier import IntentClassifier
 
 router = APIRouter()
 
@@ -48,6 +50,7 @@ class StreamingChatPipeline(Protocol):
         session_id: str | None,
         user: CurrentUser,
         started_at: float | None = None,
+        intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
     ) -> AsyncIterator[SseEvent]: ...
 
 
@@ -62,6 +65,7 @@ class SynchronousChatPipeline(Protocol):
         session_id: str | None,
         user: CurrentUser,
         started_at: float | None = None,
+        intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
     ) -> ChatQueryResponse: ...
 
 
@@ -132,27 +136,52 @@ def get_chat_session_service(
     return ChatSessionService(ChatRepository(session))
 
 
+def get_intent_classifier(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> IntentClassifier:
+    """构建请求级意图分类器。"""
+    try:
+        model = get_chat_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="意图识别服务暂不可用") from exc
+    return IntentClassifier(
+        model,
+        token_metrics=getattr(request.app.state, "token_metrics", None),
+        model_name=settings.chat_model,
+        budget_gate=getattr(request.app.state, "token_budget_gate", None),
+    )
+
+
 @router.post("")
 async def query_chat(
     request: RagQueryRequest,
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
     synchronous_service: SynchronousChatPipeline = Depends(get_synchronous_chat_service),
+    intent_classifier: IntentClassifier = Depends(get_intent_classifier),
 ) -> ApiResponse[ChatQueryResponse]:
     """执行会话化同步问答并返回完整答案。"""
     # 从权限校验前开始计时，确保响应 latency 覆盖完整同步业务路径。
     started_at = time.perf_counter()
-    # 权限校验必须在创建会话和检索前完成，避免无权范围留下会话记录。
-    for kb_id in request.kb_ids:
-        await permission_service.require_read(kb_id, user)
+    intent = await intent_classifier.classify(request.question)
+    normalized_kb_ids = _normalize_kb_ids(request.kb_ids)
+    if intent == ChatIntent.KNOWLEDGE_BASE_QUERY:
+        if not normalized_kb_ids:
+            raise HTTPException(status_code=422, detail="kb_ids is required for knowledge base queries")
+        for kb_id in normalized_kb_ids:
+            await permission_service.require_read(kb_id, user)
+    elif intent == ChatIntent.SESSION_META and request.session_id is None:
+        raise HTTPException(status_code=422, detail="session_id is required for session meta queries")
 
     return ApiResponse.ok(
         await synchronous_service.query(
             question=request.question,
-            kb_ids=request.kb_ids,
+            kb_ids=normalized_kb_ids,
             session_id=request.session_id,
             user=user,
             started_at=started_at,
+            intent=intent,
         )
     )
 
@@ -160,11 +189,12 @@ async def query_chat(
 @router.get("/stream", response_class=StreamingResponse)
 async def stream_chat(
     question: str = Query(min_length=1, max_length=2000),
-    kb_ids: list[int] = Query(min_length=1),
+    kb_ids: list[int] = Query(default=[]),
     session_id: str | None = None,
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
     streaming_service: StreamingChatPipeline = Depends(get_streaming_chat_service),
+    intent_classifier: IntentClassifier = Depends(get_intent_classifier),
 ) -> StreamingResponse:
     """以 SSE 推送 V4 RAG 回答，并保留可复用的对话会话。"""
     normalized_question = question.strip()
@@ -173,9 +203,15 @@ async def stream_chat(
 
     normalized_kb_ids = _normalize_kb_ids(kb_ids)
     started_at = time.perf_counter()
-    # 读权限必须在建立流式连接前校验，避免无权知识库内容进入模型上下文。
-    for kb_id in normalized_kb_ids:
-        await permission_service.require_read(kb_id, user)
+    intent = await intent_classifier.classify(normalized_question)
+    if intent == ChatIntent.KNOWLEDGE_BASE_QUERY:
+        if not normalized_kb_ids:
+            raise HTTPException(status_code=422, detail="kb_ids is required for knowledge base queries")
+        # 读权限必须在建立流式连接前校验，避免无权知识库内容进入模型上下文。
+        for kb_id in normalized_kb_ids:
+            await permission_service.require_read(kb_id, user)
+    elif intent == ChatIntent.SESSION_META and session_id is None:
+        raise HTTPException(status_code=422, detail="session_id is required for session meta queries")
 
     async def event_stream() -> AsyncIterator[str]:
         async for event in streaming_service.stream(
@@ -184,6 +220,7 @@ async def stream_chat(
             session_id=session_id,
             user=user,
             started_at=started_at,
+            intent=intent,
         ):
             yield _encode_sse(event)
 
@@ -211,7 +248,7 @@ async def delete_chat_session(
     return ApiResponse.ok()
 
 
-@router.get("/sessions/{session_id}/messages")
+@router.get("/sessions/{session_id}/messages", response_model_exclude_defaults=True)
 async def list_chat_messages(
     session_id: str,
     user: CurrentUser = Depends(get_current_user),
