@@ -41,7 +41,10 @@ instance.interceptors.response.use(
         window.location.href = '/login';
       }
     } else if (detail && !error.config?.skipGlobalErrorMessage) {
-      message.error(detail);
+      message.error({
+        content: detail,
+        key: `api-error:${status ?? 'unknown'}:${detail}`,
+      });
     }
 
     return Promise.reject(error);

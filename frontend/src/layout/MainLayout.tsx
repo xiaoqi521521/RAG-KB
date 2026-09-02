@@ -5,10 +5,12 @@ import {
   DatabaseOutlined,
   ExperimentOutlined,
   DashboardOutlined,
+  LockOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import AppLogo from '@/components/AppLogo';
+import { kbApi } from '@/api';
 import { useAuthStore } from '@/store/useAuthStore';
 
 const NAV_ITEMS = [
@@ -23,6 +25,31 @@ export default function MainLayout() {
   const location = useLocation();
   const { user, logout } = useAuthStore();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [evaluationAccess, setEvaluationAccess] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!user) {
+      setEvaluationAccess(null);
+      return;
+    }
+    void kbApi
+      .list()
+      .then((res) => {
+        setEvaluationAccess(res.data.data.some((kb) => kb.permission === 'ADMIN'));
+      })
+      .catch(() => {
+        // 权限状态无法确认时按无权处理，避免直接访问评估页绕过入口控制。
+        setEvaluationAccess(false);
+      });
+  }, [user]);
+
+  useEffect(() => {
+    if (location.pathname === '/eval' && evaluationAccess === false) {
+      navigate('/chat', { replace: true });
+    }
+  }, [evaluationAccess, location.pathname, navigate]);
+
+  const blockEvaluationPage = location.pathname === '/eval' && evaluationAccess !== true;
 
   const selectedPath = '/' + (location.pathname.split('/')[1] || 'chat');
 
@@ -47,12 +74,18 @@ export default function MainLayout() {
         <nav className="flex-1 py-4 px-2.5 space-y-1">
           {NAV_ITEMS.map((item) => {
             const active = selectedPath === item.path;
+            const isEvaluation = item.path === '/eval';
+            const locked = isEvaluation && evaluationAccess === false;
+            const disabled = isEvaluation && evaluationAccess !== true;
             return (
               <button
                 key={item.path}
                 type="button"
+                disabled={disabled}
+                aria-label={locked ? `${item.label}（无权限）` : item.label}
+                title={locked ? '无评估管理权限' : undefined}
                 onClick={() => navigate(item.path)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-[2px] text-[13.5px] transition-colors ${
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-[2px] text-[13.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
                   active
                     ? 'bg-white/10 text-paper'
                     : 'text-paper/60 hover:bg-white/5 hover:text-paper/90'
@@ -60,6 +93,7 @@ export default function MainLayout() {
               >
                 <span className={active ? 'text-paper' : 'text-paper/50'}>{item.icon}</span>
                 {item.label}
+                {locked && <LockOutlined className="ml-auto text-paper/45" />}
                 {active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-paper/70" />}
               </button>
             );
@@ -92,22 +126,29 @@ export default function MainLayout() {
           <span className="font-semibold text-[14px]">知库问答</span>
         </div>
         <div className="flex-1 overflow-auto">
-          <Outlet />
+          {blockEvaluationPage ? null : <Outlet />}
         </div>
         <nav className="md:hidden grid grid-cols-4 border-t border-line bg-card shrink-0">
           {NAV_ITEMS.map((item) => {
             const active = selectedPath === item.path;
+            const isEvaluation = item.path === '/eval';
+            const locked = isEvaluation && evaluationAccess === false;
+            const disabled = isEvaluation && evaluationAccess !== true;
             return (
               <button
                 key={item.path}
                 type="button"
+                disabled={disabled}
+                aria-label={locked ? `${item.label}（无权限）` : item.label}
+                title={locked ? '无评估管理权限' : undefined}
                 onClick={() => navigate(item.path)}
-                className={`flex flex-col items-center gap-1 py-2 text-[11px] ${
+                className={`flex flex-col items-center gap-1 py-2 text-[11px] disabled:cursor-not-allowed disabled:opacity-45 ${
                   active ? 'text-pine' : 'text-faint'
                 }`}
               >
                 {item.icon}
                 {item.label}
+                {locked && <LockOutlined className="text-[10px]" />}
               </button>
             );
           })}

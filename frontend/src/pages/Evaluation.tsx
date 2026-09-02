@@ -42,6 +42,12 @@ function formatRate(value: number | null | undefined): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function getErrorDetail(error: unknown): string | undefined {
+  const data = (error as { response?: { data?: { message?: string; detail?: string } } })?.response
+    ?.data;
+  return data?.message || data?.detail;
+}
+
 export default function EvalPage() {
   const { message } = App.useApp();
   const [form] = Form.useForm<DatasetFormValues>();
@@ -59,41 +65,38 @@ export default function EvalPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingItem, setEditingItem] = useState<EvalDataset | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
 
   const latestReport = history[0] || null;
+  const selectedKb = useMemo(
+    () => knowledgeBases.find((kb) => kb.id === selectedKbId) || null,
+    [knowledgeBases, selectedKbId],
+  );
+  const canManageEvaluation = selectedKb?.permission === 'ADMIN';
 
-  const fetchHistory = useCallback(async (kbId: number) => {
+  const fetchEvaluationData = useCallback(async (kbId: number) => {
     setHistoryLoading(true);
-    try {
-      const res = await evalApi.getHistory(kbId);
-      setHistory(res.data.data);
-    } catch {
-      message.error('读取评估历史失败');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [message]);
-
-  const fetchDataset = useCallback(async (kbId: number) => {
     setDatasetLoading(true);
-    try {
-      const res = await evalApi.listDataset(kbId);
-      setDataset(res.data.data);
-    } catch {
-      message.error('读取标准问题失败');
-    } finally {
-      setDatasetLoading(false);
-    }
-  }, [message]);
-
-  const fetchChunks = useCallback(async (kbId: number) => {
     setChunksLoading(true);
     try {
-      const res = await evalApi.listChunks(kbId);
-      setChunks(res.data.data);
-    } catch {
-      message.error('读取 chunk 摘要失败');
+      const [historyResponse, datasetResponse, chunksResponse] = await Promise.all([
+        evalApi.getHistory(kbId),
+        evalApi.listDataset(kbId),
+        evalApi.listChunks(kbId),
+      ]);
+      setHistory(historyResponse.data.data);
+      setDataset(datasetResponse.data.data);
+      setChunks(chunksResponse.data.data);
+      setPermissionDenied(false);
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } })?.response?.status === 403) {
+        setPermissionDenied(true);
+      } else {
+        message.error({ content: getErrorDetail(error) || '读取评估数据失败', key: 'evaluation-load' });
+      }
     } finally {
+      setHistoryLoading(false);
+      setDatasetLoading(false);
       setChunksLoading(false);
     }
   }, [message]);
@@ -108,22 +111,32 @@ export default function EvalPage() {
           setSelectedKbId(first.id);
         }
       })
-      .catch(() => message.error('读取知识库失败'));
+      .catch((error: unknown) => {
+        message.error({
+          content: getErrorDetail(error) || '读取知识库失败',
+          key: 'evaluation-kb-load',
+        });
+      });
   }, [message]);
 
   useEffect(() => {
     if (selectedKbId == null) {
       return;
     }
-    void fetchHistory(selectedKbId);
-    void fetchDataset(selectedKbId);
-    void fetchChunks(selectedKbId);
-  }, [fetchChunks, fetchDataset, fetchHistory, selectedKbId]);
-
-  const selectedKb = useMemo(
-    () => knowledgeBases.find((kb) => kb.id === selectedKbId) || null,
-    [knowledgeBases, selectedKbId],
-  );
+    const selectedKnowledgeBase = knowledgeBases.find((kb) => kb.id === selectedKbId);
+    if (!selectedKnowledgeBase) {
+      return;
+    }
+    if (selectedKnowledgeBase.permission !== 'ADMIN') {
+      setPermissionDenied(true);
+      setHistory([]);
+      setDataset([]);
+      setChunks([]);
+      return;
+    }
+    setPermissionDenied(false);
+    void fetchEvaluationData(selectedKbId);
+  }, [fetchEvaluationData, knowledgeBases, selectedKbId]);
 
   const runEvaluation = async () => {
     if (selectedKbId == null) {
@@ -138,11 +151,12 @@ export default function EvalPage() {
     try {
       const res = await evalApi.runEvaluation(selectedKbId, version.trim());
       message.success(`评估完成：${res.data.data.eval_version}`);
-      await fetchHistory(selectedKbId);
+      await fetchEvaluationData(selectedKbId);
     } catch (error: unknown) {
-      const detail = (error as { response?: { data?: { detail?: string } } })?.response
-        ?.data?.detail;
-      message.error(detail || '评估执行失败');
+      message.error({
+        content: getErrorDetail(error) || '评估执行失败',
+        key: 'evaluation-action',
+      });
     } finally {
       setRunning(false);
     }
@@ -183,11 +197,12 @@ export default function EvalPage() {
         message.success('标准问题已添加');
       }
       setModalOpen(false);
-      await fetchDataset(selectedKbId);
+      await fetchEvaluationData(selectedKbId);
     } catch (error: unknown) {
-      const detail = (error as { response?: { data?: { detail?: string } } })?.response
-        ?.data?.detail;
-      message.error(detail || '保存标准问题失败');
+      message.error({
+        content: getErrorDetail(error) || '保存标准问题失败',
+        key: 'evaluation-action',
+      });
     } finally {
       setSaving(false);
     }
@@ -200,9 +215,12 @@ export default function EvalPage() {
     try {
       await evalApi.deleteQuestion(selectedKbId, item.id);
       message.success('标准问题已删除');
-      await fetchDataset(selectedKbId);
-    } catch {
-      message.error('删除标准问题失败');
+      await fetchEvaluationData(selectedKbId);
+    } catch (error: unknown) {
+      message.error({
+        content: getErrorDetail(error) || '删除标准问题失败',
+        key: 'evaluation-action',
+      });
     }
   };
 
@@ -303,7 +321,12 @@ export default function EvalPage() {
       width: 110,
       render: (_: unknown, record: EvalDataset) => (
         <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)} />
+          <Button
+            size="small"
+            disabled={!canManageEvaluation}
+            icon={<EditOutlined />}
+            onClick={() => openEditModal(record)}
+          />
           <Popconfirm
             title="删除标准问题"
             okText="删除"
@@ -311,7 +334,12 @@ export default function EvalPage() {
             okButtonProps={{ danger: true }}
             onConfirm={() => deleteDataset(record)}
           >
-            <Button size="small" danger icon={<DeleteOutlined />} />
+            <Button
+              size="small"
+              danger
+              disabled={!canManageEvaluation}
+              icon={<DeleteOutlined />}
+            />
           </Popconfirm>
         </Space>
       ),
@@ -351,12 +379,19 @@ export default function EvalPage() {
             type="primary"
             icon={<PlayCircleOutlined />}
             loading={running}
+            disabled={!canManageEvaluation}
             onClick={runEvaluation}
           >
             运行评估
           </Button>
         </div>
       </div>
+
+      {permissionDenied && (
+        <div className="mb-4 border border-[#e6c7c1] bg-[#fff8f6] px-4 py-3 text-[13px] text-seal">
+          当前账号没有该知识库的评估管理权限。
+        </div>
+      )}
 
       <div className="archive-card p-4 mb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -402,7 +437,11 @@ export default function EvalPage() {
               <div className="eyebrow">DATASET</div>
               <div className="text-[15px] font-semibold mt-1">标准问题集</div>
             </div>
-            <Button icon={<PlusOutlined />} onClick={openCreateModal}>
+            <Button
+              icon={<PlusOutlined />}
+              disabled={!canManageEvaluation}
+              onClick={openCreateModal}
+            >
               添加问题
             </Button>
           </div>

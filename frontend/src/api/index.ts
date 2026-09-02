@@ -67,23 +67,30 @@ export const chatApi = {
     request.get<ApiResponse<ChatMessageItem[]>>(`/chat/sessions/${sessionId}/messages`),
 };
 
+const evalRequestConfig = { skipGlobalErrorMessage: true };
+
 export const evalApi = {
   runEvaluation: (kbId: number, version: string) =>
     request.post<ApiResponse<EvaluationReport>>(`/eval/${kbId}/run`, null, {
       params: { version },
+      ...evalRequestConfig,
     }),
   getHistory: (kbId: number) =>
-    request.get<ApiResponse<EvaluationReport[]>>(`/eval/${kbId}/history`),
+    request.get<ApiResponse<EvaluationReport[]>>(`/eval/${kbId}/history`, evalRequestConfig),
   listDataset: (kbId: number) =>
-    request.get<ApiResponse<EvalDataset[]>>(`/eval/${kbId}/dataset`),
+    request.get<ApiResponse<EvalDataset[]>>(`/eval/${kbId}/dataset`, evalRequestConfig),
   addQuestion: (kbId: number, data: EvalDatasetWriteRequest) =>
-    request.post<ApiResponse<EvalDataset>>(`/eval/${kbId}/dataset`, data),
+    request.post<ApiResponse<EvalDataset>>(`/eval/${kbId}/dataset`, data, evalRequestConfig),
   updateQuestion: (kbId: number, id: number, data: EvalDatasetWriteRequest) =>
-    request.put<ApiResponse<EvalDataset>>(`/eval/${kbId}/dataset/${id}`, data),
+    request.put<ApiResponse<EvalDataset>>(
+      `/eval/${kbId}/dataset/${id}`,
+      data,
+      evalRequestConfig,
+    ),
   deleteQuestion: (kbId: number, id: number) =>
-    request.delete<ApiResponse<void>>(`/eval/${kbId}/dataset/${id}`),
+    request.delete<ApiResponse<void>>(`/eval/${kbId}/dataset/${id}`, evalRequestConfig),
   listChunks: (kbId: number) =>
-    request.get<ApiResponse<ChunkSummary[]>>(`/eval/${kbId}/chunks`),
+    request.get<ApiResponse<ChunkSummary[]>>(`/eval/${kbId}/chunks`, evalRequestConfig),
 };
 
 export const feedbackApi = {
