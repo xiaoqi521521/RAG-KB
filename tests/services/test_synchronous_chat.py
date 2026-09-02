@@ -81,6 +81,11 @@ class FakeRagService:
         return FinalizedAnswer(answer=str(kwargs["answer"]), sources=self.prepared_context.sources)
 
 
+class RefusingRagService(FakeRagService):
+    def finalize_answer(self, **kwargs: object) -> FinalizedAnswer | None:
+        return None
+
+
 class InMemorySynchronousChatService(SynchronousChatService):
     def __init__(
         self,
@@ -166,7 +171,7 @@ async def test_query_injects_history_and_saves_complete_turn() -> None:
     assert service.query_cache.put_calls == []
 
 
-async def test_query_returns_refusal_without_saving_turn_when_context_is_missing() -> None:
+async def test_query_saves_refusal_turn_when_context_is_missing() -> None:
     service = InMemorySynchronousChatService(FakeRagService(None))
 
     response = await service.query(
@@ -177,9 +182,44 @@ async def test_query_returns_refusal_without_saving_turn_when_context_is_missing
     )
 
     assert response.session_id == "session-1"
+    assert response.answer == "在知识库中未找到与该问题相关的内容。"
     assert response.sources == []
     assert response.hit_count == 0
-    assert service.saved_turns == []
+    assert len(service.saved_turns) == 1
+    saved_turn = service.saved_turns[0]
+    assert saved_turn["question"] == "年假怎么申请？"
+    assert saved_turn["answer"] == "在知识库中未找到与该问题相关的内容。"
+    assert saved_turn["kb_ids"] == [2]
+    assert saved_turn["sources"] == []
+    assert saved_turn["token_count"] == 0
+    assert saved_turn["answer_mode"] == "knowledge_base"
+    assert saved_turn["knowledge_base_searched"] is True
+    assert service.query_cache.put_calls == []
+
+
+async def test_query_saves_model_explicit_refusal_turn() -> None:
+    service = InMemorySynchronousChatService(RefusingRagService(_prepared_context()))
+
+    response = await service.query(
+        question="年假怎么申请？",
+        kb_ids=[2],
+        session_id=None,
+        user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
+    )
+
+    assert response.answer == "根据员工手册。"
+    assert response.sources == []
+    assert response.hit_count == 0
+    assert len(service.saved_turns) == 1
+    saved_turn = service.saved_turns[0]
+    assert saved_turn["question"] == "年假怎么申请？"
+    assert saved_turn["answer"] == "根据员工手册。"
+    assert saved_turn["kb_ids"] == [2]
+    assert saved_turn["sources"] == []
+    assert saved_turn["token_count"] == 4
+    assert saved_turn["answer_mode"] == "knowledge_base"
+    assert saved_turn["knowledge_base_searched"] is True
+    assert service.query_cache.put_calls == []
 
 
 async def test_first_turn_cache_hit_saves_zero_token_turn_without_rag_call() -> None:
@@ -275,8 +315,9 @@ async def test_general_chat_skips_retrieval_cache_and_saves_without_kb_scope() -
         intent=ChatIntent.GENERAL_CHAT,
     )
 
-    assert response.answer.startswith("根据员工手册。")
-    assert response.notice == "本条答案未经过知识库检索，请自行辨别真伪。"
+    assert response.answer == "根据员工手册。"
+    assert "未经过知识库检索" not in response.answer
+    assert response.notice == "这条回答没有经过知识库检索，内容仅供参考，请结合实际情况判断。"
     assert response.answer_mode == "general_chat"
     assert response.knowledge_base_searched is False
     assert response.sources == []
@@ -285,11 +326,12 @@ async def test_general_chat_skips_retrieval_cache_and_saves_without_kb_scope() -
     assert query_cache.put_calls == []
     assert service.session_calls == [{"session_id": None, "kb_ids": [], "user": CurrentUser(user_id=1, department_id="engineering", role="ADMIN")}]
     assert service.saved_turns[0]["kb_ids"] is None
+    assert service.saved_turns[0]["token_count"] == 4
     assert service.saved_turns[0]["answer_mode"] == "general_chat"
     assert service.saved_turns[0]["knowledge_base_searched"] is False
 
 
-async def test_session_meta_uses_history_without_creating_or_saving_turn() -> None:
+async def test_session_meta_uses_history_and_saves_turn() -> None:
     rag_service = FakeRagService(_prepared_context())
     service = InMemorySynchronousChatService(rag_service)
 
@@ -305,12 +347,16 @@ async def test_session_meta_uses_history_without_creating_or_saving_turn() -> No
     assert response.answer_mode == "session_meta"
     assert response.knowledge_base_searched is False
     assert rag_service.prepare_calls == 0
-    assert service.session_calls == []
-    assert service.saved_turns == []
+    assert service.session_calls[0]["session_id"] == "session-1"
+    assert len(service.saved_turns) == 1
+    assert service.saved_turns[0]["kb_ids"] is None
+    assert service.saved_turns[0]["token_count"] == 4
+    assert service.saved_turns[0]["answer_mode"] == "session_meta"
+    assert service.saved_turns[0]["knowledge_base_searched"] is False
     assert service.query_cache.get_calls == []
 
 
-async def test_uncertain_returns_fixed_answer_without_session_or_model() -> None:
+async def test_mixed_returns_fixed_answer_and_saves_turn() -> None:
     rag_service = FakeRagService(_prepared_context())
     service = InMemorySynchronousChatService(rag_service)
 
@@ -319,13 +365,16 @@ async def test_uncertain_returns_fixed_answer_without_session_or_model() -> None
         kb_ids=[2],
         session_id=None,
         user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
-        intent=ChatIntent.UNCERTAIN,
+        intent=ChatIntent.MIXED,
     )
 
-    assert response.session_id is None
+    assert response.session_id == "session-1"
     assert response.answer == "你的问题同时包含知识库查询和通用问题，请拆分后分别提问。"
     assert response.answer_mode == "uncertain"
     assert rag_service.prepare_calls == 0
-    assert service.session_calls == []
-    assert service.saved_turns == []
+    assert service.session_calls[0]["session_id"] is None
+    assert len(service.saved_turns) == 1
+    assert service.saved_turns[0]["kb_ids"] is None
+    assert service.saved_turns[0]["answer_mode"] == "uncertain"
+    assert service.saved_turns[0]["knowledge_base_searched"] is False
     assert service.query_cache.get_calls == []

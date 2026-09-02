@@ -29,10 +29,10 @@ from app.services.token_budget import (
 logger = logging.getLogger(__name__)
 
 _NO_HIT_ANSWER = "在知识库中未找到与该问题相关的内容。"
-_UNCERTAIN_ANSWER = "你的问题同时包含知识库查询和通用问题，请拆分后分别提问。"
-_GENERAL_NOTICE = "本条答案未经过知识库检索，请自行辨别真伪。"
-_NO_HISTORY_ANSWER = "当前会话暂无可回顾的历史消息。"
+_MIXED_ANSWER = "你的问题同时包含知识库查询和通用问题，请拆分后分别提问。"
+_GENERAL_NOTICE = "这条回答没有经过知识库检索，内容仅供参考，请结合实际情况判断。"
 _SESSION_META_PROMPT = "你是会话回顾助手。只根据提供的对话历史回答用户关于本次会话的问题；如果历史无法支持答案，请明确说明。"
+_UNKNOWN_PROMPT = "你是企业内部聊天助手。当前问题意图无法可靠判断，请结合用户问题和必要的会话历史自然回答；不要声称使用了知识库。"
 
 
 class SynchronousChatService(ChatSessionRuntime):
@@ -62,6 +62,7 @@ class SynchronousChatService(ChatSessionRuntime):
         user: CurrentUser,
         started_at: float | None = None,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> ChatQueryResponse:
         """执行会话化同步问答，成功后保存完整消息轮次。"""
         effective_started_at = started_at if started_at is not None else time.perf_counter()
@@ -74,6 +75,7 @@ class SynchronousChatService(ChatSessionRuntime):
                         session_id=session_id,
                         user=user,
                         started_at=effective_started_at, intent=intent,
+                        rewritten_question=rewritten_question,
                     )
                 async with self.budget_gate.request_scope():
                     return await self._query_success(
@@ -82,6 +84,7 @@ class SynchronousChatService(ChatSessionRuntime):
                         session_id=session_id,
                         user=user,
                         started_at=effective_started_at, intent=intent,
+                        rewritten_question=rewritten_question,
                     )
         except TokenBudgetExhaustedError as exc:
             raise HTTPException(
@@ -109,42 +112,75 @@ class SynchronousChatService(ChatSessionRuntime):
         user: CurrentUser,
         started_at: float,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> ChatQueryResponse:
         """执行正常问答并在回答可用时保存会话消息。"""
-        if intent == ChatIntent.UNCERTAIN:
-            return ChatQueryResponse(session_id=session_id, answer=_UNCERTAIN_ANSWER, sources=[], hit_count=0,
+        if intent == ChatIntent.MIXED:
+            active_session_id = await self._get_or_create_session(
+                session_id=session_id,
+                kb_ids=[],
+                user=user,
+            )
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=None,
+                question=question,
+                answer=_MIXED_ANSWER,
+                sources=[],
+                token_count=0,
+                latency_ms=self._elapsed_ms(started_at),
+                user=user,
+                started_at=started_at,
+                answer_mode="uncertain",
+                knowledge_base_searched=False,
+            )
+            return ChatQueryResponse(session_id=active_session_id, answer=_MIXED_ANSWER, sources=[], hit_count=0,
                                      latency_ms=self._elapsed_ms(started_at), answer_mode="uncertain", knowledge_base_searched=False)
         if intent == ChatIntent.SESSION_META:
-            if not session_id:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_id is required for session meta queries")
-            history = await self._load_history(session_id, user)
-            if not history:
-                return ChatQueryResponse(session_id=session_id, answer=_NO_HISTORY_ANSWER, sources=[], hit_count=0,
-                                         latency_ms=self._elapsed_ms(started_at), answer_mode="session_meta", knowledge_base_searched=False)
-            answer = await self._generate_freeform(
+            active_session_id = await self._get_or_create_session(
+                session_id=session_id,
+                kb_ids=[],
+                user=user,
+            )
+            history = await self._load_history(active_session_id, user)
+            answer, token_count = await self._generate_freeform(
                 question,
                 history,
                 kb_ids=[],
                 system_prompt=_SESSION_META_PROMPT,
             )
-            return ChatQueryResponse(session_id=session_id, answer=answer, sources=[], hit_count=0,
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=None,
+                question=question,
+                answer=answer,
+                sources=[],
+                token_count=token_count,
+                latency_ms=self._elapsed_ms(started_at),
+                user=user,
+                started_at=started_at,
+                answer_mode="session_meta",
+                knowledge_base_searched=False,
+            )
+            return ChatQueryResponse(session_id=active_session_id, answer=answer, sources=[], hit_count=0,
                                      latency_ms=self._elapsed_ms(started_at), answer_mode="session_meta", knowledge_base_searched=False)
 
         active_session_id = await self._get_or_create_session(
             session_id=session_id,
-            kb_ids=[] if intent == ChatIntent.GENERAL_CHAT else kb_ids,
+            kb_ids=[] if intent in (ChatIntent.GENERAL_CHAT, ChatIntent.UNKNOWN) else kb_ids,
             user=user,
         )
         history = await self._load_history(active_session_id, user)
 
-        if intent == ChatIntent.GENERAL_CHAT:
-            answer = await self._generate_freeform(question, history, kb_ids=[])
-            answer = f"{answer}\n\n{_GENERAL_NOTICE}"
+        if intent in (ChatIntent.GENERAL_CHAT, ChatIntent.UNKNOWN):
+            mode = "general_chat" if intent == ChatIntent.GENERAL_CHAT else "unknown"
+            prompt = _UNKNOWN_PROMPT if intent == ChatIntent.UNKNOWN else "你是企业内部聊天助手。根据用户问题和必要的会话历史自然回答，不要声称使用了知识库。"
+            answer, token_count = await self._generate_freeform(question, history, kb_ids=[], system_prompt=prompt)
             await self._save_turn(session_id=active_session_id, kb_ids=None, question=question, answer=answer,
-                                  sources=[], token_count=0, latency_ms=self._elapsed_ms(started_at), user=user,
-                                  started_at=started_at, answer_mode="general_chat", knowledge_base_searched=False)
+                                  sources=[], token_count=token_count, latency_ms=self._elapsed_ms(started_at), user=user,
+                                  started_at=started_at, answer_mode=mode, knowledge_base_searched=False)
             return ChatQueryResponse(session_id=active_session_id, answer=answer, sources=[], hit_count=0,
-                                     latency_ms=self._elapsed_ms(started_at), answer_mode="general_chat",
+                                     latency_ms=self._elapsed_ms(started_at), answer_mode=mode,
                                      knowledge_base_searched=False, notice=_GENERAL_NOTICE)
 
         # 只有服务端确认会话没有任何历史时，才允许读取首轮缓存。
@@ -185,6 +221,19 @@ class SynchronousChatService(ChatSessionRuntime):
             )
 
         if prepared_context is None:
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=kb_ids,
+                question=question,
+                answer=_NO_HIT_ANSWER,
+                sources=[],
+                token_count=0,
+                latency_ms=self._elapsed_ms(started_at),
+                user=user,
+                started_at=started_at,
+                answer_mode="knowledge_base",
+                knowledge_base_searched=True,
+            )
             return ChatQueryResponse(
                 session_id=active_session_id,
                 answer=_NO_HIT_ANSWER,
@@ -194,8 +243,9 @@ class SynchronousChatService(ChatSessionRuntime):
                 answer_mode="knowledge_base", knowledge_base_searched=True,
             )
 
+        effective_question = rewritten_question or question
         messages = rag_service.build_generation_messages(
-            question=question,
+            question=effective_question,
             prepared_context=prepared_context,
             history=history,
         )
@@ -206,7 +256,7 @@ class SynchronousChatService(ChatSessionRuntime):
         )
         answer = response.content.strip()
         finalized = rag_service.finalize_answer(
-            question=question,
+            question=effective_question,
             answer=answer,
             prepared_context=prepared_context,
             user=user,
@@ -219,6 +269,19 @@ class SynchronousChatService(ChatSessionRuntime):
             sources = None
         latency_ms = self._elapsed_ms(started_at)
         if sources is None:
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=kb_ids,
+                question=question,
+                answer=answer,
+                sources=[],
+                token_count=extract_generation_tokens(response) or 0,
+                latency_ms=latency_ms,
+                answer_mode="knowledge_base",
+                knowledge_base_searched=True,
+                user=user,
+                started_at=started_at,
+            )
             return ChatQueryResponse(
                 session_id=active_session_id,
                 answer=answer,
@@ -259,14 +322,14 @@ class SynchronousChatService(ChatSessionRuntime):
         history: list[object],
         kb_ids: list[int],
         system_prompt: str = "你是企业内部聊天助手。根据用户问题和必要的会话历史自然回答，不要声称使用了知识库。",
-    ) -> str:
+    ) -> tuple[str, int]:
         """生成不经过知识库约束的会话回答。"""
         async with self.session_factory() as session:
             rag_service = self.rag_service_factory(session)
             messages = [SystemMessage(content=system_prompt), *(history or []), HumanMessage(content=question)]
             response = await self._generate_answer(rag_service=rag_service, messages=messages, kb_ids=kb_ids)
             content = getattr(response, "content", "")
-            return content.strip()
+            return content.strip(), extract_generation_tokens(response) or 0
 
     async def _generate_answer(
         self,

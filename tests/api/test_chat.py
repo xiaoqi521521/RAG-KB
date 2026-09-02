@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
 from app.schemas.rag import ChatIntent, ChatQueryResponse
+from app.services.intent_classifier import IntentDecision
 
 
 def _user() -> CurrentUser:
@@ -32,9 +33,15 @@ class FakeIntentClassifier:
         self.intent = intent
         self.questions: list[str] = []
 
-    async def classify(self, question: str) -> ChatIntent:
+    async def classify_with_context(
+        self,
+        question: str,
+        *,
+        history: Sequence[object] = (),
+        has_knowledge_base_history: bool = False,
+    ) -> IntentDecision:
         self.questions.append(question)
-        return self.intent
+        return IntentDecision(intent=self.intent)
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,7 @@ class FakeStreamingChatService:
         user: CurrentUser,
         started_at: float | None = None,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> AsyncIterator[FakeStreamEvent]:
         self.calls.append(
             {
@@ -65,6 +73,7 @@ class FakeStreamingChatService:
                 "user_id": user.user_id,
                 "started_at": started_at,
                 "intent": intent,
+                "rewritten_question": rewritten_question,
             }
         )
         yield FakeStreamEvent(
@@ -100,6 +109,7 @@ class FakeSynchronousChatService:
         user: CurrentUser,
         started_at: float | None = None,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> ChatQueryResponse:
         self.calls.append(
             {
@@ -109,6 +119,7 @@ class FakeSynchronousChatService:
                 "user_id": user.user_id,
                 "started_at": started_at,
                 "intent": intent,
+                "rewritten_question": rewritten_question,
             }
         )
         return ChatQueryResponse(
@@ -287,7 +298,7 @@ def test_sync_general_chat_skips_kb_permissions_and_forwards_intent() -> None:
     assert synchronous_service.calls[0]["intent"] == ChatIntent.GENERAL_CHAT
 
 
-def test_stream_session_meta_requires_session_id_before_pipeline() -> None:
+def test_stream_session_meta_without_session_id_is_handled_by_pipeline() -> None:
     streaming_service = FakeStreamingChatService()
 
     with _client(
@@ -297,8 +308,8 @@ def test_stream_session_meta_requires_session_id_before_pipeline() -> None:
     ) as client:
         response = client.get("/api/v1/chat/stream", params={"question": "我刚才问了什么？"})
 
-    assert response.status_code == 422
-    assert streaming_service.calls == []
+    assert response.status_code == 200
+    assert streaming_service.calls[0]["intent"] == ChatIntent.SESSION_META
 
 
 def test_stream_endpoint_checks_each_kb_before_starting_stream() -> None:

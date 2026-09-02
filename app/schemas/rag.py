@@ -11,7 +11,8 @@ class ChatIntent(StrEnum):
     KNOWLEDGE_BASE_QUERY = "KNOWLEDGE_BASE_QUERY"
     SESSION_META = "SESSION_META"
     GENERAL_CHAT = "GENERAL_CHAT"
-    UNCERTAIN = "UNCERTAIN"
+    MIXED = "MIXED"
+    UNKNOWN = "UNKNOWN"
 
 
 class RagQueryRequest(BaseModel):

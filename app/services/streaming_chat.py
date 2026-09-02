@@ -27,10 +27,11 @@ from app.services.token_budget import (
 )
 
 logger = logging.getLogger(__name__)
-_UNCERTAIN_ANSWER = "你的问题同时包含知识库查询和通用问题，请拆分后分别提问。"
-_GENERAL_NOTICE = "本条答案未经过知识库检索，请自行辨别真伪。"
-_NO_HISTORY_ANSWER = "当前会话暂无可回顾的历史消息。"
+_NO_HIT_ANSWER = "在知识库中未找到与该问题相关的内容。"
+_MIXED_ANSWER = "你的问题同时包含知识库查询和通用问题，请拆分后分别提问。"
+_GENERAL_NOTICE = "这条回答没有经过知识库检索，内容仅供参考，请结合实际情况判断。"
 _SESSION_META_PROMPT = "你是会话回顾助手。只根据提供的对话历史回答用户关于本次会话的问题；如果历史无法支持答案，请明确说明。"
+_UNKNOWN_PROMPT = "你是企业内部聊天助手。当前问题意图无法可靠判断，请结合用户问题和必要的会话历史自然回答；不要声称使用了知识库。"
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class StreamingChatService(ChatSessionRuntime):
         user: CurrentUser,
         started_at: float | None = None,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> AsyncIterator[SseEvent]:
         """执行流式问答，并将业务异常转换为客户端可处理的终态。"""
         effective_started_at = started_at if started_at is not None else time.perf_counter()
@@ -75,6 +77,8 @@ class StreamingChatService(ChatSessionRuntime):
             async with asyncio.timeout(self.timeout_seconds):
                 if self.budget_gate is None:
                     stream_args = dict(question=question, kb_ids=kb_ids, session_id=session_id, user=user, started_at=effective_started_at)
+                    if rewritten_question is not None:
+                        stream_args["rewritten_question"] = rewritten_question
                     if intent != ChatIntent.KNOWLEDGE_BASE_QUERY:
                         stream_args["intent"] = intent
                     async for event in self._stream_success(**stream_args):  # type: ignore[arg-type]
@@ -82,6 +86,8 @@ class StreamingChatService(ChatSessionRuntime):
                 else:
                     async with self.budget_gate.request_scope():
                         stream_args = dict(question=question, kb_ids=kb_ids, session_id=session_id, user=user, started_at=effective_started_at)
+                        if rewritten_question is not None:
+                            stream_args["rewritten_question"] = rewritten_question
                         if intent != ChatIntent.KNOWLEDGE_BASE_QUERY:
                             stream_args["intent"] = intent
                         async for event in self._stream_success(**stream_args):  # type: ignore[arg-type]
@@ -108,35 +114,48 @@ class StreamingChatService(ChatSessionRuntime):
         user: CurrentUser,
         started_at: float,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> AsyncIterator[SseEvent]:
         """执行正常问答，成功后才保存完整对话轮次。"""
-        if intent == ChatIntent.UNCERTAIN:
-            yield SseEvent(event="token", data=_UNCERTAIN_ANSWER)
-            yield SseEvent(event="done", data=json.dumps({"answer": _UNCERTAIN_ANSWER, "sources": [], "latency_ms": self._elapsed_ms(started_at), "answer_mode": "uncertain", "knowledge_base_searched": False}, ensure_ascii=False, separators=(",", ":")))
-            return
-        if intent == ChatIntent.SESSION_META and not session_id:
-            raise ValueError("session_id is required for session meta queries")
-
-        active_session_id = session_id if intent == ChatIntent.SESSION_META else await self._get_or_create_session(
+        active_session_id = await self._get_or_create_session(
             session_id=session_id,
-            kb_ids=[] if intent == ChatIntent.GENERAL_CHAT else kb_ids,
+            kb_ids=[] if intent in (ChatIntent.SESSION_META, ChatIntent.GENERAL_CHAT, ChatIntent.UNKNOWN, ChatIntent.MIXED) else kb_ids,
             user=user,
         )
-        if active_session_id is None:
-            raise ValueError("session_id is required")
         history = await self._load_history(active_session_id, user)
-        if intent in (ChatIntent.SESSION_META, ChatIntent.GENERAL_CHAT):
+        if intent == ChatIntent.MIXED:
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=None,
+                question=question,
+                answer=_MIXED_ANSWER,
+                sources=[],
+                token_count=0,
+                latency_ms=self._elapsed_ms(started_at),
+                user=user,
+                started_at=started_at,
+                answer_mode="uncertain",
+                knowledge_base_searched=False,
+            )
+            yield SseEvent(event="token", data=_MIXED_ANSWER)
+            yield SseEvent(event="done", data=json.dumps({"session_id": active_session_id, "answer": _MIXED_ANSWER, "sources": [], "latency_ms": self._elapsed_ms(started_at), "answer_mode": "uncertain", "knowledge_base_searched": False}, ensure_ascii=False, separators=(",", ":")))
+            return
+        if intent in (ChatIntent.SESSION_META, ChatIntent.GENERAL_CHAT, ChatIntent.UNKNOWN):
+            status_data = {
+                "type": "GENERATING",
+                "message": "正在生成回答...",
+            }
+            # 普通回答也会创建会话，必须先把会话标识交给客户端才能复用。
+            status_data["session_id"] = active_session_id
             yield SseEvent(
                 event="status",
-                data='{"type":"GENERATING","message":"正在生成回答..."}',
+                data=json.dumps(status_data, ensure_ascii=False, separators=(",", ":")),
             )
-            if intent == ChatIntent.SESSION_META and not history:
-                yield SseEvent(event="token", data=_NO_HISTORY_ANSWER)
-                yield SseEvent(event="done", data=json.dumps({"answer": _NO_HISTORY_ANSWER, "sources": [], "latency_ms": self._elapsed_ms(started_at), "answer_mode": "session_meta", "knowledge_base_searched": False}, ensure_ascii=False, separators=(",", ":")))
-                return
             async with self.session_factory() as session:
                 rag_service = self.rag_service_factory(session)
-                prompt = _SESSION_META_PROMPT if intent == ChatIntent.SESSION_META else "你是企业内部聊天助手。根据用户问题和必要的会话历史自然回答，不要声称使用了知识库。"
+                prompt = (_SESSION_META_PROMPT if intent == ChatIntent.SESSION_META else
+                          _UNKNOWN_PROMPT if intent == ChatIntent.UNKNOWN else
+                          "你是企业内部聊天助手。根据用户问题和必要的会话历史自然回答，不要声称使用了知识库。")
                 messages = [SystemMessage(content=prompt), *(history or []), HumanMessage(content=question)]
                 freeform_parts: list[str] = []
                 freeform_message: Any = None
@@ -151,12 +170,9 @@ class StreamingChatService(ChatSessionRuntime):
                     raise RuntimeError("streaming model returned empty content")
                 if freeform_message is not None:
                     await record_generation_usage(recorder=rag_service.token_metrics, response=freeform_message, pipeline="chat", model=getattr(getattr(rag_service, "settings", None), "chat_model", "unknown"), kb_id="multi")
-                mode = "session_meta" if intent == ChatIntent.SESSION_META else "general_chat"
-                if intent == ChatIntent.GENERAL_CHAT:
-                    answer = f"{answer}\n\n{_GENERAL_NOTICE}"
-                    yield SseEvent(event="token", data=f"\n\n{_GENERAL_NOTICE}")
-                    await self._save_turn(session_id=active_session_id, kb_ids=None, question=question, answer=answer, sources=[], token_count=extract_generation_tokens(freeform_message) or 0, latency_ms=self._elapsed_ms(started_at), user=user, started_at=started_at, answer_mode=mode, knowledge_base_searched=False)
-                yield SseEvent(event="done", data=json.dumps({"answer": answer, "sources": [], "latency_ms": self._elapsed_ms(started_at), "answer_mode": mode, "knowledge_base_searched": False, "notice": _GENERAL_NOTICE if mode == "general_chat" else None}, ensure_ascii=False, separators=(",", ":")))
+                mode = "session_meta" if intent == ChatIntent.SESSION_META else ("unknown" if intent == ChatIntent.UNKNOWN else "general_chat")
+                await self._save_turn(session_id=active_session_id, kb_ids=None, question=question, answer=answer, sources=[], token_count=extract_generation_tokens(freeform_message) or 0, latency_ms=self._elapsed_ms(started_at), user=user, started_at=started_at, answer_mode=mode, knowledge_base_searched=False)
+                yield SseEvent(event="done", data=json.dumps({"answer": answer, "sources": [], "latency_ms": self._elapsed_ms(started_at), "answer_mode": mode, "knowledge_base_searched": False, "notice": _GENERAL_NOTICE if mode in ("general_chat", "unknown") else None}, ensure_ascii=False, separators=(",", ":")))
             return
         yield SseEvent(
             event="status",
@@ -206,7 +222,20 @@ class StreamingChatService(ChatSessionRuntime):
             )
 
         if prepared_context is None:
-            yield SseEvent(event="token", data="在知识库中未找到与该问题相关的内容。")
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=kb_ids,
+                question=question,
+                answer=_NO_HIT_ANSWER,
+                sources=[],
+                token_count=0,
+                latency_ms=self._elapsed_ms(started_at),
+                user=user,
+                started_at=started_at,
+                answer_mode="knowledge_base",
+                knowledge_base_searched=True,
+            )
+            yield SseEvent(event="token", data=_NO_HIT_ANSWER)
             yield SseEvent(
                 event="done",
                 data=(
@@ -221,8 +250,9 @@ class StreamingChatService(ChatSessionRuntime):
             data='{"type":"GENERATING","message":"已找到相关内容，正在生成回答..."}',
         )
 
+        effective_question = rewritten_question or question
         messages = rag_service.build_generation_messages(
-            question=question,
+            question=effective_question,
             prepared_context=prepared_context,
             history=history,
         )
@@ -255,13 +285,26 @@ class StreamingChatService(ChatSessionRuntime):
             )
 
         finalized = rag_service.finalize_answer(
-            question=question,
+            question=effective_question,
             answer=answer,
             prepared_context=prepared_context,
             user=user,
             kb_ids=kb_ids,
         )
         if finalized is None:
+            await self._save_turn(
+                session_id=active_session_id,
+                kb_ids=kb_ids,
+                question=question,
+                answer=answer,
+                sources=[],
+                token_count=token_count,
+                latency_ms=self._elapsed_ms(started_at),
+                user=user,
+                started_at=started_at,
+                answer_mode="knowledge_base",
+                knowledge_base_searched=True,
+            )
             yield SseEvent(
                 event="done",
                 data=(

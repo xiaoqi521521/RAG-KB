@@ -45,15 +45,15 @@ class FakeChatRepository:
         return user_id == self.owner_id
 
 
-async def test_history_keeps_only_latest_five_complete_conversation_rounds() -> None:
+async def test_history_keeps_only_latest_ten_complete_conversation_rounds() -> None:
     messages = [
-        SimpleNamespace(id=index, content=f"message-{index}", role="USER") for index in range(12)
+        SimpleNamespace(id=index, content=f"message-{index}", role="USER") for index in range(22)
     ]
     service = ChatSessionService(FakeChatRepository(messages))  # type: ignore[arg-type]
 
     history = await service.get_history("session-1", CurrentUser(1, "engineering", "MEMBER"))
 
-    assert [message.id for message in history] == list(range(2, 12))
+    assert [message.id for message in history] == list(range(2, 22))
 
 
 async def test_existing_session_rejects_a_different_user_before_touching_it() -> None:

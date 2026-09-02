@@ -283,7 +283,7 @@ async def test_stream_uses_normalized_answer_from_finalization_in_done_and_persi
     assert service.saved_turns[0]["answer"] == "根据员工手册（来源：[参考1]）。"
 
 
-async def test_stream_returns_refusal_without_saving_turn_when_context_is_missing() -> None:
+async def test_stream_saves_refusal_turn_when_context_is_missing() -> None:
     service = InMemoryStreamingChatService(FakeRagService(None))
 
     events = [
@@ -299,7 +299,16 @@ async def test_stream_returns_refusal_without_saving_turn_when_context_is_missin
     assert [event.event for event in events] == ["status", "token", "done"]
     assert events[1].data == "在知识库中未找到与该问题相关的内容。"
     assert '"sources":[]' in events[2].data
-    assert service.saved_turns == []
+    assert len(service.saved_turns) == 1
+    saved_turn = service.saved_turns[0]
+    assert saved_turn["question"] == "年假怎么申请？"
+    assert saved_turn["answer"] == "在知识库中未找到与该问题相关的内容。"
+    assert saved_turn["kb_ids"] == [2]
+    assert saved_turn["sources"] == []
+    assert saved_turn["token_count"] == 0
+    assert saved_turn["answer_mode"] == "knowledge_base"
+    assert saved_turn["knowledge_base_searched"] is True
+    assert service.query_cache.put_calls == []
 
 
 async def test_stream_returns_error_without_saving_turn_when_model_returns_no_text() -> None:
@@ -321,7 +330,7 @@ async def test_stream_returns_error_without_saving_turn_when_model_returns_no_te
     assert service.saved_turns == []
 
 
-async def test_stream_does_not_save_model_explicit_refusal() -> None:
+async def test_stream_saves_model_explicit_refusal() -> None:
     service = InMemoryStreamingChatService(
         FakeRagService(
             _prepared_context(),
@@ -342,7 +351,15 @@ async def test_stream_does_not_save_model_explicit_refusal() -> None:
 
     assert [event.event for event in events] == ["status", "status", "token", "done"]
     assert '"sources":[]' in events[-1].data
-    assert service.saved_turns == []
+    assert len(service.saved_turns) == 1
+    saved_turn = service.saved_turns[0]
+    assert saved_turn["question"] == "年假怎么申请？"
+    assert saved_turn["answer"] == "在知识库中未找到相关内容。"
+    assert saved_turn["kb_ids"] == [2]
+    assert saved_turn["sources"] == []
+    assert saved_turn["answer_mode"] == "knowledge_base"
+    assert saved_turn["knowledge_base_searched"] is True
+    assert service.query_cache.put_calls == []
 
 
 async def test_stream_returns_fixed_error_without_saving_turn_when_generation_fails() -> None:
@@ -474,9 +491,12 @@ async def test_general_chat_stream_skips_retrieval_cache_and_saves_without_kb_sc
         )
     ]
 
-    assert [event.event for event in events] == ["status", "token", "token", "token", "done"]
-    assert events[0].data == '{"type":"GENERATING","message":"正在生成回答..."}'
-    assert "未经过知识库检索" in events[-1].data
+    assert [event.event for event in events] == ["status", "token", "token", "done"]
+    assert events[0].data == (
+        '{"type":"GENERATING","message":"正在生成回答...","session_id":"session-1"}'
+    )
+    assert "这条回答没有经过知识库检索，内容仅供参考，请结合实际情况判断。" in events[-1].data
+    assert all("这条回答没有经过知识库检索" not in event.data for event in events if event.event == "token")
     assert rag_service.prepare_calls == 0
     assert query_cache.get_calls == []
     assert query_cache.put_calls == []
@@ -485,7 +505,7 @@ async def test_general_chat_stream_skips_retrieval_cache_and_saves_without_kb_sc
     assert service.saved_turns[0]["answer_mode"] == "general_chat"
 
 
-async def test_session_meta_stream_uses_history_without_saving_turn() -> None:
+async def test_session_meta_stream_uses_history_and_saves_turn() -> None:
     rag_service = FakeRagService(_prepared_context())
     service = InMemoryStreamingChatService(rag_service)
 
@@ -503,12 +523,15 @@ async def test_session_meta_stream_uses_history_without_saving_turn() -> None:
     assert [event.event for event in events] == ["status", "token", "token", "done"]
     assert '"answer_mode":"session_meta"' in events[-1].data
     assert rag_service.prepare_calls == 0
-    assert service.session_calls == []
-    assert service.saved_turns == []
+    assert service.session_calls[0]["session_id"] == "session-1"
+    assert len(service.saved_turns) == 1
+    assert service.saved_turns[0]["kb_ids"] is None
+    assert service.saved_turns[0]["answer_mode"] == "session_meta"
+    assert service.saved_turns[0]["knowledge_base_searched"] is False
     assert service.query_cache.get_calls == []
 
 
-async def test_uncertain_stream_avoids_session_retrieval_and_generation() -> None:
+async def test_mixed_stream_saves_fixed_answer_without_generation() -> None:
     rag_service = FakeRagService(_prepared_context())
     service = InMemoryStreamingChatService(rag_service)
 
@@ -519,13 +542,18 @@ async def test_uncertain_stream_avoids_session_retrieval_and_generation() -> Non
             kb_ids=[2],
             session_id=None,
             user=CurrentUser(user_id=1, department_id="engineering", role="ADMIN"),
-            intent=ChatIntent.UNCERTAIN,
+            intent=ChatIntent.MIXED,
         )
     ]
 
     assert [event.event for event in events] == ["token", "done"]
     assert '"answer_mode":"uncertain"' in events[-1].data
+    assert '"session_id":"session-1"' in events[-1].data
     assert rag_service.prepare_calls == 0
-    assert service.session_calls == []
-    assert service.saved_turns == []
+    assert service.session_calls[0]["session_id"] is None
+    assert '"session_id":"session-1"' in events[-1].data
+    assert len(service.saved_turns) == 1
+    assert service.saved_turns[0]["kb_ids"] is None
+    assert service.saved_turns[0]["answer_mode"] == "uncertain"
+    assert service.saved_turns[0]["knowledge_base_searched"] is False
     assert service.query_cache.get_calls == []

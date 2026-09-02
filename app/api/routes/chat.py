@@ -51,6 +51,7 @@ class StreamingChatPipeline(Protocol):
         user: CurrentUser,
         started_at: float | None = None,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> AsyncIterator[SseEvent]: ...
 
 
@@ -66,6 +67,7 @@ class SynchronousChatPipeline(Protocol):
         user: CurrentUser,
         started_at: float | None = None,
         intent: ChatIntent = ChatIntent.KNOWLEDGE_BASE_QUERY,
+        rewritten_question: str | None = None,
     ) -> ChatQueryResponse: ...
 
 
@@ -158,21 +160,26 @@ async def query_chat(
     request: RagQueryRequest,
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
+    session_service: ChatSessionService = Depends(get_chat_session_service),
     synchronous_service: SynchronousChatPipeline = Depends(get_synchronous_chat_service),
     intent_classifier: IntentClassifier = Depends(get_intent_classifier),
 ) -> ApiResponse[ChatQueryResponse]:
     """执行会话化同步问答并返回完整答案。"""
     # 从权限校验前开始计时，确保响应 latency 覆盖完整同步业务路径。
     started_at = time.perf_counter()
-    intent = await intent_classifier.classify(request.question)
+    history = await _load_route_history(request.session_id, session_service, user)
+    decision = await intent_classifier.classify_with_context(
+        request.question,
+        history=history,
+        has_knowledge_base_history=_has_knowledge_base_history(history),
+    )
+    intent = decision.intent
     normalized_kb_ids = _normalize_kb_ids(request.kb_ids)
     if intent == ChatIntent.KNOWLEDGE_BASE_QUERY:
         if not normalized_kb_ids:
             raise HTTPException(status_code=422, detail="kb_ids is required for knowledge base queries")
         for kb_id in normalized_kb_ids:
             await permission_service.require_read(kb_id, user)
-    elif intent == ChatIntent.SESSION_META and request.session_id is None:
-        raise HTTPException(status_code=422, detail="session_id is required for session meta queries")
 
     return ApiResponse.ok(
         await synchronous_service.query(
@@ -182,6 +189,7 @@ async def query_chat(
             user=user,
             started_at=started_at,
             intent=intent,
+            rewritten_question=decision.rewritten_question,
         )
     )
 
@@ -193,6 +201,7 @@ async def stream_chat(
     session_id: str | None = None,
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
+    session_service: ChatSessionService = Depends(get_chat_session_service),
     streaming_service: StreamingChatPipeline = Depends(get_streaming_chat_service),
     intent_classifier: IntentClassifier = Depends(get_intent_classifier),
 ) -> StreamingResponse:
@@ -203,15 +212,19 @@ async def stream_chat(
 
     normalized_kb_ids = _normalize_kb_ids(kb_ids)
     started_at = time.perf_counter()
-    intent = await intent_classifier.classify(normalized_question)
+    history = await _load_route_history(session_id, session_service, user)
+    decision = await intent_classifier.classify_with_context(
+        normalized_question,
+        history=history,
+        has_knowledge_base_history=_has_knowledge_base_history(history),
+    )
+    intent = decision.intent
     if intent == ChatIntent.KNOWLEDGE_BASE_QUERY:
         if not normalized_kb_ids:
             raise HTTPException(status_code=422, detail="kb_ids is required for knowledge base queries")
         # 读权限必须在建立流式连接前校验，避免无权知识库内容进入模型上下文。
         for kb_id in normalized_kb_ids:
             await permission_service.require_read(kb_id, user)
-    elif intent == ChatIntent.SESSION_META and session_id is None:
-        raise HTTPException(status_code=422, detail="session_id is required for session meta queries")
 
     async def event_stream() -> AsyncIterator[str]:
         async for event in streaming_service.stream(
@@ -221,6 +234,7 @@ async def stream_chat(
             user=user,
             started_at=started_at,
             intent=intent,
+            rewritten_question=decision.rewritten_question,
         ):
             yield _encode_sse(event)
 
@@ -273,6 +287,21 @@ def _normalize_kb_ids(kb_ids: list[int]) -> list[int]:
             seen.add(kb_id)
             normalized.append(kb_id)
     return normalized
+
+
+async def _load_route_history(session_id: str | None, service: ChatSessionService, user: CurrentUser) -> list[object]:
+    """在分类前读取当前会话历史，供追问识别使用。"""
+    if not session_id:
+        return []
+    return list(await service.list_messages(session_id, user))
+
+
+def _has_knowledge_base_history(history: list[object]) -> bool:
+    return any(
+        getattr(message, "role", None) == "ASSISTANT"
+        and getattr(message, "knowledge_base_searched", False) is True
+        for message in history
+    )
 
 
 def _encode_sse(event: SseEvent) -> str:

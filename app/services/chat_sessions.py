@@ -10,6 +10,10 @@ from app.models.kb import ChatMessage, ChatSession
 from app.repositories.chat import ChatRepository
 
 
+CHAT_CONTEXT_ROUNDS = 10
+CHAT_CONTEXT_MESSAGE_LIMIT = CHAT_CONTEXT_ROUNDS * 2
+
+
 class ChatSessionService:
     """管理对话会话的创建、复用和完整轮次保存。"""
 
@@ -67,10 +71,10 @@ class ChatSessionService:
         return saved
 
     async def get_history(self, session_id: str, user: CurrentUser) -> list[ChatMessage]:
-        """返回当前问题之前最近五轮、按时间正序的对话历史。"""
+        """返回当前问题之前最近十轮、按时间正序的对话历史。"""
         await self._require_owned_session(session_id, user)
         messages = await self.repository.list_messages_for_user(session_id, user.user_id)
-        return messages[-10:]
+        return messages[-CHAT_CONTEXT_MESSAGE_LIMIT:]
 
     async def list_sessions(self, user: CurrentUser) -> list[ChatSession]:
         """返回当前用户未删除的对话会话。"""

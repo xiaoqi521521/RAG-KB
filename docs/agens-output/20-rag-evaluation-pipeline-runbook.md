@@ -29,11 +29,14 @@ RAGAS 导入失败时不得启动正式评估。评估复用应用现有回答�
 3. `app/db/migrations/20260715_extend_answer_feedback.sql`
 4. `app/db/migrations/20260901_allow_feedback_cancellation.sql`
 5. `app/db/migrations/20260902_store_cancelled_feedback_as_zero.sql`
+6. `app/db/migrations/20260902_add_chat_intent_metadata.sql`
 
 第一项增加标准问题状态、审核原因和反馈来源；第二项增加可空指标、结果状态和约束；
 第三项保存助手回答实际使用的知识库范围并约束反馈值；第四项曾为取消反馈临时放开空值；
 第五项将历史空值归一化为 `0`，恢复反馈字段非空，并约束反馈值为 `-1/0/1`。当前取消反馈
 会将已有反馈记录的 `feedback` 更新为 `0`，而不是写入 `NULL`。
+第六项为 `kb_chat_message` 增加意图路由使用的 `answer_mode` 和 `knowledge_base_searched` 字段；
+已有数据库未执行该迁移时，聊天历史查询会因 ORM 模型与实际表结构不一致而失败。
 新建环境使用 `app/db/schema.sql`，不要再重复执行增量 SQL。
 
 ## 2. 管理员正式评估工作流

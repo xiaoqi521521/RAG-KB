@@ -27,6 +27,15 @@ import type {
 } from '@/types';
 
 const NOT_FOUND_ANSWER = '在知识库中未找到与该问题相关的内容。';
+const GENERAL_NOTICE = '这条回答没有经过知识库检索，内容仅供参考，请结合实际情况判断。';
+
+function normalizeAnswerContent(content: string, answerMode?: string): string {
+  if (answerMode !== 'general_chat') {
+    return content;
+  }
+  const suffix = `\n\n${GENERAL_NOTICE}`;
+  return content.endsWith(suffix) ? content.slice(0, -suffix.length) : content;
+}
 
 function normalizeSources(value: ChatMessageItem['sources']): SourceCitation[] {
   if (Array.isArray(value)) {
@@ -43,7 +52,7 @@ function mapHistoryMessages(items: ChatMessageItem[]): ChatMessage[] {
     id: `history-${item.id}`,
     messageId: item.id,
     role: item.role === 'USER' ? 'user' : 'assistant',
-    content: item.content,
+    content: normalizeAnswerContent(item.content, item.answer_mode),
     sources: item.role === 'ASSISTANT' ? normalizeSources(item.sources) : null,
     latencyMs: item.latency_ms,
     feedback: item.feedback,
@@ -53,15 +62,6 @@ function mapHistoryMessages(items: ChatMessageItem[]): ChatMessage[] {
     status: null,
     timestamp: new Date(item.created_at).getTime(),
   }));
-}
-
-function parseKbIds(value: string): number[] {
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
 }
 
 export default function ChatPage() {
@@ -146,13 +146,9 @@ export default function ChatPage() {
   const loadSession = useCallback(
     async (targetSessionId: string) => {
       try {
-        const [session] = sessions.filter((item) => item.id === targetSessionId);
         const res = await chatApi.getMessages(targetSessionId);
         setMessages(mapHistoryMessages(res.data.data));
         setSessionId(targetSessionId);
-        if (session) {
-          setSelectedKbIds(parseKbIds(session.kb_ids));
-        }
         const lastAssistant = [...res.data.data]
           .reverse()
           .find((item) => item.role === 'ASSISTANT' && item.sources);
@@ -165,7 +161,7 @@ export default function ChatPage() {
         message.error('读取会话失败');
       }
     },
-    [closePanel, message, openPanel, sessions, setMessages, setSelectedKbIds, setSessionId],
+    [closePanel, message, openPanel, setMessages, setSessionId],
   );
 
   const syncLastMessageId = useCallback(
@@ -247,6 +243,7 @@ export default function ChatPage() {
     abortRef.current = controller;
     let finalAnswer = '';
     let finishedSessionId = sessionId;
+    let completed = false;
 
     try {
       await streamChat({
@@ -267,6 +264,11 @@ export default function ChatPage() {
             finalAnswer += event.content;
             appendLastAssistant(event.content);
           } else if (event.kind === 'done') {
+            completed = true;
+            if (event.sessionId) {
+              finishedSessionId = event.sessionId;
+              setSessionId(event.sessionId);
+            }
             if (event.answer !== undefined) {
               finalAnswer = event.answer;
             }
@@ -289,17 +291,23 @@ export default function ChatPage() {
       });
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
-        appendLastAssistant(finalAnswer ? '\n\n连接异常，请稍后重试。' : '连接异常，请稍后重试。');
+        const detail = error instanceof Error && error.message
+          ? error.message
+          : '连接异常，请稍后重试。';
+        appendLastAssistant(finalAnswer ? `\n\n${detail}` : detail);
         setLastAssistantDone([], 0);
       }
     } finally {
       abortRef.current = null;
       setStreaming(false);
       setStreamStatus(null);
-      if (finishedSessionId && finalAnswer) {
+      if (completed && finishedSessionId && finalAnswer) {
         void syncLastMessageId(finishedSessionId, finalAnswer);
       }
-      void fetchSessions();
+      // 服务端已在 done 前提交消息；等待刷新完成，确保首轮回答立刻出现在历史列表。
+      if (completed) {
+        await fetchSessions();
+      }
     }
   }, [
     addMessage,

@@ -87,7 +87,7 @@ class ChatSessionRuntime:
             await session.commit()
 
     async def _load_history(self, session_id: str, user: CurrentUser) -> list[object]:
-        """从完整存储中截取最近五轮，并转换为模型消息。"""
+        """从完整存储中截取最近十轮，并转换为模型消息。"""
         async with self.session_factory() as session:
             service = ChatSessionService(ChatRepository(session))
             history = await service.get_history(session_id, user)

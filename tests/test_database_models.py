@@ -228,3 +228,22 @@ def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
     assert "SET feedback = 0" in zero_state_migration_sql
     assert "ALTER COLUMN feedback SET NOT NULL" in zero_state_migration_sql
     assert "feedback IN (-1, 0, 1)" in zero_state_migration_sql
+
+
+def test_chat_intent_metadata_is_present_in_schema_and_migration():
+    """意图路由依赖的消息元数据必须同时存在于模型快照和增量迁移。"""
+    from app.models import ChatMessage
+
+    columns = ChatMessage.__table__.columns
+    assert columns["answer_mode"].nullable is False
+    assert columns["knowledge_base_searched"].nullable is False
+
+    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
+    assert "answer_mode     VARCHAR(30) NOT NULL DEFAULT 'knowledge_base'" in schema_sql
+    assert "knowledge_base_searched BOOLEAN NOT NULL DEFAULT TRUE" in schema_sql
+
+    migration_sql = Path(
+        "app/db/migrations/20260902_add_chat_intent_metadata.sql"
+    ).read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS answer_mode" in migration_sql
+    assert "ADD COLUMN IF NOT EXISTS knowledge_base_searched" in migration_sql
