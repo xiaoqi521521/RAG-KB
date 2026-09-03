@@ -119,29 +119,56 @@ async def test_classify_returns_503_after_retry_failure() -> None:
     assert len(model.calls) == 2
 
 
-async def test_follow_up_rewrites_only_when_question_has_explicit_reference() -> None:
+async def test_follow_up_rewrite_model_expands_reference_question() -> None:
     model = FakeModel([
         SimpleNamespace(content='{"intent":"KNOWLEDGE_BASE_QUERY"}'),
-        SimpleNamespace(content="年假申请需要准备哪些材料？"),
+        SimpleNamespace(content='{"needs_rewrite":true,"question":"年假申请需要准备哪些材料？"}'),
     ])
     classifier = IntentClassifier(model)
     decision = await classifier.classify_with_context(
         "这个需要准备什么？",
         history=[SimpleNamespace(role="USER", content="年假怎么申请？")],
-        has_knowledge_base_history=True,
     )
     assert decision.intent == ChatIntent.KNOWLEDGE_BASE_QUERY
     assert decision.rewritten_question == "年假申请需要准备哪些材料？"
     assert len(model.calls) == 2
 
 
-async def test_short_follow_up_without_reference_keeps_original_question() -> None:
-    model = FakeModel([SimpleNamespace(content='{"intent":"KNOWLEDGE_BASE_QUERY"}')])
+async def test_follow_up_rewrite_model_keeps_original_when_no_rewrite_needed() -> None:
+    model = FakeModel([
+        SimpleNamespace(content='{"intent":"KNOWLEDGE_BASE_QUERY"}'),
+        SimpleNamespace(content='{"needs_rewrite":false,"question":"模型错误复述"}'),
+    ])
     decision = await IntentClassifier(model).classify_with_context(
         "年假怎么申请？",
         history=[SimpleNamespace(role="USER", content="上一问")],
-        has_knowledge_base_history=True,
     )
+    assert decision.rewritten_question == "年假怎么申请？"
+    assert len(model.calls) == 2
+
+
+async def test_rewrite_failure_is_reported_as_rewrite_service_unavailable() -> None:
+    model = FakeModel([
+        SimpleNamespace(content='{"intent":"KNOWLEDGE_BASE_QUERY"}'),
+        SimpleNamespace(content="not-json"),
+    ])
+
+    with pytest.raises(HTTPException) as error:
+        await IntentClassifier(model).classify_with_context(
+            "这个需要准备什么？",
+            history=[SimpleNamespace(role="USER", content="年假怎么申请？")],
+        )
+
+    assert error.value.status_code == 503
+    assert error.value.detail == "问题改写服务暂不可用"
+    assert len(model.calls) == 2
+
+
+async def test_first_turn_never_enters_follow_up_rewrite() -> None:
+    model = FakeModel([SimpleNamespace(content='{"intent":"KNOWLEDGE_BASE_QUERY"}')])
+
+    decision = await IntentClassifier(model).classify_with_context("这个需要准备什么？")
+
     assert decision.rewritten_question is None
     assert len(model.calls) == 1
 

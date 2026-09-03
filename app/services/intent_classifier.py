@@ -64,14 +64,15 @@ class IntentClassifier:
         question: str,
         *,
         history: Sequence[object] = (),
-        has_knowledge_base_history: bool = False,
     ) -> IntentDecision:
         """调用分类模型；瞬态失败最多重试一次，最终失败统一返回 503。"""
-        possible_follow_up = has_knowledge_base_history and self._looks_like_follow_up(question)
-        needs_rewrite = possible_follow_up and self._needs_rewrite(question)
+        # 首轮没有可供消解的上下文，只有已有历史且问题呈现追问特征时才进入改写模块。
+        possible_follow_up = bool(history) and self._looks_like_follow_up(question)
         history_text = self._format_history(history)
+
         async def run() -> IntentDecision:
             last_error: Exception | None = None
+            intent: ChatIntent | None = None
             for attempt in range(2):
                 try:
                     response = await self.model.ainvoke([SystemMessage(content=INTENT_SYSTEM_PROMPT), HumanMessage(content=(
@@ -88,17 +89,7 @@ class IntentClassifier:
                             kb_id="multi",
                         )
                     intent = self._parse(response)
-                    if (
-                        intent == ChatIntent.UNKNOWN
-                        and not has_knowledge_base_history
-                        and self._looks_like_follow_up(question)
-                    ):
-                        # 没有知识库上下文时，疑似承接问题交给会话模型自行判断。
-                        intent = ChatIntent.SESSION_META
-                    rewritten = None
-                    if intent == ChatIntent.KNOWLEDGE_BASE_QUERY and needs_rewrite:
-                        rewritten = await self.rewrite_follow_up(question, history)
-                    return IntentDecision(intent=intent, rewritten_question=rewritten)
+                    break
                 except (json.JSONDecodeError, ValueError, KeyError) as exc:
                     last_error = exc
                     break
@@ -106,8 +97,14 @@ class IntentClassifier:
                     last_error = exc
                     if attempt == 0:
                         await asyncio.sleep(0)
-            logger.warning("Intent classification failed: error_type=%s", type(last_error).__name__)
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="意图识别服务暂不可用") from last_error
+            if intent is None:
+                logger.warning("Intent classification failed: error_type=%s", type(last_error).__name__)
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="意图识别服务暂不可用") from last_error
+
+            rewritten = None
+            if intent == ChatIntent.KNOWLEDGE_BASE_QUERY and possible_follow_up:
+                rewritten = await self.rewrite_follow_up(question, history)
+            return IntentDecision(intent=intent, rewritten_question=rewritten)
 
         try:
             if self.budget_gate is None:
@@ -132,8 +129,11 @@ class IntentClassifier:
         return ChatIntent(payload["intent"])
 
     async def rewrite_follow_up(self, question: str, history: Sequence[object]) -> str:
-        """仅在疑似追问时消解指代，普通问题不触发该模型调用。"""
-        prompt = "你是企业知识库检索问题改写器。仅根据给定对话历史，把当前追问改写成一个独立、具体、可检索的问题。不要回答问题，不要补充历史中不存在的事实，只输出改写后的问题文本。"
+        """判断追问是否需要改写，需要时消解指代或补全省略。"""
+        prompt = """你是企业知识库检索问题改写器。判断当前问题是否依赖对话历史中的指代或省略信息。
+如果需要改写，输出一个独立、具体、可检索的问题；如果不需要，保留当前问题原样。
+不要回答问题，不要补充历史中不存在的事实。严格只输出 JSON：
+{"needs_rewrite":true或false,"question":"改写后的问题；无需改写时可为空"}"""
         history_text = self._format_history(history)
 
         async def run() -> str:
@@ -145,7 +145,18 @@ class IntentClassifier:
             content = getattr(response, "content", None)
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("rewriter returned empty content")
-            return content.strip()
+            payload = json.loads(content.strip())
+            if not isinstance(payload, dict) or set(payload) != {"needs_rewrite", "question"}:
+                raise ValueError("rewriter returned unexpected fields")
+            if not isinstance(payload["needs_rewrite"], bool) or not isinstance(payload["question"], str):
+                raise ValueError("rewriter returned invalid fields")
+            if not payload["needs_rewrite"]:
+                # 不需要改写时由服务端保留原问题，避免模型复述时意外改变检索语义。
+                return question
+            rewritten_question = payload["question"].strip()
+            if not rewritten_question:
+                raise ValueError("rewriter returned empty question")
+            return rewritten_question
 
         try:
             if self.budget_gate is None:
@@ -155,19 +166,15 @@ class IntentClassifier:
                 return await run()
         except (TokenBudgetExhaustedError, TokenBudgetUnavailableError) as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="问题改写服务暂不可用") from exc
+        except (json.JSONDecodeError, ValueError, KeyError) as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="问题改写服务暂不可用") from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Follow-up rewrite failed: error_type=%s", type(exc).__name__)
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="问题改写服务暂不可用") from exc
 
     @staticmethod
     def _looks_like_follow_up(question: str) -> bool:
         return len(question.strip()) < 20 or any(marker in question for marker in ("那", "呢", "还", "哪些", "怎么", "多久", "是否", "这个", "上述", "刚才"))
-
-    @staticmethod
-    def _needs_rewrite(question: str) -> bool:
-        """仅把包含明显省略或指代的疑似追问交给改写模型。"""
-        normalized = question.strip()
-        if any(marker in normalized for marker in ("这个", "上述", "刚才", "前面", "上面", "那呢", "还有呢")):
-            return True
-        # 无明确指代词但以承接式短语开头时，通常缺少上一轮主题。
-        return len(normalized) < 20 and normalized.startswith(("需要", "准备", "有哪些", "还需要", "具体", "分别"))
 
     @staticmethod
     def _format_history(history: Sequence[object]) -> str:

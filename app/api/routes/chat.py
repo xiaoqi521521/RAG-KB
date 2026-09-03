@@ -171,7 +171,6 @@ async def query_chat(
     decision = await intent_classifier.classify_with_context(
         request.question,
         history=history,
-        has_knowledge_base_history=_has_knowledge_base_history(history),
     )
     intent = decision.intent
     normalized_kb_ids = _normalize_kb_ids(request.kb_ids)
@@ -216,7 +215,6 @@ async def stream_chat(
     decision = await intent_classifier.classify_with_context(
         normalized_question,
         history=history,
-        has_knowledge_base_history=_has_knowledge_base_history(history),
     )
     intent = decision.intent
     if intent == ChatIntent.KNOWLEDGE_BASE_QUERY:
@@ -294,14 +292,6 @@ async def _load_route_history(session_id: str | None, service: ChatSessionServic
     if not session_id:
         return []
     return list(await service.list_messages(session_id, user))
-
-
-def _has_knowledge_base_history(history: list[object]) -> bool:
-    return any(
-        getattr(message, "role", None) == "ASSISTANT"
-        and getattr(message, "knowledge_base_searched", False) is True
-        for message in history
-    )
 
 
 def _encode_sse(event: SseEvent) -> str:

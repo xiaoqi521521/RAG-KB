@@ -38,7 +38,6 @@ class FakeIntentClassifier:
         question: str,
         *,
         history: Sequence[object] = (),
-        has_knowledge_base_history: bool = False,
     ) -> IntentDecision:
         self.questions.append(question)
         return IntentDecision(intent=self.intent)
