@@ -31,6 +31,15 @@ def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> A
 
 REDIS_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}stats:"
 _REDIS_COST_FIELD = "estimatedCostCny"
+_REDIS_TYPE_COST_FIELDS: dict[str, str] = {
+    "embedding": "embeddingCostCny",
+    "input": "inputCostCny",
+    "answer_generation": "answerGenerationCostCny",
+    "intent": "intentCostCny",
+    "hyde": "hydeCostCny",
+    "reranker": "rerankerCostCny",
+    "faithfulness_check": "faithfulnessCostCny",
+}
 _USER_USAGE_UPDATE_SCRIPT = """
 local existing_token = redis.call('HGET', KEYS[1], ARGV[1])
 if existing_token and tonumber(existing_token) == nil then
@@ -40,8 +49,13 @@ local existing_cost = redis.call('HGET', KEYS[1], ARGV[3])
 if existing_cost and tonumber(existing_cost) == nil then
   return redis.error_reply('invalid estimated cost field')
 end
+local existing_type_cost = redis.call('HGET', KEYS[1], ARGV[5])
+if existing_type_cost and tonumber(existing_type_cost) == nil then
+  return redis.error_reply('invalid type cost field')
+end
 local token_total = redis.call('HINCRBY', KEYS[1], ARGV[1], ARGV[2])
 local cost_total = redis.call('HINCRBYFLOAT', KEYS[1], ARGV[3], ARGV[4])
+local type_cost_total = redis.call('HINCRBYFLOAT', KEYS[1], ARGV[5], ARGV[6])
 return {token_total, cost_total}
 """
 TOKEN_TYPES = (
@@ -76,7 +90,7 @@ _REDIS_FIELDS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class UserTokenUsage:
-    """当前用户在线请求累计的七类 Token 和金额。"""
+    """当前用户在线请求累计的七类 Token、分类型金额和总金额。"""
 
     embedding_tokens: int
     input_tokens: int
@@ -86,6 +100,13 @@ class UserTokenUsage:
     reranker_tokens: int
     faithfulness_tokens: int
     estimated_cost_cny: Decimal = Decimal("0")
+    embedding_cost_cny: Decimal = Decimal("0")
+    input_cost_cny: Decimal = Decimal("0")
+    answer_generation_cost_cny: Decimal = Decimal("0")
+    intent_cost_cny: Decimal = Decimal("0")
+    hyde_cost_cny: Decimal = Decimal("0")
+    reranker_cost_cny: Decimal = Decimal("0")
+    faithfulness_cost_cny: Decimal = Decimal("0")
 
 
 class TokenMetricsUnavailableError(RuntimeError):
@@ -315,6 +336,8 @@ class TokenUsageRecorder:
                     tokens,
                     _REDIS_COST_FIELD,
                     _decimal_for_redis(estimated_cost),
+                    _REDIS_TYPE_COST_FIELDS[token_type],
+                    _decimal_for_redis(estimated_cost),
                 )
         except Exception as exc:  # noqa: BLE001
             self._record_write_failure(sink="redis", token_type=token_type)
@@ -366,7 +389,11 @@ class TokenUsageRecorder:
             values: dict[str, object] = {}
             for raw_key, raw_value in raw_values.items():
                 key = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else str(raw_key)
-                if key in _REDIS_FIELDS.values() or key == _REDIS_COST_FIELD:
+                if (
+                    key in _REDIS_FIELDS.values()
+                    or key in _REDIS_TYPE_COST_FIELDS.values()
+                    or key == _REDIS_COST_FIELD
+                ):
                     values[key] = raw_value
             return UserTokenUsage(
                 embedding_tokens=_parse_stored_token(values.get("embeddingTokens", 0)),
@@ -379,6 +406,17 @@ class TokenUsageRecorder:
                 reranker_tokens=_parse_stored_token(values.get("rerankerTokens", 0)),
                 faithfulness_tokens=_parse_stored_token(values.get("faithfulnessTokens", 0)),
                 estimated_cost_cny=_parse_stored_cost(values.get(_REDIS_COST_FIELD, 0)),
+                embedding_cost_cny=_parse_stored_cost(values.get("embeddingCostCny", 0)),
+                input_cost_cny=_parse_stored_cost(values.get("inputCostCny", 0)),
+                answer_generation_cost_cny=_parse_stored_cost(
+                    values.get("answerGenerationCostCny", 0)
+                ),
+                intent_cost_cny=_parse_stored_cost(values.get("intentCostCny", 0)),
+                hyde_cost_cny=_parse_stored_cost(values.get("hydeCostCny", 0)),
+                reranker_cost_cny=_parse_stored_cost(values.get("rerankerCostCny", 0)),
+                faithfulness_cost_cny=_parse_stored_cost(
+                    values.get("faithfulnessCostCny", 0)
+                ),
             )
         except (TypeError, ValueError) as exc:
             logger.warning(

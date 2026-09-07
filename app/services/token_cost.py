@@ -15,7 +15,7 @@ class UserTokenReader(Protocol):
 
 @dataclass(frozen=True)
 class TokenCostSummary:
-    """当前用户七类 Token 用量及人民币近似成本。"""
+    """当前用户七类 Token 用量、分类型近似成本及总成本。"""
 
     embedding_tokens: int
     input_tokens: int
@@ -25,6 +25,13 @@ class TokenCostSummary:
     reranker_tokens: int
     faithfulness_tokens: int
     estimated_cost: Decimal
+    embedding_cost: Decimal
+    input_cost: Decimal
+    answer_generation_cost: Decimal
+    intent_cost: Decimal
+    hyde_cost: Decimal
+    reranker_cost: Decimal
+    faithfulness_cost: Decimal
 
 
 class TokenCostService:
@@ -49,6 +56,34 @@ class TokenCostService:
             reranker_tokens=usage.reranker_tokens,
             faithfulness_tokens=usage.faithfulness_tokens,
             estimated_cost=usage.estimated_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            embedding_cost=usage.embedding_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            input_cost=usage.input_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            answer_generation_cost=usage.answer_generation_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            intent_cost=usage.intent_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            hyde_cost=usage.hyde_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            reranker_cost=usage.reranker_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            faithfulness_cost=usage.faithfulness_cost_cny.quantize(
                 _CURRENCY_QUANTUM,
                 rounding=ROUND_HALF_UP,
             ),

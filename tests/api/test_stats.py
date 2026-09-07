@@ -30,6 +30,13 @@ class FakeTokenCostService:
                 reranker_tokens=0,
                 faithfulness_tokens=0,
                 estimated_cost=Decimal("0.0000"),
+                embedding_cost=Decimal("0.0000"),
+                input_cost=Decimal("0.0000"),
+                answer_generation_cost=Decimal("0.0000"),
+                intent_cost=Decimal("0.0000"),
+                hyde_cost=Decimal("0.0000"),
+                reranker_cost=Decimal("0.0000"),
+                faithfulness_cost=Decimal("0.0000"),
             )
         return TokenCostSummary(
             embedding_tokens=125_000,
@@ -40,6 +47,13 @@ class FakeTokenCostService:
             reranker_tokens=0,
             faithfulness_tokens=0,
             estimated_cost=Decimal("1.2195"),
+            embedding_cost=Decimal("0.0125"),
+            input_cost=Decimal("0.8900"),
+            answer_generation_cost=Decimal("0.2100"),
+            intent_cost=Decimal("0.1000"),
+            hyde_cost=Decimal("0.0050"),
+            reranker_cost=Decimal("0.0020"),
+            faithfulness_cost=Decimal("0.0000"),
         )
 
 
@@ -78,6 +92,13 @@ def test_token_stats_returns_current_user_cost_summary() -> None:
             "reranker_tokens": 0,
             "faithfulness_tokens": 0,
             "estimated_cost": "1.2195",
+            "embedding_cost": "0.0125",
+            "input_cost": "0.8900",
+            "answer_generation_cost": "0.2100",
+            "intent_cost": "0.1000",
+            "hyde_cost": "0.0050",
+            "reranker_cost": "0.0020",
+            "faithfulness_cost": "0.0000",
             "currency": "CNY",
         },
     }
@@ -114,6 +135,13 @@ def test_token_stats_returns_zero_for_user_without_usage() -> None:
         "reranker_tokens": 0,
         "faithfulness_tokens": 0,
         "estimated_cost": "0.0000",
+        "embedding_cost": "0.0000",
+        "input_cost": "0.0000",
+        "answer_generation_cost": "0.0000",
+        "intent_cost": "0.0000",
+        "hyde_cost": "0.0000",
+        "reranker_cost": "0.0000",
+        "faithfulness_cost": "0.0000",
         "currency": "CNY",
     }
 
