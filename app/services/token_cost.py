@@ -45,8 +45,41 @@ class TokenCostService:
         self.token_metrics = token_metrics
 
     async def get_user_cost(self, *, user_id: int) -> TokenCostSummary:
-        """返回当前用户的六类 Token 和 Redis 已累计的四位小数成本。"""
+        """返回当前用户的七类 Token 和按当前单价派生的四位小数成本。
+
+        总费用取分项取整后之和，保证与成本监控页各卡片显示一致。
+        """
         usage = await self.token_metrics.read_user_tokens(user_id)
+        costs = {
+            "embedding": usage.embedding_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            "input": usage.input_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            "answer_generation": usage.answer_generation_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            "intent": usage.intent_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            "hyde": usage.hyde_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            "reranker": usage.reranker_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+            "faithfulness": usage.faithfulness_cost_cny.quantize(
+                _CURRENCY_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            ),
+        }
         return TokenCostSummary(
             embedding_tokens=usage.embedding_tokens,
             input_tokens=usage.input_tokens,
@@ -55,36 +88,12 @@ class TokenCostService:
             hyde_tokens=usage.hyde_tokens,
             reranker_tokens=usage.reranker_tokens,
             faithfulness_tokens=usage.faithfulness_tokens,
-            estimated_cost=usage.estimated_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            embedding_cost=usage.embedding_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            input_cost=usage.input_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            answer_generation_cost=usage.answer_generation_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            intent_cost=usage.intent_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            hyde_cost=usage.hyde_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            reranker_cost=usage.reranker_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
-            faithfulness_cost=usage.faithfulness_cost_cny.quantize(
-                _CURRENCY_QUANTUM,
-                rounding=ROUND_HALF_UP,
-            ),
+            estimated_cost=sum(costs.values(), Decimal("0")),
+            embedding_cost=costs["embedding"],
+            input_cost=costs["input"],
+            answer_generation_cost=costs["answer_generation"],
+            intent_cost=costs["intent"],
+            hyde_cost=costs["hyde"],
+            reranker_cost=costs["reranker"],
+            faithfulness_cost=costs["faithfulness"],
         )

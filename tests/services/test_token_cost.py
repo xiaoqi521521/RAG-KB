@@ -100,13 +100,13 @@ async def test_token_cost_service_prices_internal_outputs_and_reranker() -> None
                 hyde_tokens=1_000,
                 reranker_tokens=1_000,
                 faithfulness_tokens=1_000,
-                estimated_cost_cny=Decimal("0.0075"),
+                estimated_cost_cny=Decimal("0.0105"),
                 embedding_cost_cny=Decimal("0"),
                 input_cost_cny=Decimal("0.0025"),
                 answer_generation_cost_cny=Decimal("0.0025"),
                 intent_cost_cny=Decimal("0"),
                 hyde_cost_cny=Decimal("0.0025"),
-                reranker_cost_cny=Decimal("0"),
+                reranker_cost_cny=Decimal("0.0005"),
                 faithfulness_cost_cny=Decimal("0.0025"),
             )
         ),
@@ -114,6 +114,7 @@ async def test_token_cost_service_prices_internal_outputs_and_reranker() -> None
 
     summary = await service.get_user_cost(user_id=7)
 
-    assert summary.estimated_cost == Decimal("0.0075")
+    assert summary.estimated_cost == Decimal("0.0105")
     assert summary.embedding_cost == Decimal("0")
     assert summary.intent_cost == Decimal("0")
+    assert summary.reranker_cost == Decimal("0.0005")
