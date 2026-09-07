@@ -6,13 +6,13 @@ import { statsApi } from '@/api';
 import type { TokenStats } from '@/types';
 
 const TOKEN_ITEMS = [
-  { key: 'input_tokens', label: '输入', color: '#2f5d50' },
-  { key: 'answer_generation_tokens', label: '回答生成', color: '#4a7c67' },
-  { key: 'intent_tokens', label: '意图识别', color: '#3f6f8f' },
-  { key: 'embedding_tokens', label: 'Embedding', color: '#7ba08b' },
-  { key: 'hyde_tokens', label: 'HyDE', color: '#a8752c' },
-  { key: 'reranker_tokens', label: 'Reranker', color: '#c68b47' },
-  { key: 'faithfulness_tokens', label: '忠实度校验', color: '#bf3b2b' },
+  { key: 'input_tokens', costKey: 'input_cost', label: '输入', color: '#2f5d50' },
+  { key: 'answer_generation_tokens', costKey: 'answer_generation_cost', label: '回答生成', color: '#4a7c67' },
+  { key: 'intent_tokens', costKey: 'intent_cost', label: '意图识别', color: '#3f6f8f' },
+  { key: 'embedding_tokens', costKey: 'embedding_cost', label: 'Embedding', color: '#7ba08b' },
+  { key: 'hyde_tokens', costKey: 'hyde_cost', label: 'HyDE', color: '#a8752c' },
+  { key: 'reranker_tokens', costKey: 'reranker_cost', label: 'Reranker', color: '#c68b47' },
+  { key: 'faithfulness_tokens', costKey: 'faithfulness_cost', label: '忠实度校验', color: '#bf3b2b' },
 ] as const;
 
 function formatNumber(value: number): string {
@@ -82,7 +82,7 @@ export default function DashboardPage() {
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <div className="eyebrow">TOKEN BREAKDOWN</div>
-                <h2 className="text-[16px] font-semibold mt-1">六类在线消耗</h2>
+                <h2 className="text-[16px] font-semibold mt-1">七类在线消耗</h2>
               </div>
               <span className="font-data text-[12px] text-faint">
                 input 只统计聊天模型输入，其他类型只统计对应输出
@@ -115,7 +115,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="font-data text-[21px] mt-2">{formatNumber(value)}</div>
                     <div className="font-data text-[11px] text-faint mt-1">
-                      {percent.toFixed(1)}%
+                      {percent.toFixed(1)}% · ¥{stats[item.costKey]}
                     </div>
                   </div>
                 );

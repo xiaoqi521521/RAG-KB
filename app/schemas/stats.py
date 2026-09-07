@@ -16,4 +16,11 @@ class TokenStatsResponse(BaseModel):
     reranker_tokens: int = Field(ge=0)
     faithfulness_tokens: int = Field(ge=0)
     estimated_cost: str
+    embedding_cost: str
+    input_cost: str
+    answer_generation_cost: str
+    intent_cost: str
+    hyde_cost: str
+    reranker_cost: str
+    faithfulness_cost: str
     currency: Literal["CNY"] = "CNY"

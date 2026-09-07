@@ -48,5 +48,12 @@ async def get_token_stats(
             reranker_tokens=summary.reranker_tokens,
             faithfulness_tokens=summary.faithfulness_tokens,
             estimated_cost=f"{summary.estimated_cost:.4f}",
+            embedding_cost=f"{summary.embedding_cost:.4f}",
+            input_cost=f"{summary.input_cost:.4f}",
+            answer_generation_cost=f"{summary.answer_generation_cost:.4f}",
+            intent_cost=f"{summary.intent_cost:.4f}",
+            hyde_cost=f"{summary.hyde_cost:.4f}",
+            reranker_cost=f"{summary.reranker_cost:.4f}",
+            faithfulness_cost=f"{summary.faithfulness_cost:.4f}",
         )
     )

@@ -19,6 +19,13 @@ class FakeTokenMetrics:
             reranker_tokens=0,
             faithfulness_tokens=0,
             estimated_cost_cny=Decimal("1.2195"),
+            embedding_cost_cny=Decimal("0.0125"),
+            input_cost_cny=Decimal("0.8900"),
+            answer_generation_cost_cny=Decimal("0.2100"),
+            intent_cost_cny=Decimal("0.1000"),
+            hyde_cost_cny=Decimal("0.0050"),
+            reranker_cost_cny=Decimal("0.0020"),
+            faithfulness_cost_cny=Decimal("0"),
         )
 
     async def read_user_tokens(self, user_id: int) -> UserTokenUsage:
@@ -42,6 +49,13 @@ async def test_token_cost_service_calculates_fixed_decimal_estimate() -> None:
     assert summary.reranker_tokens == 0
     assert summary.faithfulness_tokens == 0
     assert summary.estimated_cost == Decimal("1.2195")
+    assert summary.embedding_cost == Decimal("0.0125")
+    assert summary.input_cost == Decimal("0.8900")
+    assert summary.answer_generation_cost == Decimal("0.2100")
+    assert summary.intent_cost == Decimal("0.1000")
+    assert summary.hyde_cost == Decimal("0.0050")
+    assert summary.reranker_cost == Decimal("0.0020")
+    assert summary.faithfulness_cost == Decimal("0")
 
 
 @pytest.mark.asyncio
@@ -57,6 +71,13 @@ async def test_token_cost_service_rounds_half_up_to_four_decimal_places() -> Non
                     reranker_tokens=0,
                     faithfulness_tokens=0,
                     estimated_cost_cny=Decimal("0.00005"),
+                    embedding_cost_cny=Decimal("0"),
+                    input_cost_cny=Decimal("0"),
+                    answer_generation_cost_cny=Decimal("0"),
+                    intent_cost_cny=Decimal("0.00005"),
+                    hyde_cost_cny=Decimal("0"),
+                    reranker_cost_cny=Decimal("0"),
+                    faithfulness_cost_cny=Decimal("0"),
                 )
         ),
     )
@@ -64,6 +85,7 @@ async def test_token_cost_service_rounds_half_up_to_four_decimal_places() -> Non
     summary = await service.get_user_cost(user_id=7)
 
     assert summary.estimated_cost == Decimal("0.0001")
+    assert summary.intent_cost == Decimal("0.0001")
 
 
 @pytest.mark.asyncio
@@ -79,6 +101,13 @@ async def test_token_cost_service_prices_internal_outputs_and_reranker() -> None
                 reranker_tokens=1_000,
                 faithfulness_tokens=1_000,
                 estimated_cost_cny=Decimal("0.0075"),
+                embedding_cost_cny=Decimal("0"),
+                input_cost_cny=Decimal("0.0025"),
+                answer_generation_cost_cny=Decimal("0.0025"),
+                intent_cost_cny=Decimal("0"),
+                hyde_cost_cny=Decimal("0.0025"),
+                reranker_cost_cny=Decimal("0"),
+                faithfulness_cost_cny=Decimal("0.0025"),
             )
         ),
     )
@@ -86,3 +115,5 @@ async def test_token_cost_service_prices_internal_outputs_and_reranker() -> None
     summary = await service.get_user_cost(user_id=7)
 
     assert summary.estimated_cost == Decimal("0.0075")
+    assert summary.embedding_cost == Decimal("0")
+    assert summary.intent_cost == Decimal("0")

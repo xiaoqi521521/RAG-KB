@@ -172,6 +172,13 @@ export interface TokenStats {
   reranker_tokens: number;
   faithfulness_tokens: number;
   estimated_cost: string;
+  embedding_cost: string;
+  input_cost: string;
+  answer_generation_cost: string;
+  intent_cost: string;
+  hyde_cost: string;
+  reranker_cost: string;
+  faithfulness_cost: string;
   currency: string;
 }
 
