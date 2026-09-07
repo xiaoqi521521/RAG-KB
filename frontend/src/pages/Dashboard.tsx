@@ -49,6 +49,13 @@ export default function DashboardPage() {
     return TOKEN_ITEMS.reduce((sum, item) => sum + stats[item.key], 0);
   }, [stats]);
 
+  const totalCost = useMemo(() => {
+    if (!stats) {
+      return 0;
+    }
+    return TOKEN_ITEMS.reduce((sum, item) => sum + Number(stats[item.costKey]), 0);
+  }, [stats]);
+
   return (
     <div className="min-h-full px-4 py-5 md:px-6 md:py-6">
       <PageHeader
@@ -92,11 +99,12 @@ export default function DashboardPage() {
             <div className="flex h-3 mt-5 overflow-hidden rounded-[1px] bg-[#eef0ea]">
               {TOKEN_ITEMS.map((item) => {
                 const value = stats[item.key];
-                const percent = totalTokens > 0 ? (value / totalTokens) * 100 : 0;
+                const cost = stats[item.costKey];
+                const percent = totalCost > 0 ? (Number(cost) / totalCost) * 100 : 0;
                 return (
                   <div
                     key={item.key}
-                    title={`${item.label} ${formatNumber(value)}`}
+                    title={`${item.label} ¥${cost} · ${formatNumber(value)} tokens`}
                     style={{ width: `${percent}%`, backgroundColor: item.color }}
                   />
                 );
@@ -106,7 +114,8 @@ export default function DashboardPage() {
             <div className="grid gap-3 mt-5 sm:grid-cols-2 xl:grid-cols-3">
               {TOKEN_ITEMS.map((item) => {
                 const value = stats[item.key];
-                const percent = totalTokens > 0 ? (value / totalTokens) * 100 : 0;
+                const cost = stats[item.costKey];
+                const percent = totalCost > 0 ? (Number(cost) / totalCost) * 100 : 0;
                 return (
                   <div key={item.key} className="border border-line bg-[#f7f8f4] p-3.5">
                     <div className="flex items-center gap-2">
@@ -115,7 +124,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="font-data text-[21px] mt-2">{formatNumber(value)}</div>
                     <div className="font-data text-[11px] text-faint mt-1">
-                      {percent.toFixed(1)}% · ¥{stats[item.costKey]}
+                      {percent.toFixed(1)}% · ¥{cost}
                     </div>
                   </div>
                 );
