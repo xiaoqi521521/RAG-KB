@@ -76,7 +76,7 @@ export default function KbDocumentsPage() {
         navigate('/kb');
         return;
       }
-      message.error('读取文档失败');
+      message.error({ content: '读取文档失败', key: 'kb-documents-load-error' });
     } finally {
       setLoading(false);
     }

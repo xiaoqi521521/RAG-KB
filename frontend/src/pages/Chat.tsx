@@ -120,7 +120,7 @@ export default function ChatPage() {
       const res = await chatApi.listSessions();
       setSessions(res.data.data);
     } catch {
-      message.error('读取历史会话失败');
+      message.error({ content: '读取历史会话失败', key: 'chat-sessions-load-error' });
     } finally {
       setSessionsLoading(false);
     }
@@ -135,7 +135,7 @@ export default function ChatPage() {
           setSelectedKbIds([res.data.data[0].id]);
         }
       })
-      .catch(() => message.error('读取知识库失败'));
+      .catch(() => message.error({ content: '读取知识库失败', key: 'chat-kb-load-error' }));
     void fetchSessions();
   }, [fetchSessions, message, setSelectedKbIds]);
 

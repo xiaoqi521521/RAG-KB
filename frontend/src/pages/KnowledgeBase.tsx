@@ -28,7 +28,7 @@ export default function KnowledgeBasePage() {
       const res = await kbApi.list();
       setItems(res.data.data);
     } catch {
-      message.error('读取知识库失败');
+      message.error({ content: '读取知识库失败', key: 'kb-list-load-error' });
     } finally {
       setLoading(false);
     }

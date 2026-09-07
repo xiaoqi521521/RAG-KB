@@ -32,7 +32,10 @@ export default function DashboardPage() {
     } catch (error: unknown) {
       const detail = (error as { response?: { data?: { detail?: string } } })?.response
         ?.data?.detail;
-      message.error(detail || '读取 Token 统计失败');
+      message.error({
+        content: detail || '读取 Token 统计失败',
+        key: 'token-stats-load-error',
+      });
     } finally {
       setLoading(false);
     }
