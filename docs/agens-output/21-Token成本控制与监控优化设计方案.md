@@ -199,12 +199,12 @@ estimatedCostCny = sum(all six costs at write time)
 预算时区默认 `Asia/Shanghai`，通过配置覆盖。Redis 保存当天全局计数，例如：
 
 ```text
-rag:token:v3:budget:cny:2026-07-22
+rag:token:v3:budget:cny:2026:07:2026-07-22
 ```
 
 预算计数与用户统计使用同一个 `rag:token:v3:` 根命名空间，通过 `budget` 和 `stats` 子路径并列区分；预算 key 是 Redis String，值是当天已累计 CNY 金额。用户统计 key 是 Redis Hash，各字段分别保存用户累计 Token 和累计金额。此次结构升级直接重置旧 key，不迁移历史数据。
 
-当天计数可以设置为日期结束后保留一段时间，用于故障排查；它不是用户账单。
+每日计数 key 永久保留（不设置 TTL），便于在 Redis 中按年月回溯历史花费；它不是用户账单。
 
 ### 7.2 请求流程
 

@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -36,15 +36,16 @@ _CHECK_SCRIPT = """
 local raw_current = redis.call('GET', KEYS[1])
 local current = tonumber(raw_current or '0')
 if current == nil then
-  return -2
+  return '-2'
 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
-  redis.call('SET', KEYS[1], '0', 'EX', ARGV[2])
+  redis.call('SET', KEYS[1], '0')
 end
 if current >= tonumber(ARGV[1]) then
-  return -1
+  return '-1'
 end
-return current
+-- Redis 会把 Lua 数值返回截断为整数，金额必须以字符串返回才能保留小数。
+return tostring(current)
 """
 
 
@@ -70,8 +71,6 @@ class TokenBudgetRedis(Protocol):
     async def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> Any: ...
 
     async def incrbyfloat(self, name: Any, amount: Any) -> Any: ...
-
-    async def expire(self, name: Any, time: Any) -> Any: ...
 
 
 class TokenBudgetExhaustedError(RuntimeError):
@@ -158,12 +157,13 @@ class GlobalTokenBudgetGate:
     def current_key(self, now: datetime | None = None) -> str:
         """返回当前部署时区下的每日预算 Redis key。"""
         effective_now = now.astimezone(self.timezone) if now else datetime.now(self.timezone)
-        return f"{_BUDGET_KEY_PREFIX}{effective_now:%Y-%m-%d}"
+        # key 中间段携带年份和月份，且每日 key 永久保留（不设置 TTL），
+        # 便于在 Redis 中按年月回溯历史花费。
+        return f"{_BUDGET_KEY_PREFIX}{effective_now:%Y:%m:%Y-%m-%d}"
 
     async def ensure_available(self) -> None:
         """原子检查预算，未耗尽才允许启动新的 provider 调用。"""
         key = self.current_key()
-        ttl_seconds = self._seconds_until_next_day()
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 current = _as_decimal(
@@ -172,7 +172,6 @@ class GlobalTokenBudgetGate:
                         1,
                         key,
                         str(self.daily_budget_cny),
-                        max(ttl_seconds, 60),
                     )
                 )
         except Exception as exc:  # noqa: BLE001
@@ -194,7 +193,6 @@ class GlobalTokenBudgetGate:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 total = _as_decimal(await self.redis.incrbyfloat(key, str(cost)))
-                await self.redis.expire(key, max(self._seconds_until_next_day(), 60))
             self._budget_used.labels(scope="global").set(float(total))
         except Exception as exc:  # noqa: BLE001
             # 预算统计写失败不能回滚已经完成的模型调用。
@@ -229,11 +227,6 @@ class GlobalTokenBudgetGate:
         finally:
             self._request_cost.observe(float(accumulator.total))
             _REQUEST_COST.reset(token)
-
-    def _seconds_until_next_day(self) -> int:
-        now = datetime.now(self.timezone)
-        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        return max(1, int((tomorrow - now).total_seconds()))
 
     def _record_write_failure(self, *, sink: str, token_type: str) -> None:
         """记录预算统计出口故障，指标自身故障也不能影响业务请求。"""

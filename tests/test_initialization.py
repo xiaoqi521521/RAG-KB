@@ -418,3 +418,100 @@ def test_start_runs_uvicorn_with_application_entrypoint(monkeypatch):
         "timeout_graceful_shutdown": 30,
         "log_level": "info",
     }
+
+
+@pytest.mark.asyncio
+async def test_lifespan_warms_up_daily_budget_key(monkeypatch: pytest.MonkeyPatch):
+    from fastapi import FastAPI
+
+    from app import main
+
+    calls: list[str] = []
+    warmups: list[int] = []
+
+    class FakeBudgetGate:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def ensure_available(self) -> None:
+            warmups.append(1)
+
+    class Provider:
+        def get_meter(self, name: str) -> object:
+            return object()
+
+    async def fake_init_clients(settings: object) -> None:
+        calls.append("init_clients")
+
+    async def fake_close_clients() -> None:
+        calls.append("close_clients")
+
+    def fake_init_metrics(settings: object) -> object:
+        calls.append("init_metrics")
+        return Provider()
+
+    def fake_shutdown_metrics(value: object) -> None:
+        calls.append("shutdown_metrics")
+
+    monkeypatch.setattr(main, "configure_logging", lambda settings: None)
+    monkeypatch.setattr(main, "init_clients", fake_init_clients)
+    monkeypatch.setattr(main, "close_clients", fake_close_clients)
+    monkeypatch.setattr(main, "init_metrics", fake_init_metrics)
+    monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
+    monkeypatch.setattr(main, "get_redis", lambda: object())
+    monkeypatch.setattr(main, "TokenMetrics", lambda **kwargs: object())
+    monkeypatch.setattr(main, "FaithfulnessMetrics", lambda **kwargs: object())
+    monkeypatch.setattr(main, "GlobalTokenBudgetGate", FakeBudgetGate)
+
+    app = FastAPI()
+    async with main.lifespan(app):
+        assert app.state.token_budget_gate is not None
+
+    assert warmups == [1]
+    assert calls == ["init_clients", "init_metrics", "shutdown_metrics", "close_clients"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_continues_when_budget_warmup_fails(monkeypatch: pytest.MonkeyPatch):
+    from fastapi import FastAPI
+
+    from app import main
+    from app.services.token_budget import TokenBudgetUnavailableError
+
+    class FailingBudgetGate:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def ensure_available(self) -> None:
+            raise TokenBudgetUnavailableError("金额预算状态暂不可用")
+
+    class Provider:
+        def get_meter(self, name: str) -> object:
+            return object()
+
+    async def fake_init_clients(settings: object) -> None:
+        return None
+
+    async def fake_close_clients() -> None:
+        return None
+
+    def fake_init_metrics(settings: object) -> object:
+        return Provider()
+
+    def fake_shutdown_metrics(value: object) -> None:
+        return None
+
+    monkeypatch.setattr(main, "configure_logging", lambda settings: None)
+    monkeypatch.setattr(main, "init_clients", fake_init_clients)
+    monkeypatch.setattr(main, "close_clients", fake_close_clients)
+    monkeypatch.setattr(main, "init_metrics", fake_init_metrics)
+    monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
+    monkeypatch.setattr(main, "get_redis", lambda: object())
+    monkeypatch.setattr(main, "TokenMetrics", lambda **kwargs: object())
+    monkeypatch.setattr(main, "FaithfulnessMetrics", lambda **kwargs: object())
+    monkeypatch.setattr(main, "GlobalTokenBudgetGate", FailingBudgetGate)
+
+    app = FastAPI()
+    async with main.lifespan(app):
+        assert app.state.token_budget_gate is not None
+        assert app.state.token_metrics is not None

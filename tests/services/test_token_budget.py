@@ -9,6 +9,7 @@ import pytest
 from prometheus_client import CollectorRegistry
 
 from app.services.token_budget import (
+    _CHECK_SCRIPT,
     GlobalTokenBudgetGate,
     TokenBudgetExhaustedError,
     TokenBudgetUnavailableError,
@@ -48,6 +49,14 @@ class SlowRedis(FakeRedis):
         return await super().eval(script, numkeys, *keys_and_args)
 
 
+def test_check_script_returns_usage_as_string_to_avoid_lua_truncation() -> None:
+    """Redis 会把 Lua 数值返回截断为整数，预算金额必须以字符串读回。"""
+    assert "return tostring(current)" in _CHECK_SCRIPT
+    assert "return '-1'" in _CHECK_SCRIPT
+    # 每日预算 key 永久保留供回溯历史花费，脚本不得再写入过期时间。
+    assert "'EX'" not in _CHECK_SCRIPT
+
+
 @pytest.mark.asyncio
 async def test_budget_uses_asia_shanghai_daily_key_and_allows_below_limit() -> None:
     redis = FakeRedis(check_result=0)
@@ -58,7 +67,7 @@ async def test_budget_uses_asia_shanghai_daily_key_and_allows_below_limit() -> N
     )
 
     assert gate.current_key(datetime(2026, 7, 22, 23, 59, tzinfo=ZoneInfo("Asia/Shanghai"))) == (
-        "rag:token:v3:budget:cny:2026-07-22"
+        "rag:token:v3:budget:cny:2026:07:2026-07-22"
     )
     await gate.ensure_available()
 
@@ -141,6 +150,7 @@ async def test_budget_record_stores_cost_in_parallel_budget_key() -> None:
     await gate.record_cost(Decimal("0.25"))
 
     assert redis.incrbyfloat_calls == [(gate.current_key(), "0.25")]
+    assert redis.expire_calls == []
     assert redis.value == Decimal("0.25")
 
 

@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
@@ -18,6 +19,9 @@ from app.services.token_budget import GlobalTokenBudgetGate
 from app.services.token_metrics import TokenMetrics
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -34,6 +38,13 @@ async def lifespan(app: FastAPI):
         timeout_seconds=settings.token_stats_timeout_seconds,
     )
     app.state.token_budget_gate = token_budget_gate
+    # 启动时预热当日预算 key：该 key 原本在首个预算请求时才创建，部署或重启后
+    # Redis 中会缺失全局预算记录，80% 预警等监控也无从谈起。
+    try:
+        await token_budget_gate.ensure_available()
+    except Exception as exc:  # noqa: BLE001
+        # 预热失败不阻断启动；每个请求仍会逐次检查，Redis 恢复后自动自愈。
+        logger.warning("token budget warmup failed: error_type=%s", type(exc).__name__)
     app.state.token_metrics = TokenMetrics(
         redis_client=cast(Any, get_redis()),
         read_timeout_seconds=settings.token_stats_timeout_seconds,
