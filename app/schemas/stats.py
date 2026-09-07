@@ -24,3 +24,11 @@ class TokenStatsResponse(BaseModel):
     reranker_cost: str
     faithfulness_cost: str
     currency: Literal["CNY"] = "CNY"
+
+
+class DailyUsageResponse(BaseModel):
+    """单个自然日的全系统 Token 总量与估算成本。"""
+
+    date: str
+    tokens: int = Field(ge=0)
+    cost: str

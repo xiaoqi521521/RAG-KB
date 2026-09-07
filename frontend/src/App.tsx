@@ -7,6 +7,7 @@ import KnowledgeBasePage from '@/pages/KnowledgeBase';
 import KbDocumentsPage from '@/pages/KbDocuments';
 import EvalPage from '@/pages/Evaluation';
 import DashboardPage from '@/pages/Dashboard';
+import UsageTrendPage from '@/pages/UsageTrend';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated());
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="kb/:kbId/documents" element={<KbDocumentsPage />} />
         <Route path="eval" element={<EvalPage />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="usage" element={<UsageTrendPage />} />
       </Route>
     </Routes>
   );

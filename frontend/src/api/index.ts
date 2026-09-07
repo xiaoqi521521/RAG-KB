@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios';
 import request from './request';
 import type {
   ApiResponse,
@@ -16,6 +17,7 @@ import type {
   KbDocument,
   LoginRequest,
   TokenStats,
+  DailyUsagePoint,
 } from '@/types';
 
 export const authApi = {
@@ -123,4 +125,8 @@ export const feedbackApi = {
 
 export const statsApi = {
   getTokenStats: () => request.get<ApiResponse<TokenStats>>('/stats/tokens'),
+  getUsageAccess: (config?: AxiosRequestConfig) =>
+    request.get<ApiResponse<boolean>>('/stats/usage/access', config),
+  getDailyUsage: (days: number, config?: AxiosRequestConfig) =>
+    request.get<ApiResponse<DailyUsagePoint[]>>(`/stats/usage/daily?days=${days}`, config),
 };

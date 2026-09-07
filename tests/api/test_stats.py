@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.core.context import CurrentUser
 from app.services.token_cost import TokenCostSummary
 from app.services.token_metrics import TokenMetricsUnavailableError
+from app.services.usage_history import DailyUsagePoint, UsageHistoryError
 
 
 class FakeTokenCostService:
@@ -71,6 +72,87 @@ def _client(cost_service: FakeTokenCostService) -> TestClient:
     )
     app.dependency_overrides[stats.get_token_cost_service] = lambda: cost_service
     return TestClient(app)
+
+
+class FakeUsageHistoryService:
+    def __init__(self, *, unavailable: bool = False) -> None:
+        self.unavailable = unavailable
+        self.requested_days: list[int] = []
+
+    async def daily_usage(self, *, days: int) -> list[DailyUsagePoint]:
+        self.requested_days.append(days)
+        if self.unavailable:
+            raise UsageHistoryError("Prometheus 不可达")
+        return [
+            DailyUsagePoint(date="2026-09-06", tokens=1_200, cost=Decimal("0.1200")),
+            DailyUsagePoint(date="2026-09-07", tokens=3_400, cost=Decimal("0.3400")),
+        ]
+
+
+def _usage_client(role: str, service: FakeUsageHistoryService) -> TestClient:
+    from app.api.routes import stats
+    from app.core.exception_handlers import register_exception_handlers
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(stats.router, prefix="/api/v1/stats")
+    app.dependency_overrides[stats.get_current_user] = lambda: CurrentUser(
+        user_id=7,
+        department_id="engineering",
+        role=role,
+    )
+    app.dependency_overrides[stats.get_usage_history_service] = lambda: service
+    return TestClient(app)
+
+
+def test_daily_usage_returns_points_for_system_admin() -> None:
+    service = FakeUsageHistoryService()
+
+    with _usage_client("ADMIN", service) as client:
+        response = client.get("/api/v1/stats/usage/daily", params={"days": 2})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "code": 200,
+        "message": "success",
+        "data": [
+            {"date": "2026-09-06", "tokens": 1_200, "cost": "0.1200"},
+            {"date": "2026-09-07", "tokens": 3_400, "cost": "0.3400"},
+        ],
+    }
+    assert service.requested_days == [2]
+
+
+def test_daily_usage_rejects_non_admin_users() -> None:
+    with _usage_client("MEMBER", FakeUsageHistoryService()) as client:
+        response = client.get("/api/v1/stats/usage/daily")
+
+    assert response.status_code == 403
+    assert response.json()["message"] == "仅系统管理员可查看全局用量"
+
+
+def test_daily_usage_returns_503_when_prometheus_unavailable() -> None:
+    with _usage_client("ADMIN", FakeUsageHistoryService(unavailable=True)) as client:
+        response = client.get("/api/v1/stats/usage/daily")
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "用量历史暂不可用"
+
+
+def test_usage_access_probe_reports_admin_flag() -> None:
+    with _usage_client("ADMIN", FakeUsageHistoryService()) as client:
+        response = client.get("/api/v1/stats/usage/access")
+
+    assert response.status_code == 200
+    assert response.json()["data"] is True
+
+
+def test_usage_access_probe_reports_false_for_non_admin() -> None:
+    with _usage_client("MEMBER", FakeUsageHistoryService()) as client:
+        response = client.get("/api/v1/stats/usage/access")
+
+    assert response.status_code == 200
+    assert response.json()["data"] is False
 
 
 def test_token_stats_returns_current_user_cost_summary() -> None:

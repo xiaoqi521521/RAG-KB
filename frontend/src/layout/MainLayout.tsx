@@ -5,19 +5,21 @@ import {
   DatabaseOutlined,
   ExperimentOutlined,
   DashboardOutlined,
+  BarChartOutlined,
   LockOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import AppLogo from '@/components/AppLogo';
-import { kbApi } from '@/api';
+import { kbApi, statsApi } from '@/api';
 import { useAuthStore } from '@/store/useAuthStore';
 
 const NAV_ITEMS = [
   { path: '/chat', label: '检索问答', icon: <MessageOutlined /> },
   { path: '/kb', label: '知识库', icon: <DatabaseOutlined /> },
-  { path: '/eval', label: '效果评估', icon: <ExperimentOutlined /> },
   { path: '/dashboard', label: '成本监控', icon: <DashboardOutlined /> },
+  { path: '/eval', label: '效果评估', icon: <ExperimentOutlined /> },
+  { path: '/usage', label: '全局用量', icon: <BarChartOutlined /> },
 ];
 
 export default function MainLayout() {
@@ -26,6 +28,7 @@ export default function MainLayout() {
   const { user, logout } = useAuthStore();
   const [loggingOut, setLoggingOut] = useState(false);
   const [evaluationAccess, setEvaluationAccess] = useState<boolean | null>(null);
+  const [usageAccess, setUsageAccess] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -49,7 +52,31 @@ export default function MainLayout() {
     }
   }, [evaluationAccess, location.pathname, navigate]);
 
+  useEffect(() => {
+    if (!user) {
+      setUsageAccess(null);
+      return;
+    }
+    // 探针只判定管理员身份，不依赖 Prometheus 在线；失败静默处理避免全局弹窗。
+    void statsApi
+      .getUsageAccess({ skipGlobalErrorMessage: true })
+      .then((res) => {
+        setUsageAccess(res.data.data === true);
+      })
+      .catch(() => {
+        // 权限状态无法确认时按无权处理，与评估入口保持一致的 fail-closed 语义。
+        setUsageAccess(false);
+      });
+  }, [user]);
+
+  useEffect(() => {
+    if (location.pathname === '/usage' && usageAccess === false) {
+      navigate('/chat', { replace: true });
+    }
+  }, [usageAccess, location.pathname, navigate]);
+
   const blockEvaluationPage = location.pathname === '/eval' && evaluationAccess !== true;
+  const blockUsagePage = location.pathname === '/usage' && usageAccess !== true;
 
   const selectedPath = '/' + (location.pathname.split('/')[1] || 'chat');
 
@@ -75,15 +102,19 @@ export default function MainLayout() {
           {NAV_ITEMS.map((item) => {
             const active = selectedPath === item.path;
             const isEvaluation = item.path === '/eval';
-            const locked = isEvaluation && evaluationAccess === false;
-            const disabled = isEvaluation && evaluationAccess !== true;
+            const isUsage = item.path === '/usage';
+            const locked =
+              (isEvaluation && evaluationAccess === false) || (isUsage && usageAccess === false);
+            const disabled =
+              (isEvaluation && evaluationAccess !== true) || (isUsage && usageAccess !== true);
+            const lockedTitle = isEvaluation ? '无评估管理权限' : '无系统管理员权限';
             return (
               <button
                 key={item.path}
                 type="button"
                 disabled={disabled}
                 aria-label={locked ? `${item.label}（无权限）` : item.label}
-                title={locked ? '无评估管理权限' : undefined}
+                title={locked ? lockedTitle : undefined}
                 onClick={() => navigate(item.path)}
                 className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-[2px] text-[13.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
                   active
@@ -126,21 +157,25 @@ export default function MainLayout() {
           <span className="font-semibold text-[14px]">知库问答</span>
         </div>
         <div className="flex-1 overflow-auto">
-          {blockEvaluationPage ? null : <Outlet />}
+          {blockEvaluationPage || blockUsagePage ? null : <Outlet />}
         </div>
         <nav className="md:hidden grid grid-cols-4 border-t border-line bg-card shrink-0">
           {NAV_ITEMS.map((item) => {
             const active = selectedPath === item.path;
             const isEvaluation = item.path === '/eval';
-            const locked = isEvaluation && evaluationAccess === false;
-            const disabled = isEvaluation && evaluationAccess !== true;
+            const isUsage = item.path === '/usage';
+            const locked =
+              (isEvaluation && evaluationAccess === false) || (isUsage && usageAccess === false);
+            const disabled =
+              (isEvaluation && evaluationAccess !== true) || (isUsage && usageAccess !== true);
+            const lockedTitle = isEvaluation ? '无评估管理权限' : '无系统管理员权限';
             return (
               <button
                 key={item.path}
                 type="button"
                 disabled={disabled}
                 aria-label={locked ? `${item.label}（无权限）` : item.label}
-                title={locked ? '无评估管理权限' : undefined}
+                title={locked ? lockedTitle : undefined}
                 onClick={() => navigate(item.path)}
                 className={`flex flex-col items-center gap-1 py-2 text-[11px] disabled:cursor-not-allowed disabled:opacity-45 ${
                   active ? 'text-pine' : 'text-faint'
