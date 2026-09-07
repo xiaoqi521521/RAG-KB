@@ -34,18 +34,12 @@ class FakeRedis:
             await asyncio.sleep(self.delay_seconds)
         if self.fail:
             raise RuntimeError("redis unavailable")
-        name, token_field, raw_tokens, cost_field, raw_cost, type_cost_field, raw_type_cost = keys_and_args
+        name, token_field, raw_tokens = keys_and_args
         tokens = int(raw_tokens)
-        cost = Decimal(str(raw_cost))
-        type_cost = Decimal(str(raw_type_cost))
         self.calls.append((str(name), str(token_field), tokens))
         token_total = int(self.hash_values.get(str(token_field), "0")) + tokens
-        cost_total = Decimal(self.hash_values.get(str(cost_field), "0")) + cost
-        type_cost_total = Decimal(self.hash_values.get(str(type_cost_field), "0")) + type_cost
         self.hash_values[str(token_field)] = str(token_total)
-        self.hash_values[str(cost_field)] = str(cost_total)
-        self.hash_values[str(type_cost_field)] = str(type_cost_total)
-        return [token_total, str(cost_total)]
+        return [token_total]
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
         if self.delay_seconds:
@@ -101,9 +95,7 @@ async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
         ("rag:token:v3:stats:7", "inputTokens", 120),
         ("rag:token:v3:stats:7", "answerGenerationTokens", 8),
     ]
-    assert Decimal(redis.hash_values["estimatedCostCny"]) == Decimal("0.000136")
-    assert Decimal(redis.hash_values["inputCostCny"]) == Decimal("0.00012")
-    assert Decimal(redis.hash_values["answerGenerationCostCny"]) == Decimal("0.000016")
+    assert "estimatedCostCny" not in redis.hash_values
     usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
     assert {
         (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
@@ -142,8 +134,7 @@ async def test_record_chat_usage_records_intent_output_bucket() -> None:
         ("rag:token:v3:stats:7", "inputTokens", 120),
         ("rag:token:v3:stats:7", "intentTokens", 8),
     ]
-    assert Decimal(redis.hash_values["estimatedCostCny"]) == Decimal("0.000136")
-    assert Decimal(redis.hash_values["intentCostCny"]) == Decimal("0.000016")
+    assert "estimatedCostCny" not in redis.hash_values
     usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
     assert {
         (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
@@ -246,21 +237,22 @@ async def test_missing_generation_usage_logs_unavailable_signal(caplog: pytest.L
 
 
 @pytest.mark.asyncio
-async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
-    recorder, redis = _build_recorder()
+async def test_read_user_tokens_derives_costs_from_configured_prices() -> None:
+    redis = FakeRedis()
+    recorder = TokenUsageRecorder(
+        redis_client=redis,
+        registry=CollectorRegistry(),
+        embedding_price=Decimal("0.0005"),
+        chat_input_price=Decimal("0.001"),
+        chat_output_price=Decimal("0.002"),
+        reranker_price=Decimal("0.0005"),
+    )
     redis.hash_values = {
         "embeddingTokens": "125",
         "inputTokens": "890",
         "answerGenerationTokens": "8",
         "intentTokens": "5",
-        "estimatedCostCny": "0.0125",
-        "embeddingCostCny": "0.0012",
-        "inputCostCny": "0.0020",
-        "answerGenerationCostCny": "0.0008",
-        "intentCostCny": "0.0001",
-        "hydeCostCny": "0.0004",
-        "rerankerCostCny": "0.0003",
-        "faithfulnessCostCny": "0.0002",
+        "estimatedCostCny": "9.9999",
         "legacyGenerationTokens": "999",
     }
 
@@ -273,14 +265,14 @@ async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
     assert usage.hyde_tokens == 0
     assert usage.reranker_tokens == 0
     assert usage.faithfulness_tokens == 0
-    assert usage.estimated_cost_cny == Decimal("0.0125")
-    assert usage.embedding_cost_cny == Decimal("0.0012")
-    assert usage.input_cost_cny == Decimal("0.0020")
-    assert usage.answer_generation_cost_cny == Decimal("0.0008")
-    assert usage.intent_cost_cny == Decimal("0.0001")
-    assert usage.hyde_cost_cny == Decimal("0.0004")
-    assert usage.reranker_cost_cny == Decimal("0.0003")
-    assert usage.faithfulness_cost_cny == Decimal("0.0002")
+    assert usage.embedding_cost_cny == Decimal("0.0000625")
+    assert usage.input_cost_cny == Decimal("0.00089")
+    assert usage.answer_generation_cost_cny == Decimal("0.000016")
+    assert usage.intent_cost_cny == Decimal("0.00001")
+    assert usage.hyde_cost_cny == Decimal("0")
+    assert usage.reranker_cost_cny == Decimal("0")
+    assert usage.faithfulness_cost_cny == Decimal("0")
+    assert usage.estimated_cost_cny == Decimal("0.0009785")
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Literal, Protocol
 
 from prometheus_client import CollectorRegistry, Counter, generate_latest
@@ -30,33 +30,13 @@ def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> A
         return existing
 
 REDIS_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}stats:"
-_REDIS_COST_FIELD = "estimatedCostCny"
-_REDIS_TYPE_COST_FIELDS: dict[str, str] = {
-    "embedding": "embeddingCostCny",
-    "input": "inputCostCny",
-    "answer_generation": "answerGenerationCostCny",
-    "intent": "intentCostCny",
-    "hyde": "hydeCostCny",
-    "reranker": "rerankerCostCny",
-    "faithfulness_check": "faithfulnessCostCny",
-}
 _USER_USAGE_UPDATE_SCRIPT = """
 local existing_token = redis.call('HGET', KEYS[1], ARGV[1])
 if existing_token and tonumber(existing_token) == nil then
   return redis.error_reply('invalid Token field')
 end
-local existing_cost = redis.call('HGET', KEYS[1], ARGV[3])
-if existing_cost and tonumber(existing_cost) == nil then
-  return redis.error_reply('invalid estimated cost field')
-end
-local existing_type_cost = redis.call('HGET', KEYS[1], ARGV[5])
-if existing_type_cost and tonumber(existing_type_cost) == nil then
-  return redis.error_reply('invalid type cost field')
-end
 local token_total = redis.call('HINCRBY', KEYS[1], ARGV[1], ARGV[2])
-local cost_total = redis.call('HINCRBYFLOAT', KEYS[1], ARGV[3], ARGV[4])
-local type_cost_total = redis.call('HINCRBYFLOAT', KEYS[1], ARGV[5], ARGV[6])
-return {token_total, cost_total}
+return {token_total}
 """
 TOKEN_TYPES = (
     "embedding",
@@ -90,7 +70,7 @@ _REDIS_FIELDS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class UserTokenUsage:
-    """当前用户在线请求累计的七类 Token、分类型金额和总金额。"""
+    """当前用户在线请求累计的七类 Token，费用按当前部署单价在读取时派生。"""
 
     embedding_tokens: int
     input_tokens: int
@@ -334,10 +314,6 @@ class TokenUsageRecorder:
                     f"{REDIS_KEY_PREFIX}{user.user_id}",
                     _REDIS_FIELDS[token_type],
                     tokens,
-                    _REDIS_COST_FIELD,
-                    _decimal_for_redis(estimated_cost),
-                    _REDIS_TYPE_COST_FIELDS[token_type],
-                    _decimal_for_redis(estimated_cost),
                 )
         except Exception as exc:  # noqa: BLE001
             self._record_write_failure(sink="redis", token_type=token_type)
@@ -373,7 +349,7 @@ class TokenUsageRecorder:
         logger.info("token_usage_unavailable=true token_type=%s", token_type)
 
     async def read_user_tokens(self, user_id: int) -> UserTokenUsage:
-        """读取当前用户 v3 累计 Token 和金额，失败时不返回伪零值。"""
+        """读取当前用户 v3 累计 Token 并派生费用，失败时不返回伪零值。"""
         try:
             raw_values = await self._read_hash(f"{REDIS_KEY_PREFIX}{user_id}")
         except Exception as exc:  # noqa: BLE001
@@ -389,34 +365,32 @@ class TokenUsageRecorder:
             values: dict[str, object] = {}
             for raw_key, raw_value in raw_values.items():
                 key = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else str(raw_key)
-                if (
-                    key in _REDIS_FIELDS.values()
-                    or key in _REDIS_TYPE_COST_FIELDS.values()
-                    or key == _REDIS_COST_FIELD
-                ):
+                if key in _REDIS_FIELDS.values():
                     values[key] = raw_value
+            token_counts = {
+                token_type: _parse_stored_token(values.get(field, 0))
+                for token_type, field in _REDIS_FIELDS.items()
+            }
+            costs = {
+                token_type: _derive_cost_cny(token_counts[token_type], self._prices[token_type])
+                for token_type in _REDIS_FIELDS
+            }
             return UserTokenUsage(
-                embedding_tokens=_parse_stored_token(values.get("embeddingTokens", 0)),
-                input_tokens=_parse_stored_token(values.get("inputTokens", 0)),
-                answer_generation_tokens=_parse_stored_token(
-                    values.get("answerGenerationTokens", 0)
-                ),
-                intent_tokens=_parse_stored_token(values.get("intentTokens", 0)),
-                hyde_tokens=_parse_stored_token(values.get("hydeTokens", 0)),
-                reranker_tokens=_parse_stored_token(values.get("rerankerTokens", 0)),
-                faithfulness_tokens=_parse_stored_token(values.get("faithfulnessTokens", 0)),
-                estimated_cost_cny=_parse_stored_cost(values.get(_REDIS_COST_FIELD, 0)),
-                embedding_cost_cny=_parse_stored_cost(values.get("embeddingCostCny", 0)),
-                input_cost_cny=_parse_stored_cost(values.get("inputCostCny", 0)),
-                answer_generation_cost_cny=_parse_stored_cost(
-                    values.get("answerGenerationCostCny", 0)
-                ),
-                intent_cost_cny=_parse_stored_cost(values.get("intentCostCny", 0)),
-                hyde_cost_cny=_parse_stored_cost(values.get("hydeCostCny", 0)),
-                reranker_cost_cny=_parse_stored_cost(values.get("rerankerCostCny", 0)),
-                faithfulness_cost_cny=_parse_stored_cost(
-                    values.get("faithfulnessCostCny", 0)
-                ),
+                embedding_tokens=token_counts["embedding"],
+                input_tokens=token_counts["input"],
+                answer_generation_tokens=token_counts["answer_generation"],
+                intent_tokens=token_counts["intent"],
+                hyde_tokens=token_counts["hyde"],
+                reranker_tokens=token_counts["reranker"],
+                faithfulness_tokens=token_counts["faithfulness_check"],
+                estimated_cost_cny=sum(costs.values(), Decimal("0")),
+                embedding_cost_cny=costs["embedding"],
+                input_cost_cny=costs["input"],
+                answer_generation_cost_cny=costs["answer_generation"],
+                intent_cost_cny=costs["intent"],
+                hyde_cost_cny=costs["hyde"],
+                reranker_cost_cny=costs["reranker"],
+                faithfulness_cost_cny=costs["faithfulness_check"],
             )
         except (TypeError, ValueError) as exc:
             logger.warning(
@@ -634,19 +608,8 @@ def _parse_stored_token(value: object) -> int:
     return normalized
 
 
-def _decimal_for_redis(value: Decimal) -> str:
-    """把金额转为 Redis HINCRBYFLOAT 可接受的普通小数字符串。"""
-    return format(value, "f")
-
-
-def _parse_stored_cost(value: object) -> Decimal:
-    """把 Redis Hash 中的累计金额解析为非负 Decimal。"""
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="strict")
-    try:
-        normalized = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        raise ValueError("Cost value must be a Decimal") from None
-    if not normalized.is_finite() or normalized < 0:
-        raise ValueError("Cost value must be a finite non-negative Decimal")
-    return normalized
+def _derive_cost_cny(tokens: int, price_per_1k_tokens: Decimal) -> Decimal:
+    """按当前部署单价把 Token 数换算为人民币费用估值。"""
+    if tokens <= 0:
+        return Decimal("0")
+    return Decimal(tokens) / Decimal("1000") * price_per_1k_tokens
