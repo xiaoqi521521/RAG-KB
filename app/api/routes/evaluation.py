@@ -6,7 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_current_user
 from app.api.dependencies import get_app_token_metrics
 from app.api.routes.knowledge_bases import get_permission_service
-from app.api.routes.rag import build_rag_query_service, get_faithfulness_metrics
+from app.api.routes.rag import (
+    build_rag_query_service,
+    get_faithfulness_metrics,
+    get_token_budget_gate,
+)
 from app.core.clients import get_chat_model, get_embeddings
 from app.core.config import Settings, get_settings
 from app.core.context import CurrentUser, current_user_var
@@ -16,6 +20,7 @@ from app.evaluation.ragas_evaluator import RagasEvaluator
 from app.evaluation.service import (
     EvaluationRagExecutor,
     EvaluationRunService,
+    EvaluationUsageCollector,
     GenerationEvaluator,
 )
 from app.models import EvalDatasetStatus
@@ -32,7 +37,12 @@ from app.schemas.evaluation import (
 from app.services.permissions import PermissionService
 from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.faithfulness_evaluator import FaithfulnessMetrics
-from app.services.token_metrics import TokenUsageRecorder
+from app.services.token_metrics import (
+    TokenUsageRecorder,
+    evaluation_usage_capture_var,
+    suppress_user_usage_var,
+)
+from app.services.token_budget import GlobalTokenBudgetGate
 
 router = APIRouter()
 
@@ -47,11 +57,17 @@ def get_evaluation_dataset_service(
 def get_evaluation_run_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    token_metrics: TokenUsageRecorder = Depends(get_app_token_metrics),
+    budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
 ) -> EvaluationRunService:
     """构建评估结果读写和运行编排服务。"""
     return EvaluationRunService(
         repository=EvaluationRepository(session),
         rag_concurrency=settings.evaluation_rag_concurrency,
+        token_metrics=token_metrics,
+        budget_gate=budget_gate,
+        token_chat_model_name=settings.chat_model,
+        token_embedding_model_name=settings.embedding_model,
     )
 
 
@@ -75,9 +91,13 @@ class SessionScopedEvaluationRagExecutor:
         question: str,
         kb_ids: list[int],
         user: CurrentUser,
+        usage_collector: EvaluationUsageCollector,
     ):
         """在独立会话中执行单题 V4 管道，避免共享 AsyncSession 并发冲突。"""
         current_user_token = current_user_var.set(user)
+        # 评估消耗不归属任何个人：抑制个人 Redis 累计，监控与预算照常。
+        suppress_token = suppress_user_usage_var.set(True)
+        capture_token = evaluation_usage_capture_var.set(usage_collector)
         try:
             async with AsyncSessionLocal() as session:
                 rag_service = build_rag_query_service(
@@ -99,6 +119,8 @@ class SessionScopedEvaluationRagExecutor:
                 )
         finally:
             current_user_var.reset(current_user_token)
+            suppress_user_usage_var.reset(suppress_token)
+            evaluation_usage_capture_var.reset(capture_token)
 
 
 def get_evaluation_rag_executor(

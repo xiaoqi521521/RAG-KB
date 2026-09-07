@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
@@ -15,14 +16,16 @@ from app.evaluation.ragas_evaluator import (
     RagasEvaluationSample,
     RagasMetricError,
     RagasMetricName,
+    RagasUsage,
 )
-from app.evaluation.service import EvaluationRunService
+from app.evaluation.service import EvaluationRunService, EvaluationUsageCollector
 from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
 from app.repositories.chunks import ChunkSearchHit
 from app.repositories.evaluations import EvaluationReport
 from app.schemas.rag import RagQueryResponse
 from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.rag_query_v4 import RagExecution
+from app.services.token_budget import TokenBudgetExhaustedError
 
 
 def _user() -> CurrentUser:
@@ -96,8 +99,10 @@ class FakeRagExecutor:
         question: str,
         kb_ids: list[int],
         user: CurrentUser,
+        usage_collector: EvaluationUsageCollector,
     ) -> RagExecution:
         self.calls.append((question, kb_ids, user.user_id))
+        usage_collector.add(tokens=500, cost_cny=Decimal("0.0005"))
         outcome = self.outcomes[len(self.calls) - 1]
         if isinstance(outcome, Exception):
             raise outcome
@@ -105,9 +110,14 @@ class FakeRagExecutor:
 
 
 class FakeRagasEvaluator:
-    def __init__(self, outcomes: list[RagasEvaluationResult | Exception]) -> None:
+    def __init__(
+        self,
+        outcomes: list[RagasEvaluationResult | Exception],
+        usage: RagasUsage | None = None,
+    ) -> None:
         self.outcomes = outcomes
         self.samples: list[RagasEvaluationSample] = []
+        self._usage = usage or RagasUsage()
 
     async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
         self.samples.append(sample)
@@ -115,6 +125,10 @@ class FakeRagasEvaluator:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+    @property
+    def usage(self) -> RagasUsage:
+        return self._usage
 
 
 class FakeEvaluationRepository:
@@ -186,6 +200,10 @@ class FakeEvaluationRepository:
             refusal_rate=sum(result.actual_answer == RAG_REFUSAL_ANSWER for result in results)
             / len(results),
             duration_ms=results[0].duration_ms,
+            usage_tokens=sum(result.usage_tokens for result in results),
+            estimated_cost_cny=sum(
+                (result.estimated_cost_cny for result in results), Decimal("0")
+            ),
             eval_at=results[0].eval_at,
         )
 
@@ -413,6 +431,10 @@ async def test_run_evaluates_eligible_questions_concurrently() -> None:
             self.active_count = 0
             self.max_active_count = 0
 
+        @property
+        def usage(self) -> RagasUsage:
+            return RagasUsage()
+
         async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
             self.samples.append(sample)
             self.active_count += 1
@@ -467,6 +489,7 @@ async def test_run_limits_concurrent_rag_execution_and_keeps_result_order() -> N
             question: str,
             kb_ids: list[int],
             user: CurrentUser,
+            usage_collector: EvaluationUsageCollector,
         ):
             self.calls.append(question)
             self.active_count += 1
@@ -616,3 +639,100 @@ async def test_run_keeps_valid_scores_when_one_ragas_metric_fails(caplog) -> Non
     assert "敏感期望答案" not in caplog.text
     assert "敏感实际回答" not in caplog.text
     assert "敏感参考正文" not in caplog.text
+
+
+class RecordingTokenMetrics:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str, str, int, bool]] = []
+
+    async def record_usage(
+        self,
+        *,
+        tokens: int,
+        model: str,
+        token_type: str,
+        kb_id: int,
+        user_scoped: bool = True,
+    ) -> None:
+        self.calls.append((tokens, model, token_type, kb_id, user_scoped))
+
+    def estimate_cost(self, *, tokens: int, token_type: str) -> Decimal:
+        prices = {
+            "input": Decimal("0.001"),
+            "evaluation": Decimal("0.002"),
+            "embedding": Decimal("0.0005"),
+        }
+        if tokens <= 0:
+            return Decimal("0")
+        return Decimal(tokens) / Decimal("1000") * prices[token_type]
+
+
+@pytest.mark.asyncio
+async def test_run_records_ragas_usage_without_personal_attribution() -> None:
+    repository = FakeEvaluationRepository(
+        datasets=[_dataset(1, [10], expected_answer="期望答案")]
+    )
+    executor = FakeRagExecutor([_execution([10])])
+    usage = RagasUsage(llm_prompt_tokens=100, llm_completion_tokens=40, embedding_tokens=25)
+    recorder = RecordingTokenMetrics()
+    service = EvaluationRunService(
+        repository=repository,
+        token_metrics=recorder,  # type: ignore[arg-type]
+        token_chat_model_name="chat-x",
+        token_embedding_model_name="embed-x",
+    )
+
+    report = await service.run(
+        kb_id=3,
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=FakeRagasEvaluator(
+            [
+                RagasEvaluationResult(
+                    faithfulness=1.0,
+                    answer_relevancy=1.0,
+                    context_recall=1.0,
+                    context_precision=1.0,
+                    errors=(),
+                )
+            ],
+            usage=usage,
+        ),
+    )
+
+    assert recorder.calls == [
+        (100, "chat-x", "input", 3, False),
+        (40, "chat-x", "evaluation", 3, False),
+        (25, "embed-x", "embedding", 3, False),
+    ]
+    assert repository.saved_batches[0][0].usage_tokens == 500
+    assert repository.saved_batches[0][0].estimated_cost_cny == Decimal("0.0005")
+    assert report.usage_tokens == 500
+    # 报告费用 = 逐题生成消耗 0.0005 + 判定消耗（六位量化）0.000193。
+    assert report.estimated_cost_cny == Decimal("0.000693")
+
+
+class ExhaustedBudgetGate:
+    async def ensure_available(self) -> None:
+        raise TokenBudgetExhaustedError("今日金额预算已用尽")
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_new_run_when_global_budget_is_exhausted() -> None:
+    repository = FakeEvaluationRepository(datasets=[_dataset(1, [10])])
+    executor = FakeRagExecutor([_execution([10])])
+    service = EvaluationRunService(
+        repository=repository,
+        budget_gate=ExhaustedBudgetGate(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await service.run(
+            kb_id=3,
+            user=_user(),
+            rag_executor=executor,
+            ragas_evaluator=FakeRagasEvaluator([]),
+        )
+
+    assert error.value.status_code == 429
+    assert executor.calls == []

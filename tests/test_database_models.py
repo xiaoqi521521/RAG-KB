@@ -269,6 +269,8 @@ def test_eval_result_model_and_sql_define_metric_constraints():
         "status",
         "error_type",
         "duration_ms",
+        "usage_tokens",
+        "estimated_cost_cny",
         "eval_at",
     ]
     assert columns["hit"].nullable is True
@@ -278,12 +280,15 @@ def test_eval_result_model_and_sql_define_metric_constraints():
     assert columns["status"].nullable is False
     assert columns["error_type"].nullable is True
     assert columns["duration_ms"].nullable is True
+    assert columns["usage_tokens"].nullable is False
+    assert columns["estimated_cost_cny"].nullable is False
     assert {constraint.name for constraint in EvalResult.__table__.constraints} >= {
         "uq_eval_result_dataset_version",
         "ck_eval_result_status",
         "ck_eval_result_rank",
         "ck_eval_result_scores",
         "ck_eval_result_duration",
+        "ck_eval_result_usage",
     }
 
     schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
@@ -293,7 +298,10 @@ def test_eval_result_model_and_sql_define_metric_constraints():
     assert "status              VARCHAR(20)     NOT NULL" in schema_sql
     assert "error_type          VARCHAR(100)" in schema_sql
     assert "duration_ms         INTEGER" in schema_sql
+    assert "usage_tokens        INTEGER         NOT NULL DEFAULT 0" in schema_sql
+    assert "estimated_cost_cny  NUMERIC(12, 6)  NOT NULL DEFAULT 0" in schema_sql
     assert "uq_eval_result_dataset_version" in schema_sql
+    assert "ck_eval_result_usage" in schema_sql
     assert schema_sql.index("eval_version") < schema_sql.index("actual_answer")
     assert schema_sql.index("actual_answer") < schema_sql.index("hit")
     assert schema_sql.index("error_type") < schema_sql.index("eval_at")

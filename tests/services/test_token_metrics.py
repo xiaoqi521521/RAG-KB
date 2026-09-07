@@ -12,6 +12,7 @@ from prometheus_client.parser import text_string_to_metric_families
 
 from app.core.context import CurrentUser, current_user_var
 from app.services.token_metrics import (
+    suppress_user_usage_var,
     TokenUsageRecorder,
     TokenMetricsUnavailableError,
     extract_generation_tokens,
@@ -143,6 +144,61 @@ async def test_record_chat_usage_records_intent_output_bucket() -> None:
         ("deepseek-v4-flash", "input", "multi"): 120.0,
         ("deepseek-v4-flash", "intent", "multi"): 8.0,
     }
+
+
+@pytest.mark.asyncio
+async def test_record_usage_writes_evaluation_bucket_without_personal_attribution() -> None:
+    recorder, redis = _build_recorder()
+    token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
+    try:
+        await recorder.record_usage(
+            tokens=12,
+            model="deepseek-v4-flash",
+            token_type="evaluation",
+            kb_id=3,
+            user_scoped=False,
+        )
+    finally:
+        current_user_var.reset(token)
+
+    assert redis.calls == []
+    usage = [
+        sample
+        for sample in _metric_values(recorder, "rag_token_usage")
+        if sample.name.endswith("_total")
+    ]
+    assert {
+        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
+        for sample in usage
+    } == {
+        ("deepseek-v4-flash", "evaluation", "3"): 12.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_suppress_switch_skips_personal_redis_but_keeps_prometheus() -> None:
+    recorder, redis = _build_recorder()
+    user_token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="USER"))
+    suppress_token = suppress_user_usage_var.set(True)
+    try:
+        await recorder.record_usage(
+            tokens=9,
+            model="deepseek-v4-flash",
+            token_type="input",
+            kb_id=2,
+        )
+    finally:
+        suppress_user_usage_var.reset(suppress_token)
+        current_user_var.reset(user_token)
+
+    assert redis.calls == []
+    samples = [
+        sample
+        for sample in _metric_values(recorder, "rag_token_usage")
+        if sample.name.endswith("_total")
+    ]
+    assert samples[0].labels == {"model": "deepseek-v4-flash", "token_type": "input", "kb_id": "2"}
+    assert samples[0].value == 9.0
 
 
 @pytest.mark.asyncio

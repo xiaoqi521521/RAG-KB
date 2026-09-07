@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from decimal import ROUND_HALF_UP, Decimal
 import time
 from typing import Protocol
 
@@ -15,14 +16,33 @@ from app.core.rag import RAG_REFUSAL_ANSWER
 from app.core.time import shanghai_now_naive
 from app.evaluation.metrics import calculate_retrieval_metrics
 from app.evaluation.ragas_evaluator import (
+    RagasUsage,
     RagasEvaluationResult,
     RagasEvaluationSample,
 )
 from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
 from app.repositories.evaluations import EvaluationReport, EvaluationRepository
+from app.services.token_budget import (
+    GlobalTokenBudgetGate,
+    TokenBudgetExhaustedError,
+    TokenBudgetUnavailableError,
+)
+from app.services.token_metrics import TokenUsageRecorder
 from app.services.rag_query_v4 import RagExecution
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EvaluationUsageCollector:
+    """按题累计评估期间模型消耗，随评估结果逐题落库。"""
+
+    usage_tokens: int = 0
+    estimated_cost_cny: Decimal = Decimal("0")
+
+    def add(self, *, tokens: int, cost_cny: Decimal) -> None:
+        self.usage_tokens += tokens
+        self.estimated_cost_cny += cost_cny
 
 
 @dataclass(frozen=True)
@@ -38,6 +58,7 @@ class _RagPhase:
     hit: bool | None = None
     rank: int | None = None
     evaluated_at: datetime | None = None
+    usage_collector: EvaluationUsageCollector | None = None
 
 
 class EvaluationRagExecutor(Protocol):
@@ -49,6 +70,7 @@ class EvaluationRagExecutor(Protocol):
         question: str,
         kb_ids: list[int],
         user: CurrentUser,
+        usage_collector: EvaluationUsageCollector,
     ) -> RagExecution: ...
 
 
@@ -56,6 +78,9 @@ class GenerationEvaluator(Protocol):
     """正式评估依赖的四项生成指标接口。"""
 
     async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult: ...
+
+    @property
+    def usage(self) -> RagasUsage: ...
 
 
 class EvaluationRunService:
@@ -66,11 +91,19 @@ class EvaluationRunService:
         *,
         repository: EvaluationRepository,
         rag_concurrency: int = 4,
+        token_metrics: TokenUsageRecorder | None = None,
+        budget_gate: GlobalTokenBudgetGate | None = None,
+        token_chat_model_name: str = "unknown",
+        token_embedding_model_name: str = "unknown",
     ) -> None:
         if isinstance(rag_concurrency, bool) or not 1 <= rag_concurrency <= 16:
             raise ValueError("rag_concurrency must be between 1 and 16")
         self.repository = repository
         self.rag_concurrency = rag_concurrency
+        self.token_metrics = token_metrics
+        self.budget_gate = budget_gate
+        self.token_chat_model_name = token_chat_model_name
+        self.token_embedding_model_name = token_embedding_model_name
 
     async def run(
         self,
@@ -83,6 +116,22 @@ class EvaluationRunService:
     ) -> EvaluationReport:
         """同步运行当前 V4 管道，并返回本次版本聚合报告。"""
         logger.info("Evaluation run starting: kb_id=%s user_id=%s", kb_id, user.user_id)
+
+        budget_gate = self.budget_gate
+        if budget_gate is not None:
+            # 批量评估消耗集中，启动前先检查全局预算，避免跑分打爆在线问答额度。
+            try:
+                await budget_gate.ensure_available()
+            except TokenBudgetExhaustedError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="今日金额预算已用尽",
+                ) from exc
+            except TokenBudgetUnavailableError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="金额预算状态暂不可用",
+                ) from exc
 
         # 版本由数据库中的历史最大值递增生成，避免前端或请求参数覆盖版本顺序。
         if eval_version is None:
@@ -176,6 +225,32 @@ class EvaluationRunService:
             zip(ragas_dataset_ids, ragas_results, strict=True)
         )
 
+        usage = ragas_evaluator.usage
+        if self.token_metrics is not None and usage.total_tokens > 0:
+            # 判定调用的输入与输出分桶计价，与在线管道口径一致；不归属任何个人。
+            token_metrics = self.token_metrics
+            await token_metrics.record_usage(
+                tokens=usage.llm_prompt_tokens,
+                model=self.token_chat_model_name,
+                token_type="input",
+                kb_id=kb_id,
+                user_scoped=False,
+            )
+            await token_metrics.record_usage(
+                tokens=usage.llm_completion_tokens,
+                model=self.token_chat_model_name,
+                token_type="evaluation",
+                kb_id=kb_id,
+                user_scoped=False,
+            )
+            await token_metrics.record_usage(
+                tokens=usage.embedding_tokens,
+                model=self.token_embedding_model_name,
+                token_type="embedding",
+                kb_id=kb_id,
+                user_scoped=False,
+            )
+
         results: list[EvalResult] = []
         for dataset in datasets:
             phase = rag_phases_by_dataset[dataset.id]
@@ -213,6 +288,20 @@ class EvaluationRunService:
         report = await self.repository.get_report(kb_id=kb_id, eval_version=eval_version)
         if report is None:
             raise RuntimeError("evaluation report missing after result persistence")
+        if self.token_metrics is not None and usage.total_tokens > 0:
+            # 报告费用 = 逐题落库的生成消耗 + 本次 RAGAS 判定消耗，凑齐"这次评估花了多少"。
+            ragas_cost = (
+                self.token_metrics.estimate_cost(tokens=usage.llm_prompt_tokens, token_type="input")
+                + self.token_metrics.estimate_cost(
+                    tokens=usage.llm_completion_tokens,
+                    token_type="evaluation",
+                )
+                + self.token_metrics.estimate_cost(tokens=usage.embedding_tokens, token_type="embedding")
+            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            report = replace(
+                report,
+                estimated_cost_cny=(report.estimated_cost_cny or Decimal("0")) + ragas_cost,
+            )
         return report
 
     async def list_history(
@@ -253,13 +342,15 @@ class EvaluationRunService:
         user: CurrentUser,
         rag_executor: EvaluationRagExecutor,
         evaluated_at: datetime,
-    ) -> _RagPhase:
+        ) -> _RagPhase:
         """执行单题 RAG，并准备可并发执行的 RAGAS 输入。"""
+        usage_collector = EvaluationUsageCollector()
         try:
             execution = await rag_executor.execute(
                 question=dataset.question,
                 kb_ids=[kb_id],
                 user=user,
+                usage_collector=usage_collector,
             )
         except Exception as exc:
             logger.warning(
@@ -278,8 +369,11 @@ class EvaluationRunService:
                     actual_answer=None,
                     status=EvalResultStatus.FAILED.value,
                     error_type="rag_execution_failed",
+                    usage_tokens=0,
+                    estimated_cost_cny=Decimal("0"),
                     eval_at=evaluated_at,
                 ),
+                usage_collector=usage_collector,
             )
 
         if execution.reranker_degraded:
@@ -299,8 +393,11 @@ class EvaluationRunService:
                     actual_answer=execution.public_response.answer,
                     status=EvalResultStatus.PARTIAL.value,
                     error_type="reranker_degraded",
+                    usage_tokens=0,
+                    estimated_cost_cny=Decimal("0"),
                     eval_at=evaluated_at,
                 ),
+                usage_collector=usage_collector,
             )
 
         actual_answer = (
@@ -337,6 +434,8 @@ class EvaluationRunService:
                 rank=rank,
                 actual_answer=actual_answer,
                 status=EvalResultStatus.SUCCESS.value,
+                usage_tokens=0,
+                estimated_cost_cny=Decimal("0"),
                 eval_at=evaluated_at,
             )
 
@@ -350,6 +449,7 @@ class EvaluationRunService:
             hit=hit,
             rank=rank,
             evaluated_at=evaluated_at,
+            usage_collector=usage_collector,
         )
 
     async def _evaluate_ragas(
@@ -421,5 +521,9 @@ class EvaluationRunService:
             context_precision=context_precision,
             status=result_status,
             error_type=error_type,
+            usage_tokens=phase.usage_collector.usage_tokens,
+            estimated_cost_cny=phase.usage_collector.estimated_cost_cny.quantize(
+                Decimal("0.000001"), rounding=ROUND_HALF_UP
+            ),
             eval_at=phase.evaluated_at,
         )

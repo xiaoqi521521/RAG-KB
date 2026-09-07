@@ -22,8 +22,9 @@ from app.evaluation.dataset_service import EvaluationDatasetService
 from app.evaluation.ragas_evaluator import (
     RagasEvaluationResult,
     RagasEvaluationSample,
+    RagasUsage,
 )
-from app.evaluation.service import EvaluationRunService
+from app.evaluation.service import EvaluationRunService, EvaluationUsageCollector
 from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
 from app.repositories.chunks import ChunkSearchHit
 from app.repositories.evaluations import (
@@ -167,7 +168,14 @@ class StaticRagExecutor:
         self.execution = execution
         self.calls: list[tuple[str, list[int]]] = []
 
-    async def execute(self, *, question: str, kb_ids: list[int], user: CurrentUser):
+    async def execute(
+        self,
+        *,
+        question: str,
+        kb_ids: list[int],
+        user: CurrentUser,
+        usage_collector: EvaluationUsageCollector,
+    ):
         self.calls.append((question, kb_ids))
         return self.execution
 
@@ -175,6 +183,10 @@ class StaticRagExecutor:
 class RecordingRagasEvaluator:
     def __init__(self) -> None:
         self.samples: list[RagasEvaluationSample] = []
+
+    @property
+    def usage(self) -> RagasUsage:
+        return RagasUsage()
 
     async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
         self.samples.append(sample)
@@ -284,6 +296,10 @@ class NoopTokenRecorder:
 
 
 class FailIfCalledRagas:
+    @property
+    def usage(self) -> RagasUsage:
+        return RagasUsage()
+
     async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
         raise AssertionError("Reranker 降级时不得调用 RAGAS")
 
@@ -322,11 +338,28 @@ async def test_reranker_timeout_keeps_rrf_answer_and_skips_all_formal_metrics() 
         settings=RagSettings(),  # type: ignore[arg-type]
     )
 
+    class V4ExecutorAdapter:
+        """评估运行统一走带捕获参数的执行接口。"""
+
+        async def execute(
+            self,
+            *,
+            question: str,
+            kb_ids: list[int],
+            user: CurrentUser,
+            usage_collector: EvaluationUsageCollector,
+        ):
+            return await rag_service.execute(
+                question=question,
+                kb_ids=kb_ids,
+                user=user,
+            )
+
     await EvaluationRunService(repository=repository).run(  # type: ignore[arg-type]
         kb_id=3,
         eval_version="degraded-1",
         user=_user(),
-        rag_executor=rag_service,
+        rag_executor=V4ExecutorAdapter(),
         ragas_evaluator=FailIfCalledRagas(),
     )
 

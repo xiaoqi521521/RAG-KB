@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.context import CurrentUser
+from app.core.config import get_settings
+from app.evaluation.service import EvaluationUsageCollector
 from app.models import EvalDataset, EvalDatasetStatus
 from app.repositories.evaluations import CurrentChunkSummary, EvaluationReport
+from app.services.token_metrics import suppress_user_usage_var
+from app.services.token_metrics import evaluation_usage_capture_var
 
 
 def _user() -> CurrentUser:
@@ -316,3 +322,47 @@ def test_ragas_dependency_reuses_application_model_and_embedding_clients(monkeyp
         "max_tokens": 4096,
         "timeout_seconds": 60,
     }
+
+
+@pytest.mark.asyncio
+async def test_evaluation_executor_suppresses_personal_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.routes import evaluation
+
+    observed: dict[str, bool] = {}
+
+    class StubV4Service:
+        async def execute(self, **kwargs: object):
+            observed["suppress_during"] = suppress_user_usage_var.get()
+            sink = evaluation_usage_capture_var.get()
+            if sink is not None:
+                sink.add(tokens=500, cost_cny=Decimal("0.0005"))
+            return SimpleNamespace(
+                public_response=SimpleNamespace(answer="回答"),
+                reranked_hits=[],
+                reference_contexts=[],
+                prompt_context="",
+                reranker_degraded=False,
+                degraded_reason=None,
+                explicit_refusal=False,
+            )
+
+    class StubRagService(StubV4Service):
+        pass
+
+    monkeypatch.setattr(evaluation, "RagQueryServiceV4", StubRagService)
+    monkeypatch.setattr(evaluation, "build_rag_query_service", lambda **kwargs: StubRagService())
+    executor = evaluation.SessionScopedEvaluationRagExecutor(
+        settings=get_settings(),
+        token_metrics=SimpleNamespace(),
+        faithfulness_metrics=SimpleNamespace(),
+    )
+
+    collector = EvaluationUsageCollector()
+    await executor.execute(question="问题", kb_ids=[1], user=_user(), usage_collector=collector)
+
+    assert observed["suppress_during"] is True
+    assert suppress_user_usage_var.get() is False
+    assert collector.usage_tokens == 500
+    assert collector.estimated_cost_cny == Decimal("0.0005")

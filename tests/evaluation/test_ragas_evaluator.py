@@ -18,6 +18,7 @@ from app.evaluation.ragas_evaluator import (
     RagasEvaluationSample,
     RagasEvaluationMetrics,
     RagasEvaluator,
+    RagasUsage,
     RagasMetricError,
     RagasMetricName,
     RagasMetrics,
@@ -460,6 +461,11 @@ async def test_from_clients_reuses_existing_chat_and_embedding_clients() -> None
     ]
     assert evaluator.timeout_seconds == 12.0
     assert evaluator.max_retries == 0
+    assert evaluator.usage == RagasUsage(
+        llm_prompt_tokens=0,
+        llm_completion_tokens=0,
+        embedding_tokens=4,
+    )
     await root_client.close()
 
 
@@ -523,6 +529,69 @@ async def test_from_clients_uses_configured_max_tokens_for_structured_calls() ->
     assert output.statements == ["应在三十天内提交。"]
     assert requests[0]["max_tokens"] == 4096
     assert requests[0]["model"] == "deepseek-v4-flash"
+    await root_client.close()
+
+
+@pytest.mark.asyncio
+async def test_from_clients_accumulates_provider_usage_from_structured_calls() -> None:
+    requests: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-usage",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"statements":["应在三十天内提交。"]}',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            },
+        )
+
+    embeddings = OpenAICompatibleEmbeddings(
+        embeddings_api=SimpleNamespace(),
+        model="text-embedding-v3",
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    root_client = openai.AsyncOpenAI(
+        api_key="test-key",
+        base_url="https://provider.test/v1",
+        max_retries=2,
+        http_client=http_client,
+    )
+    chat_model = SimpleNamespace(
+        model_name="deepseek-v4-flash",
+        max_tokens=2048,
+        root_async_client=root_client,
+    )
+
+    evaluator = RagasEvaluator.from_clients(
+        chat_model=chat_model,
+        embeddings=embeddings,
+        max_tokens=4096,
+        timeout_seconds=60,
+        max_retries=0,
+    )
+
+    ragas_llm = getattr(evaluator.metrics.faithfulness, "llm")
+    await ragas_llm.agenerate("生成声明", StatementGeneratorOutput)
+
+    assert evaluator.usage == RagasUsage(
+        llm_prompt_tokens=7,
+        llm_completion_tokens=3,
+        embedding_tokens=0,
+    )
     await root_client.close()
 
 

@@ -261,6 +261,8 @@ CREATE TABLE kb_eval_result (
     status              VARCHAR(20)     NOT NULL,
     error_type          VARCHAR(100),
     duration_ms         INTEGER,                           -- 整轮评估执行耗时；历史数据可为空
+    usage_tokens        INTEGER         NOT NULL DEFAULT 0, -- 当题评估消耗的模型 Token 总数
+    estimated_cost_cny  NUMERIC(12, 6)  NOT NULL DEFAULT 0, -- 当题评估消耗的估算金额（CNY）
     eval_at         TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     CONSTRAINT uq_eval_result_dataset_version UNIQUE (dataset_id, eval_version),
     CONSTRAINT ck_eval_result_status CHECK (status IN ('SUCCESS', 'PARTIAL', 'FAILED')),
@@ -271,7 +273,8 @@ CREATE TABLE kb_eval_result (
         AND (context_recall IS NULL OR context_recall BETWEEN 0.0 AND 1.0)
         AND (context_precision IS NULL OR context_precision BETWEEN 0.0 AND 1.0)
     ),
-    CONSTRAINT ck_eval_result_duration CHECK (duration_ms IS NULL OR duration_ms >= 0)
+    CONSTRAINT ck_eval_result_duration CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    CONSTRAINT ck_eval_result_usage CHECK (usage_tokens >= 0 AND estimated_cost_cny >= 0)
 );
 
 -- ================================================================
@@ -391,4 +394,6 @@ COMMENT ON COLUMN kb_eval_result.context_precision IS 'RAGAS Context Precision �
 COMMENT ON COLUMN kb_eval_result.status IS '评估状态：SUCCESS=评估成功，PARTIAL=部分完成或发生降级，FAILED=评估失败';
 COMMENT ON COLUMN kb_eval_result.error_type IS '评估失败或降级类型';
 COMMENT ON COLUMN kb_eval_result.duration_ms IS '整轮评估执行耗时，单位为毫秒；历史数据可为空';
+COMMENT ON COLUMN kb_eval_result.usage_tokens IS '当题评估消耗的模型 Token 总数';
+COMMENT ON COLUMN kb_eval_result.estimated_cost_cny IS '当题评估消耗的估算金额，单位为 CNY';
 COMMENT ON COLUMN kb_eval_result.eval_at IS '评估执行时间';

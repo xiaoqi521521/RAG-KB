@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 import re
 from typing import Annotated, Self
 
@@ -144,6 +145,14 @@ class EvaluationReportItem(BaseModel):
     refusal_rate: float
     duration_ms: int | None = None
     eval_at: datetime
+    usage_tokens: int | None = None
+    estimated_cost_cny: str | None = None
+
+    @field_validator("estimated_cost_cny", mode="before")
+    @classmethod
+    def stringify_estimated_cost(cls, value: object) -> object:
+        """把运行级消耗金额格式化为六位小数字符串。"""
+        return f"{value:.6f}" if isinstance(value, Decimal) else value
 
 
 class EvaluationHistoryPage(BaseModel):

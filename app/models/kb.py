@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 from pgvector.sqlalchemy import Vector as PGVector  # type: ignore[import-untyped]
+from decimal import Decimal
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -335,6 +337,10 @@ class EvalResult(Base):
             "duration_ms IS NULL OR duration_ms >= 0",
             name="ck_eval_result_duration",
         ),
+        CheckConstraint(
+            "usage_tokens >= 0 AND estimated_cost_cny >= 0",
+            name="ck_eval_result_usage",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -350,6 +356,10 @@ class EvalResult(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     error_type: Mapped[str | None] = mapped_column(String(100))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    usage_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    estimated_cost_cny: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6), nullable=False, default=Decimal("0"), server_default="0"
+    )
     eval_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )

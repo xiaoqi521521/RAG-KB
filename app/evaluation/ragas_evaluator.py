@@ -113,12 +113,53 @@ def build_ragas_metrics(
     )
 
 
+@dataclass(frozen=True)
+class RagasUsage:
+    """一次评估运行中 RAGAS 判定的 provider 用量。"""
+
+    llm_prompt_tokens: int = 0
+    llm_completion_tokens: int = 0
+    embedding_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.llm_prompt_tokens + self.llm_completion_tokens + self.embedding_tokens
+
+
+@dataclass
+class _RagasUsageAccumulator:
+    """跨单题累计一次评估运行的 RAGAS 判定 provider usage。"""
+
+    llm_prompt_tokens: int = 0
+    llm_completion_tokens: int = 0
+    embedding_tokens: int = 0
+
+    def add_llm(self, *, prompt_tokens: int, completion_tokens: int) -> None:
+        self.llm_prompt_tokens += prompt_tokens
+        self.llm_completion_tokens += completion_tokens
+
+    def add_embedding(self, *, total_tokens: int) -> None:
+        self.embedding_tokens += total_tokens
+
+    def snapshot(self) -> RagasUsage:
+        return RagasUsage(
+            llm_prompt_tokens=self.llm_prompt_tokens,
+            llm_completion_tokens=self.llm_completion_tokens,
+            embedding_tokens=self.embedding_tokens,
+        )
+
+
 class _OpenAICompatibleRagasEmbeddings(BaseRagasEmbedding):
     """将项目现有异步 Embedding 客户端接入 RAGAS 现代接口。"""
 
-    def __init__(self, embeddings: OpenAICompatibleEmbeddings) -> None:
+    def __init__(
+        self,
+        embeddings: OpenAICompatibleEmbeddings,
+        usage: _RagasUsageAccumulator,
+    ) -> None:
         super().__init__()
         self.embeddings = embeddings
+        self.usage = usage
 
     def embed_text(self, text: str, **kwargs: Any) -> list[float]:
         """为 RAGAS 同步入口复用同一个异步客户端。"""
@@ -139,7 +180,9 @@ class _OpenAICompatibleRagasEmbeddings(BaseRagasEmbedding):
         **kwargs: Any,
     ) -> list[list[float]]:
         """异步批量生成向量，并保持项目客户端的输入顺序语义。"""
-        vectors, _ = await self.embeddings.aembed_documents_with_usage(texts)
+        vectors, total_tokens = await self.embeddings.aembed_documents_with_usage(texts)
+        if total_tokens is not None:
+            self.usage.add_embedding(total_tokens=total_tokens)
         return vectors
 
 
@@ -253,6 +296,7 @@ class RagasEvaluator:
         timeout_seconds: float = 30.0,
         max_retries: int = 1,
         observability: RagasEvaluationMetrics | None = None,
+        usage: _RagasUsageAccumulator | None = None,
     ) -> None:
         """初始化四项指标依赖。"""
         if timeout_seconds <= 0:
@@ -263,6 +307,12 @@ class RagasEvaluator:
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.observability = observability or RagasEvaluationMetrics()
+        self._usage = usage or _RagasUsageAccumulator()
+
+    @property
+    def usage(self) -> RagasUsage:
+        """返回本次评估运行累计的 RAGAS 判定 provider 用量。"""
+        return self._usage.snapshot()
 
     @classmethod
     def from_clients(
@@ -295,8 +345,24 @@ class RagasEvaluator:
         model_kwargs: dict[str, Any] = {"max_retries": 0}
         # 正式评估使用独立预算，避免 Faithfulness 的详细 NLI 输出被问答预算截断。
         model_kwargs["max_tokens"] = max_tokens
+        usage = _RagasUsageAccumulator()
+        completions = evaluation_client.chat.completions
+        original_create = completions.create
+
+        async def tracking_create(*args: Any, **kwargs: Any) -> Any:
+            response = await original_create(*args, **kwargs)
+            response_usage = getattr(response, "usage", None)
+            usage.add_llm(
+                # 缺失或 None 的用量按 0 处理，禁止伪造 provider 未报告的数字。
+                prompt_tokens=getattr(response_usage, "prompt_tokens", 0) or 0,
+                completion_tokens=getattr(response_usage, "completion_tokens", 0) or 0,
+            )
+            return response
+
+        # 先包装底层补全调用再交给 RAGAS 工厂二次包装，判定消耗才能全部经过累计。
+        completions.create = tracking_create
+        ragas_embeddings = _OpenAICompatibleRagasEmbeddings(embeddings, usage=usage)
         llm = llm_factory(model_name, client=evaluation_client, **model_kwargs)
-        ragas_embeddings = _OpenAICompatibleRagasEmbeddings(embeddings)
         return cls(
             metrics=build_ragas_metrics(
                 llm=llm,
@@ -305,6 +371,7 @@ class RagasEvaluator:
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
             observability=observability,
+            usage=usage,
         )
 
     async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:

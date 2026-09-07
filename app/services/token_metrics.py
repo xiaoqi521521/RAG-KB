@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, Protocol
@@ -46,6 +47,7 @@ TOKEN_TYPES = (
     "hyde",
     "reranker",
     "faithfulness_check",
+    "evaluation",
 )
 TokenType = Literal[
     "embedding",
@@ -55,8 +57,11 @@ TokenType = Literal[
     "hyde",
     "reranker",
     "faithfulness_check",
+    "evaluation",
 ]
-_OUTPUT_TOKEN_TYPES = frozenset({"answer_generation", "intent", "hyde", "faithfulness_check"})
+_OUTPUT_TOKEN_TYPES = frozenset(
+    {"answer_generation", "intent", "hyde", "faithfulness_check", "evaluation"}
+)
 _REDIS_FIELDS: dict[str, str] = {
     "embedding": "embeddingTokens",
     "input": "inputTokens",
@@ -65,12 +70,31 @@ _REDIS_FIELDS: dict[str, str] = {
     "hyde": "hydeTokens",
     "reranker": "rerankerTokens",
     "faithfulness_check": "faithfulnessTokens",
+    "evaluation": "evaluationTokens",
 }
+
+# 评估等系统侧调用的抑制开关：只跳过个人 Redis 累计，监控与预算照常。
+suppress_user_usage_var: ContextVar[bool] = ContextVar(
+    "suppress_user_usage",
+    default=False,
+)
+
+
+class UsageCaptureSink(Protocol):
+    """评估等批处理侧按调用聚合消耗的最小接口。"""
+
+    def add(self, *, tokens: int, cost_cny: Decimal) -> None: ...
+
+
+evaluation_usage_capture_var: ContextVar[UsageCaptureSink | None] = ContextVar(
+    "evaluation_usage_capture",
+    default=None,
+)
 
 
 @dataclass(frozen=True)
 class UserTokenUsage:
-    """当前用户在线请求累计的七类 Token，费用按当前部署单价在读取时派生。"""
+    """按当前 Token 桶模型汇总的用量，费用按当前部署单价在读取时派生。"""
 
     embedding_tokens: int
     input_tokens: int
@@ -79,6 +103,7 @@ class UserTokenUsage:
     hyde_tokens: int
     reranker_tokens: int
     faithfulness_tokens: int
+    evaluation_tokens: int = 0
     estimated_cost_cny: Decimal = Decimal("0")
     embedding_cost_cny: Decimal = Decimal("0")
     input_cost_cny: Decimal = Decimal("0")
@@ -87,6 +112,7 @@ class UserTokenUsage:
     hyde_cost_cny: Decimal = Decimal("0")
     reranker_cost_cny: Decimal = Decimal("0")
     faithfulness_cost_cny: Decimal = Decimal("0")
+    evaluation_cost_cny: Decimal = Decimal("0")
 
 
 class TokenMetricsUnavailableError(RuntimeError):
@@ -171,6 +197,7 @@ class TokenUsageRecorder:
             "intent": chat_output_price,
             "hyde": chat_output_price,
             "faithfulness_check": chat_output_price,
+            "evaluation": chat_output_price,
             "reranker": reranker_price,
         }
         self._usage = _metric_or_existing(
@@ -300,7 +327,11 @@ class TokenUsageRecorder:
             await self.budget_gate.record_cost(estimated_cost)
             self.budget_gate.add_request_cost(estimated_cost)
 
-        if not user_scoped:
+        capture_sink = evaluation_usage_capture_var.get()
+        if capture_sink is not None:
+            capture_sink.add(tokens=tokens, cost_cny=estimated_cost)
+
+        if not user_scoped or suppress_user_usage_var.get():
             return
         user = current_user_var.get()
         if user is None:
@@ -383,6 +414,7 @@ class TokenUsageRecorder:
                 hyde_tokens=token_counts["hyde"],
                 reranker_tokens=token_counts["reranker"],
                 faithfulness_tokens=token_counts["faithfulness_check"],
+                evaluation_tokens=token_counts["evaluation"],
                 estimated_cost_cny=sum(costs.values(), Decimal("0")),
                 embedding_cost_cny=costs["embedding"],
                 input_cost_cny=costs["input"],
@@ -391,6 +423,7 @@ class TokenUsageRecorder:
                 hyde_cost_cny=costs["hyde"],
                 reranker_cost_cny=costs["reranker"],
                 faithfulness_cost_cny=costs["faithfulness_check"],
+                evaluation_cost_cny=costs["evaluation"],
             )
         except (TypeError, ValueError) as exc:
             logger.warning(
@@ -398,6 +431,13 @@ class TokenUsageRecorder:
                 type(exc).__name__,
             )
             raise TokenMetricsUnavailableError("Token 统计数据不可用") from exc
+
+    def estimate_cost(self, *, tokens: int, token_type: TokenType) -> Decimal:
+        """按当前部署单价估算一笔 Token 消耗的费用。"""
+        self._validate_token_type(token_type)
+        if tokens <= 0:
+            return Decimal("0")
+        return _derive_cost_cny(tokens, self._prices[token_type])
 
     def render_metrics(self) -> str:
         """渲染当前 recorder 所属 registry，主要供测试和诊断使用。"""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Float, case, cast, func, select, update
@@ -60,6 +61,9 @@ class EvaluationReport:
     refusal_rate: float
     duration_ms: int | None
     eval_at: datetime
+    # 运行级模型消耗聚合；逐题落库后按评估版本求和。
+    usage_tokens: int | None = None
+    estimated_cost_cny: Decimal | None = None
 
 
 class EvaluationRepository:
@@ -366,6 +370,8 @@ class EvaluationRepository:
                 refusal_count.label("refusal_count"),
                 refusal_rate.label("refusal_rate"),
                 duration_ms.label("duration_ms"),
+                func.sum(EvalResult.usage_tokens).label("usage_tokens"),
+                func.sum(EvalResult.estimated_cost_cny).label("estimated_cost_cny"),
                 evaluated_at.label("eval_at"),
             )
             .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
@@ -399,5 +405,7 @@ class EvaluationRepository:
             refusal_count=values["refusal_count"],
             refusal_rate=values["refusal_rate"],
             duration_ms=values["duration_ms"],
+            usage_tokens=values["usage_tokens"],
+            estimated_cost_cny=values["estimated_cost_cny"],
             eval_at=values["eval_at"],
         )

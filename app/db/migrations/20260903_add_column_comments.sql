@@ -138,4 +138,6 @@ COMMENT ON COLUMN kb_eval_result.context_precision IS 'RAGAS Context Precision �
 COMMENT ON COLUMN kb_eval_result.status IS '评估状态：SUCCESS=评估成功，PARTIAL=部分完成或发生降级，FAILED=评估失败';
 COMMENT ON COLUMN kb_eval_result.error_type IS '评估失败或降级类型';
 COMMENT ON COLUMN kb_eval_result.duration_ms IS '整轮评估执行耗时，单位为毫秒；历史数据可为空';
+COMMENT ON COLUMN kb_eval_result.usage_tokens IS '当题评估消耗的模型 Token 总数';
+COMMENT ON COLUMN kb_eval_result.estimated_cost_cny IS '当题评估消耗的估算金额，单位为 CNY';
 COMMENT ON COLUMN kb_eval_result.eval_at IS '评估执行时间';
