@@ -85,7 +85,7 @@ class IntentClassifier:
                             recorder=self.token_metrics,
                             response=response,
                             model=self.model_name,
-                            output_type="answer_generation",
+                            output_type="intent",
                             kb_id="multi",
                         )
                     intent = self._parse(response)

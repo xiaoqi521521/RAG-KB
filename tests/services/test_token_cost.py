@@ -14,6 +14,7 @@ class FakeTokenMetrics:
             embedding_tokens=125_000,
             input_tokens=890_000,
             answer_generation_tokens=210_000,
+            intent_tokens=0,
             hyde_tokens=0,
             reranker_tokens=0,
             faithfulness_tokens=0,
@@ -36,6 +37,7 @@ async def test_token_cost_service_calculates_fixed_decimal_estimate() -> None:
     assert summary.embedding_tokens == 125_000
     assert summary.input_tokens == 890_000
     assert summary.answer_generation_tokens == 210_000
+    assert summary.intent_tokens == 0
     assert summary.hyde_tokens == 0
     assert summary.reranker_tokens == 0
     assert summary.faithfulness_tokens == 0
@@ -50,6 +52,7 @@ async def test_token_cost_service_rounds_half_up_to_four_decimal_places() -> Non
                     embedding_tokens=1_000,
                     input_tokens=0,
                     answer_generation_tokens=0,
+                    intent_tokens=0,
                     hyde_tokens=0,
                     reranker_tokens=0,
                     faithfulness_tokens=0,
@@ -71,6 +74,7 @@ async def test_token_cost_service_prices_internal_outputs_and_reranker() -> None
                 embedding_tokens=0,
                 input_tokens=1_000,
                 answer_generation_tokens=1_000,
+                intent_tokens=1_000,
                 hyde_tokens=1_000,
                 reranker_tokens=1_000,
                 faithfulness_tokens=1_000,

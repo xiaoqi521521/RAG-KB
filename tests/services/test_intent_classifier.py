@@ -70,6 +70,20 @@ async def test_classify_accepts_only_supported_intents(value: str, expected: Cha
     assert "请针对企业内部聊天路由给出一个明确且完整的意图分类结果。" in model.calls[0][1].content
 
 
+async def test_classify_records_intent_output_bucket() -> None:
+    model = FakeModel([SimpleNamespace(content='{"intent":"GENERAL_CHAT"}')])
+    metrics = FakeTokenMetrics()
+
+    await IntentClassifier(
+        model,
+        token_metrics=metrics,
+        model_name="router-model",
+    ).classify_with_context("帮我写一段介绍")
+
+    assert metrics.calls[0]["output_type"] == "intent"
+    assert metrics.calls[0]["kb_id"] == "multi"
+
+
 @pytest.mark.parametrize(
     "content",
     [

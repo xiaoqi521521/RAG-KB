@@ -72,6 +72,30 @@ async def test_record_chat_usage_separates_input_and_answer_output() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_record_chat_usage_separates_input_and_intent_output() -> None:
+    redis = FakeRedis()
+    registry = CollectorRegistry()
+    recorder = TokenUsageRecorder(redis_client=redis, registry=registry)
+    user_token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="USER"))
+    try:
+        await recorder.record_chat_usage(
+            response=SimpleNamespace(
+                usage_metadata={"input_tokens": 60, "output_tokens": 4},
+            ),
+            model="deepseek-v4-flash",
+            output_type="intent",
+            kb_id="multi",
+        )
+    finally:
+        current_user_var.reset(user_token)
+
+    assert redis.calls == [
+        ("rag:token:v3:stats:7", "inputTokens", 60),
+        ("rag:token:v3:stats:7", "intentTokens", 4),
+    ]
+
+
 def test_record_chat_usage_does_not_estimate_missing_provider_usage() -> None:
     recorder = TokenUsageRecorder(redis_client=FakeRedis(), registry=CollectorRegistry())
 

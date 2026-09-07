@@ -8,6 +8,7 @@ import type { TokenStats } from '@/types';
 const TOKEN_ITEMS = [
   { key: 'input_tokens', label: '输入', color: '#2f5d50' },
   { key: 'answer_generation_tokens', label: '回答生成', color: '#4a7c67' },
+  { key: 'intent_tokens', label: '意图识别', color: '#3f6f8f' },
   { key: 'embedding_tokens', label: 'Embedding', color: '#7ba08b' },
   { key: 'hyde_tokens', label: 'HyDE', color: '#a8752c' },
   { key: 'reranker_tokens', label: 'Reranker', color: '#c68b47' },
@@ -53,7 +54,7 @@ export default function DashboardPage() {
       <PageHeader
         eyebrow="TOKEN & COST"
         title="成本监控"
-        description="统计当前用户的六类在线 Token 消耗与近似人民币成本。"
+        description="统计当前用户的七类在线 Token 消耗与近似人民币成本。"
         actions={
           <Button icon={<ReloadOutlined />} loading={loading} onClick={() => fetchStats()}>
             刷新

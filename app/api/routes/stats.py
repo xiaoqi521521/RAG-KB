@@ -43,6 +43,7 @@ async def get_token_stats(
             embedding_tokens=summary.embedding_tokens,
             input_tokens=summary.input_tokens,
             answer_generation_tokens=summary.answer_generation_tokens,
+            intent_tokens=summary.intent_tokens,
             hyde_tokens=summary.hyde_tokens,
             reranker_tokens=summary.reranker_tokens,
             faithfulness_tokens=summary.faithfulness_tokens,

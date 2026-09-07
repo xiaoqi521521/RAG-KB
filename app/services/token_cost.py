@@ -15,11 +15,12 @@ class UserTokenReader(Protocol):
 
 @dataclass(frozen=True)
 class TokenCostSummary:
-    """当前用户六类 Token 用量及人民币近似成本。"""
+    """当前用户七类 Token 用量及人民币近似成本。"""
 
     embedding_tokens: int
     input_tokens: int
     answer_generation_tokens: int
+    intent_tokens: int
     hyde_tokens: int
     reranker_tokens: int
     faithfulness_tokens: int
@@ -43,6 +44,7 @@ class TokenCostService:
             embedding_tokens=usage.embedding_tokens,
             input_tokens=usage.input_tokens,
             answer_generation_tokens=usage.answer_generation_tokens,
+            intent_tokens=usage.intent_tokens,
             hyde_tokens=usage.hyde_tokens,
             reranker_tokens=usage.reranker_tokens,
             faithfulness_tokens=usage.faithfulness_tokens,

@@ -111,6 +111,44 @@ async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_chat_usage_records_intent_output_bucket() -> None:
+    redis = FakeRedis()
+    recorder = TokenUsageRecorder(
+        redis_client=redis,
+        registry=CollectorRegistry(),
+        chat_input_price=Decimal("0.001"),
+        chat_output_price=Decimal("0.002"),
+    )
+    token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
+    try:
+        await recorder.record_chat_usage(
+            response=AIMessage(
+                content='{"intent":"GENERAL_CHAT"}',
+                usage_metadata={"input_tokens": 120, "output_tokens": 8, "total_tokens": 128},
+            ),
+            model="deepseek-v4-flash",
+            output_type="intent",
+            kb_id="multi",
+        )
+    finally:
+        current_user_var.reset(token)
+
+    assert redis.calls == [
+        ("rag:token:v3:stats:7", "inputTokens", 120),
+        ("rag:token:v3:stats:7", "intentTokens", 8),
+    ]
+    assert Decimal(redis.hash_values["estimatedCostCny"]) == Decimal("0.000136")
+    usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
+    assert {
+        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
+        for sample in usage
+    } == {
+        ("deepseek-v4-flash", "input", "multi"): 120.0,
+        ("deepseek-v4-flash", "intent", "multi"): 8.0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_offline_embedding_does_not_write_user_v2() -> None:
     recorder, redis = _build_recorder()
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
@@ -208,6 +246,7 @@ async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
         "embeddingTokens": "125",
         "inputTokens": "890",
         "answerGenerationTokens": "8",
+        "intentTokens": "5",
         "estimatedCostCny": "0.0125",
         "legacyGenerationTokens": "999",
     }
@@ -217,6 +256,7 @@ async def test_read_user_tokens_uses_only_v2_fields_and_zero_defaults() -> None:
     assert usage.embedding_tokens == 125
     assert usage.input_tokens == 890
     assert usage.answer_generation_tokens == 8
+    assert usage.intent_tokens == 5
     assert usage.hyde_tokens == 0
     assert usage.reranker_tokens == 0
     assert usage.faithfulness_tokens == 0

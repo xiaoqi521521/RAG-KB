@@ -48,6 +48,7 @@ TOKEN_TYPES = (
     "embedding",
     "input",
     "answer_generation",
+    "intent",
     "hyde",
     "reranker",
     "faithfulness_check",
@@ -56,15 +57,17 @@ TokenType = Literal[
     "embedding",
     "input",
     "answer_generation",
+    "intent",
     "hyde",
     "reranker",
     "faithfulness_check",
 ]
-_OUTPUT_TOKEN_TYPES = frozenset({"answer_generation", "hyde", "faithfulness_check"})
+_OUTPUT_TOKEN_TYPES = frozenset({"answer_generation", "intent", "hyde", "faithfulness_check"})
 _REDIS_FIELDS: dict[str, str] = {
     "embedding": "embeddingTokens",
     "input": "inputTokens",
     "answer_generation": "answerGenerationTokens",
+    "intent": "intentTokens",
     "hyde": "hydeTokens",
     "reranker": "rerankerTokens",
     "faithfulness_check": "faithfulnessTokens",
@@ -73,11 +76,12 @@ _REDIS_FIELDS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class UserTokenUsage:
-    """当前用户在线请求累计的六类 Token 和金额。"""
+    """当前用户在线请求累计的七类 Token 和金额。"""
 
     embedding_tokens: int
     input_tokens: int
     answer_generation_tokens: int
+    intent_tokens: int
     hyde_tokens: int
     reranker_tokens: int
     faithfulness_tokens: int
@@ -163,6 +167,7 @@ class TokenUsageRecorder:
             "embedding": embedding_price,
             "input": chat_input_price,
             "answer_generation": chat_output_price,
+            "intent": chat_output_price,
             "hyde": chat_output_price,
             "faithfulness_check": chat_output_price,
             "reranker": reranker_price,
@@ -369,6 +374,7 @@ class TokenUsageRecorder:
                 answer_generation_tokens=_parse_stored_token(
                     values.get("answerGenerationTokens", 0)
                 ),
+                intent_tokens=_parse_stored_token(values.get("intentTokens", 0)),
                 hyde_tokens=_parse_stored_token(values.get("hydeTokens", 0)),
                 reranker_tokens=_parse_stored_token(values.get("rerankerTokens", 0)),
                 faithfulness_tokens=_parse_stored_token(values.get("faithfulnessTokens", 0)),

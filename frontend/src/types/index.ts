@@ -151,6 +151,7 @@ export interface EvaluationReport {
   avg_context_precision: number | null;
   refusal_count: number;
   refusal_rate: number;
+  duration_ms: number | null;
   eval_at: string;
 }
 
@@ -166,6 +167,7 @@ export interface TokenStats {
   embedding_tokens: number;
   input_tokens: number;
   answer_generation_tokens: number;
+  intent_tokens: number;
   hyde_tokens: number;
   reranker_tokens: number;
   faithfulness_tokens: number;
