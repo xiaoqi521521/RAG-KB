@@ -9,6 +9,7 @@ import type {
   EvalDataset,
   EvalDatasetWriteRequest,
   EvaluationReport,
+  EvaluationHistoryPage,
   IndexStatusResponse,
   KnowledgeBase,
   KnowledgeBaseCreateRequest,
@@ -70,15 +71,32 @@ export const chatApi = {
 const evalRequestConfig = { skipGlobalErrorMessage: true };
 
 export const evalApi = {
-  runEvaluation: (kbId: number, version: string) =>
-    request.post<ApiResponse<EvaluationReport>>(`/eval/${kbId}/run`, null, {
-      params: { version },
+  runEvaluation: (kbId: number) =>
+    request.post<ApiResponse<EvaluationReport>>(
+      `/eval/${kbId}/run`,
+      null,
+      {
+        ...evalRequestConfig,
+        timeout: 300000, // 评估任务特别长，设置5分钟超时
+      },
+    ),
+  getHistory: (
+    kbId: number,
+    options: { version?: number; page?: number; pageSize?: number } = {},
+  ) =>
+    request.get<ApiResponse<EvaluationReport[] | EvaluationHistoryPage>>(`/eval/${kbId}/history`, {
       ...evalRequestConfig,
+      params: {
+        ...(options.version ? { version: options.version } : {}),
+        ...(options.page ? { page: options.page } : {}),
+        ...(options.pageSize ? { page_size: options.pageSize } : {}),
+      },
     }),
-  getHistory: (kbId: number) =>
-    request.get<ApiResponse<EvaluationReport[]>>(`/eval/${kbId}/history`, evalRequestConfig),
-  listDataset: (kbId: number) =>
-    request.get<ApiResponse<EvalDataset[]>>(`/eval/${kbId}/dataset`, evalRequestConfig),
+  listDataset: (kbId: number, status?: string) =>
+    request.get<ApiResponse<EvalDataset[]>>(`/eval/${kbId}/dataset`, {
+      ...evalRequestConfig,
+      params: status ? { status } : undefined,
+    }),
   addQuestion: (kbId: number, data: EvalDatasetWriteRequest) =>
     request.post<ApiResponse<EvalDataset>>(`/eval/${kbId}/dataset`, data, evalRequestConfig),
   updateQuestion: (kbId: number, id: number, data: EvalDatasetWriteRequest) =>

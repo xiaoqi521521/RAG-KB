@@ -122,16 +122,23 @@ class FakeEvaluationRepository:
         *,
         datasets: list[EvalDataset] | None = None,
         version_exists: bool = False,
+        next_version: int = 1,
         save_error: Exception | None = None,
     ) -> None:
         self.datasets = datasets or []
         self.version_exists_value = version_exists
+        self.next_version_value = next_version
         self.save_error = save_error
         self.list_calls: list[tuple[int, str | None]] = []
+        self.next_version_calls: list[int] = []
         self.saved_batches: list[list[EvalResult]] = []
 
-    async def version_exists(self, *, kb_id: int, eval_version: str) -> bool:
+    async def version_exists(self, *, kb_id: int, eval_version: int) -> bool:
         return self.version_exists_value
+
+    async def next_report_version(self, *, kb_id: int) -> int:
+        self.next_version_calls.append(kb_id)
+        return self.next_version_value
 
     async def list_datasets(self, *, kb_id: int, status: str | None = None):
         self.list_calls.append((kb_id, status))
@@ -142,7 +149,7 @@ class FakeEvaluationRepository:
             raise self.save_error
         self.saved_batches.append(results)
 
-    async def get_report(self, *, kb_id: int, eval_version: str) -> EvaluationReport | None:
+    async def get_report(self, *, kb_id: int, eval_version: int) -> EvaluationReport | None:
         results = self.saved_batches[0]
         samples = [result for result in results if result.hit is not None]
         hit_count = sum(result.hit is True for result in samples)
@@ -179,6 +186,24 @@ class FakeEvaluationRepository:
             / len(results),
             eval_at=results[0].eval_at,
         )
+
+
+@pytest.mark.asyncio
+async def test_run_uses_next_report_version_when_version_is_not_provided() -> None:
+    repository = FakeEvaluationRepository(datasets=[_dataset(1, [10])], next_version=7)
+    executor = FakeRagExecutor([_execution([10])])
+    service = EvaluationRunService(repository=repository)  # type: ignore[arg-type]
+
+    report = await service.run(
+        kb_id=3,
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=FakeRagasEvaluator([]),
+    )
+
+    assert repository.next_version_calls == [3]
+    assert repository.saved_batches[0][0].eval_version == 7
+    assert report.eval_version == 7
 
 
 @pytest.mark.asyncio

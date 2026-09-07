@@ -14,6 +14,7 @@ const PIPELINE_STEPS = [
 const DEMO_ACCOUNTS = [
   { username: 'admin', role: '系统管理员' },
   { username: 'hr001', role: 'HR 部门' },
+  { username: 'hr002', role: 'HR 部门' },
   { username: 'tech001', role: '技术部门' },
 ];
 

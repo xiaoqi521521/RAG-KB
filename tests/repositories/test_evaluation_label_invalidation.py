@@ -38,16 +38,22 @@ async def _postgres_transaction() -> AsyncIterator[AsyncConnection]:
 
 
 async def _create_evaluation_temp_table(connection: AsyncConnection) -> None:
-    """创建只包含标注失效所需字段的连接级临时表。"""
+    """创建评估仓储测试所需字段的连接级临时表。"""
     await connection.execute(
         text(
             """
             CREATE TEMP TABLE kb_eval_dataset (
                 id BIGINT PRIMARY KEY,
                 kb_id BIGINT NOT NULL,
+                question TEXT NOT NULL DEFAULT '',
+                expected_answer TEXT,
                 expected_chunk_ids BIGINT[],
                 status VARCHAR(20) NOT NULL,
-                review_reason VARCHAR(50)
+                review_reason VARCHAR(50),
+                source_feedback_id BIGINT,
+                created_by BIGINT NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+                updated_at TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now())
             ) ON COMMIT DROP
             """
         )
@@ -101,6 +107,36 @@ async def test_reindex_invalidation_updates_only_overlapping_active_rows() -> No
         (5, "NEEDS_REVIEW", "existing_reason"),
         (6, "ACTIVE", None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_list_datasets_excludes_archived_rows_by_default_but_allows_explicit_status() -> None:
+    """默认标准问题列表不得展示取消反馈后归档的候选项。"""
+    async with _postgres_transaction() as connection:
+        await _create_evaluation_temp_table(connection)
+        await connection.execute(
+            text(
+                """
+                INSERT INTO kb_eval_dataset (id, kb_id, question, status, created_at)
+                VALUES
+                    (1, 3, '保留的问题', 'ACTIVE', '2026-07-15 10:00:00'),
+                    (2, 3, '已取消点踩的问题', 'ARCHIVED', '2026-07-15 11:00:00'),
+                    (3, 4, '其他知识库的问题', 'ACTIVE', '2026-07-15 12:00:00')
+                """
+            )
+        )
+        session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint")
+        repository = EvaluationRepository(session)
+
+        default_rows = await repository.list_datasets(kb_id=3)
+        archived_rows = await repository.list_datasets(
+            kb_id=3,
+            status="ARCHIVED",
+        )
+        await session.close()
+
+    assert [dataset.id for dataset in default_rows] == [1]
+    assert [dataset.id for dataset in archived_rows] == [2]
 
 
 @pytest.mark.asyncio

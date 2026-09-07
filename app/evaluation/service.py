@@ -54,13 +54,26 @@ class EvaluationRunService:
         self,
         *,
         kb_id: int,
-        eval_version: str,
+        eval_version: int | None = None,
         user: CurrentUser,
         rag_executor: EvaluationRagExecutor,
         ragas_evaluator: GenerationEvaluator,
     ) -> EvaluationReport:
         """同步运行当前 V4 管道，并返回本次版本聚合报告。"""
+        logger.info("Evaluation run starting: kb_id=%s user_id=%s", kb_id, user.user_id)
+
+        # 版本由数据库中的历史最大值递增生成，避免前端或请求参数覆盖版本顺序。
+        if eval_version is None:
+            eval_version = await self.repository.next_report_version(kb_id=kb_id)
+
+        logger.info("Evaluation version determined: kb_id=%s eval_version=%s", kb_id, eval_version)
+
         if await self.repository.version_exists(kb_id=kb_id, eval_version=eval_version):
+            logger.warning(
+                "Evaluation version conflict: kb_id=%s eval_version=%s",
+                kb_id,
+                eval_version,
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="评估版本已存在",
@@ -71,10 +84,29 @@ class EvaluationRunService:
             status=EvalDatasetStatus.ACTIVE.value,
         )
         if not datasets:
+            # 检查是否有其他状态的数据集
+            all_datasets = await self.repository.list_datasets(kb_id=kb_id)
+            logger.warning(
+                "No ACTIVE datasets found: kb_id=%s total_datasets=%s",
+                kb_id,
+                len(all_datasets),
+            )
+            if not all_datasets:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="知识库中没有任何评估数据集，请先添加标准问题",
+                )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="没有可运行的 ACTIVE 标准问题",
+                detail=f"没有可运行的 ACTIVE 标准问题（当前有 {len(all_datasets)} 个非 ACTIVE 状态的问题），请将至少一个问题设置为有效状态",
             )
+
+        logger.info(
+            "Starting evaluation execution: kb_id=%s eval_version=%s dataset_count=%s",
+            kb_id,
+            eval_version,
+            len(datasets),
+        )
 
         evaluated_at = shanghai_now_naive()
         results: list[EvalResult] = []
@@ -105,15 +137,40 @@ class EvaluationRunService:
             raise RuntimeError("evaluation report missing after result persistence")
         return report
 
-    async def list_history(self, *, kb_id: int) -> list[EvaluationReport]:
-        """读取目标知识库按时间倒序排列的聚合历史。"""
-        return await self.repository.list_reports(kb_id=kb_id)
+    async def list_history(
+        self,
+        *,
+        kb_id: int,
+        eval_version: int | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[EvaluationReport]:
+        """读取目标知识库按时间倒序排列的聚合历史，可按版本过滤和分页。"""
+        if eval_version is None and limit is None and offset == 0:
+            # 保留仓储层旧调用形态，便于离线评估和轻量替身复用。
+            return await self.repository.list_reports(kb_id=kb_id)
+        if eval_version is None:
+            return await self.repository.list_reports(kb_id=kb_id, limit=limit, offset=offset)
+        return await self.repository.list_reports(
+            kb_id=kb_id,
+            eval_version=eval_version,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def count_history(self, *, kb_id: int, eval_version: int | None = None) -> int:
+        """统计评估历史记录数量。"""
+        return await self.repository.count_reports(kb_id=kb_id, eval_version=eval_version)
+
+    async def list_history_versions(self, *, kb_id: int) -> list[int]:
+        """列出全部评估版本。"""
+        return await self.repository.list_report_versions(kb_id=kb_id)
 
     async def _evaluate_dataset(
         self,
         *,
         kb_id: int,
-        eval_version: str,
+        eval_version: int,
         dataset: EvalDataset,
         user: CurrentUser,
         rag_executor: EvaluationRagExecutor,

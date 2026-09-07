@@ -32,6 +32,7 @@ class DemoIdentityProvider:
 
     _profiles = {
         "hr001": CurrentUser(user_id=1, department_id="HR", role="MEMBER"),
+        "hr002": CurrentUser(user_id=4, department_id="HR", role="MEMBER"),
         "tech001": CurrentUser(user_id=2, department_id="TECH", role="MEMBER"),
         "admin": CurrentUser(user_id=3, department_id="ALL", role="ADMIN"),
     }

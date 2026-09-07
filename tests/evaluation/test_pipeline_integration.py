@@ -396,6 +396,7 @@ async def _create_pipeline_temp_tables(connection: AsyncConnection) -> None:
                 feedback SMALLINT NOT NULL,
                 comment TEXT,
                 created_at TIMESTAMP NOT NULL DEFAULT now(),
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
                 UNIQUE (message_id, user_id)
             ) ON COMMIT DROP
         """,
@@ -410,7 +411,8 @@ async def _create_pipeline_temp_tables(connection: AsyncConnection) -> None:
                 review_reason VARCHAR(50),
                 source_feedback_id BIGINT UNIQUE,
                 created_by BIGINT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT now()
+                created_at TIMESTAMP NOT NULL DEFAULT now(),
+                updated_at TIMESTAMP NOT NULL DEFAULT now()
             ) ON COMMIT DROP
         """,
         """

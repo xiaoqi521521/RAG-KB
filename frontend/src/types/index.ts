@@ -132,7 +132,7 @@ export interface ChatMessageItem {
 
 export interface EvaluationReport {
   kb_id: number;
-  eval_version: string;
+  eval_version: number;
   total_questions: number;
   success_count: number;
   partial_count: number;
@@ -152,6 +152,14 @@ export interface EvaluationReport {
   refusal_count: number;
   refusal_rate: number;
   eval_at: string;
+}
+
+export interface EvaluationHistoryPage {
+  items: EvaluationReport[];
+  total: number;
+  page: number;
+  page_size: number;
+  versions: number[];
 }
 
 export interface TokenStats {
@@ -176,12 +184,14 @@ export interface EvalDataset {
   source_feedback_id: number | null;
   created_by: number;
   created_at: string;
+  updated_at: string;
 }
 
 export interface EvalDatasetWriteRequest {
   question: string;
   expected_answer?: string | null;
   expected_chunk_ids?: number[] | null;
+  status?: string | null;
 }
 
 export interface ChunkSummary {

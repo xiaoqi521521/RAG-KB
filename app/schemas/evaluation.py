@@ -8,15 +8,26 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 PositiveId = Annotated[int, Field(gt=0)]
-EVAL_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+EVAL_VERSION_PATTERN = re.compile(r"(?:v)?([0-9]+)(?:[_-].*)?", re.IGNORECASE)
 
 
-def normalize_eval_version(value: str) -> str:
-    """规范化评估版本，并限制为可稳定记录的短标识。"""
-    normalized = value.strip()
-    if not normalized or len(normalized) > 50 or EVAL_VERSION_PATTERN.fullmatch(normalized) is None:
+def normalize_eval_version(value: int | str) -> int:
+    """规范化评估版本为正整数，兼容旧的 ``vN_*`` 标识。"""
+    if isinstance(value, bool):
         raise ValueError("invalid evaluation version")
-    return normalized
+    if isinstance(value, int):
+        version = value
+    elif isinstance(value, str):
+        normalized = value.strip()
+        match = EVAL_VERSION_PATTERN.fullmatch(normalized)
+        if match is None:
+            raise ValueError("invalid evaluation version")
+        version = int(match.group(1))
+    else:
+        raise ValueError("invalid evaluation version")
+    if version <= 0 or version > 2_147_483_647:
+        raise ValueError("invalid evaluation version")
+    return version
 
 
 class EvalDatasetWriteRequest(BaseModel):
@@ -27,6 +38,7 @@ class EvalDatasetWriteRequest(BaseModel):
     question: str
     expected_answer: str | None = None
     expected_chunk_ids: list[PositiveId] | None = None
+    status: str | None = None
 
     @field_validator("question")
     @classmethod
@@ -54,6 +66,16 @@ class EvalDatasetWriteRequest(BaseModel):
             return None
         return list(dict.fromkeys(value))
 
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str | None) -> str | None:
+        """校验状态值合法性。"""
+        if value is None:
+            return None
+        if value not in {"CANDIDATE", "ACTIVE", "NEEDS_REVIEW", "ARCHIVED"}:
+            raise ValueError("invalid status value")
+        return value
+
     @model_validator(mode="after")
     def require_ground_truth(self) -> Self:
         """人工标准问题至少需要期望答案或期望 chunk。"""
@@ -77,6 +99,7 @@ class EvalDatasetItem(BaseModel):
     source_feedback_id: int | None = None
     created_by: int
     created_at: datetime
+    updated_at: datetime | None = None
 
 
 class CurrentChunkSummaryItem(BaseModel):
@@ -100,7 +123,7 @@ class EvaluationReportItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     kb_id: int
-    eval_version: str
+    eval_version: int
     total_questions: int
     success_count: int
     partial_count: int
@@ -120,3 +143,13 @@ class EvaluationReportItem(BaseModel):
     refusal_count: int
     refusal_rate: float
     eval_at: datetime
+
+
+class EvaluationHistoryPage(BaseModel):
+    """评估历史分页响应及可用版本列表。"""
+
+    items: list[EvaluationReportItem]
+    total: int
+    page: int
+    page_size: int
+    versions: list[int]

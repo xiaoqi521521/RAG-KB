@@ -12,6 +12,20 @@ services:
       - ./deploy/postgres/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro
       - ./app/db/ragkb_full_dump.sql:/tmp/ragkb_full_dump.sql:ro
       - ./deploy/postgres/01-ragkb-full-dump.sql:/docker-entrypoint-initdb.d/01-ragkb-full-dump.sql:ro
+      - ./app/db/migrations/20260903_add_eval_dataset_updated_at.sql:/tmp/eval_dataset_updated_at.sql:ro
+      - ./deploy/postgres/01b-eval-dataset-updated-at.sql:/docker-entrypoint-initdb.d/01b-eval-dataset-updated-at.sql:ro
+      - ./app/db/migrations/20260903_reorder_eval_dataset_columns.sql:/tmp/reorder_eval_dataset_columns.sql:ro
+      - ./deploy/postgres/01c-reorder-eval-dataset-columns.sql:/docker-entrypoint-initdb.d/01c-reorder-eval-dataset-columns.sql:ro
+      - ./app/db/migrations/20260903_reorder_eval_result_columns.sql:/tmp/reorder_eval_result_columns.sql:ro
+      - ./deploy/postgres/01d-reorder-eval-result-columns.sql:/docker-entrypoint-initdb.d/01d-reorder-eval-result-columns.sql:ro
+      - ./app/db/migrations/20260903_convert_eval_version_to_int.sql:/tmp/convert_eval_version_to_int.sql:ro
+      - ./deploy/postgres/01f-convert-eval-version-to-int.sql:/docker-entrypoint-initdb.d/01f-convert-eval-version-to-int.sql:ro
+      - ./app/db/migrations/20260903_add_answer_feedback_updated_at.sql:/tmp/answer_feedback_updated_at.sql:ro
+      - ./deploy/postgres/01e-answer-feedback-updated-at.sql:/docker-entrypoint-initdb.d/01e-answer-feedback-updated-at.sql:ro
+      - ./app/db/migrations/20260903_reorder_chat_message_columns.sql:/tmp/reorder_chat_message_columns.sql:ro
+      - ./deploy/postgres/01f-reorder-chat-message-columns.sql:/docker-entrypoint-initdb.d/01f-reorder-chat-message-columns.sql:ro
+      - ./app/db/migrations/20260903_add_column_comments.sql:/tmp/column_comments.sql:ro
+      - ./deploy/postgres/02-column-comments.sql:/docker-entrypoint-initdb.d/02-column-comments.sql:ro
       - ./deploy/postgres/99-sequence-sync.sql:/docker-entrypoint-initdb.d/99-sequence-sync.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]

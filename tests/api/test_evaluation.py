@@ -27,6 +27,7 @@ def _dataset() -> EvalDataset:
         source_feedback_id=None,
         created_by=7,
         created_at=datetime(2026, 7, 15),
+        updated_at=datetime(2026, 7, 15),
     )
 
 
@@ -85,11 +86,11 @@ class FakeEvaluationDatasetService:
 
 class FakeEvaluationRunService:
     def __init__(self) -> None:
-        self.run_calls: list[tuple[int, str, int]] = []
-        self.history_calls: list[int] = []
+        self.run_calls: list[tuple[int, int, int]] = []
+        self.history_calls: list[tuple[int, int | None]] = []
         self.report = EvaluationReport(
             kb_id=3,
-            eval_version="release-1",
+            eval_version=1,
             total_questions=2,
             success_count=1,
             partial_count=0,
@@ -115,7 +116,7 @@ class FakeEvaluationRunService:
         self,
         *,
         kb_id: int,
-        eval_version: str,
+        eval_version: int | None = None,
         user: CurrentUser,
         rag_executor: object,
         ragas_evaluator: object,
@@ -123,8 +124,8 @@ class FakeEvaluationRunService:
         self.run_calls.append((kb_id, eval_version, user.user_id))
         return self.report
 
-    async def list_history(self, *, kb_id: int):
-        self.history_calls.append(kb_id)
+    async def list_history(self, *, kb_id: int, eval_version: int | None = None):
+        self.history_calls.append((kb_id, eval_version))
         return [self.report]
 
 
@@ -171,6 +172,7 @@ def test_dataset_management_and_chunk_summary_use_admin_guarded_public_api() -> 
         200,
     ]
     assert listed.json()["data"][0]["status"] == "ACTIVE"
+    assert listed.json()["data"][0]["updated_at"] == "2026-07-15T00:00:00"
     assert archived.json()["data"]["status"] == "ARCHIVED"
     chunk = chunks.json()["data"][0]
     assert chunk["chunk_id"] == 10
@@ -218,7 +220,8 @@ def test_run_and_history_are_admin_guarded_and_return_aggregate_only() -> None:
     run_service = FakeEvaluationRunService()
 
     with _client(permission_service, FakeEvaluationDatasetService(), run_service) as client:
-        run_response = client.post("/api/v1/eval/3/run", params={"version": " release-1 "})
+        # 旧客户端即使继续传 version，也不能覆盖后端自动生成的版本。
+        run_response = client.post("/api/v1/eval/3/run", params={"version": "999"})
         history_response = client.get("/api/v1/eval/3/history")
 
     assert run_response.status_code == 200
@@ -229,19 +232,43 @@ def test_run_and_history_are_admin_guarded_and_return_aggregate_only() -> None:
     assert run_response.json()["data"]["context_recall_sample_count"] == 0
     assert run_response.json()["data"]["avg_context_recall"] is None
     assert "dataset_id" not in history_response.json()["data"][0]
-    assert run_service.run_calls == [(3, "release-1", 7)]
-    assert run_service.history_calls == [3]
+    assert run_response.json()["data"]["eval_version"] == 1
+    assert run_service.run_calls == [(3, None, 7)]
+    assert run_service.history_calls == [(3, None)]
     assert permission_service.admin_checks == [3, 3]
 
 
-def test_run_rejects_unstable_version_before_evaluation() -> None:
+def test_history_filters_by_normalized_evaluation_version() -> None:
+    run_service = FakeEvaluationRunService()
+
+    with _client(FakePermissionService(), FakeEvaluationDatasetService(), run_service) as client:
+        response = client.get(
+            "/api/v1/eval/3/history", params={"version": " v1_hybrid_reranker "}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["eval_version"] == 1
+    assert run_service.history_calls == [(3, 1)]
+
+
+def test_history_rejects_invalid_evaluation_version_before_reading_results() -> None:
+    run_service = FakeEvaluationRunService()
+
+    with _client(FakePermissionService(), FakeEvaluationDatasetService(), run_service) as client:
+        response = client.get("/api/v1/eval/3/history", params={"version": "bad version"})
+
+    assert response.status_code == 422
+    assert run_service.history_calls == []
+
+
+def test_run_ignores_client_controlled_version() -> None:
     run_service = FakeEvaluationRunService()
 
     with _client(FakePermissionService(), FakeEvaluationDatasetService(), run_service) as client:
         response = client.post("/api/v1/eval/3/run", params={"version": "bad version"})
 
-    assert response.status_code == 422
-    assert run_service.run_calls == []
+    assert response.status_code == 200
+    assert run_service.run_calls == [(3, None, 7)]
 
 
 def test_permission_failure_stops_run_and_history_before_result_access() -> None:
@@ -249,7 +276,7 @@ def test_permission_failure_stops_run_and_history_before_result_access() -> None
     permission_service = FakePermissionService(status_code=503)
 
     with _client(permission_service, FakeEvaluationDatasetService(), run_service) as client:
-        run_response = client.post("/api/v1/eval/3/run", params={"version": "release-1"})
+        run_response = client.post("/api/v1/eval/3/run", params={"version": "1"})
         history_response = client.get("/api/v1/eval/3/history")
 
     assert run_response.status_code == 503

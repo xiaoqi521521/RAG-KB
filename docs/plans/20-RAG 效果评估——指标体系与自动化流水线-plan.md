@@ -181,9 +181,10 @@ source_feedback_id  BIGINT NULL
 
 ### 5.2 `kb_eval_result`
 
-保留 `dataset_id`、`eval_version`、`actual_answer`、`eval_at`，并调整为：
+保留 `dataset_id`、`eval_version`、`actual_answer`、`eval_at`，其中 `eval_version` 使用与 `kb_document.version` 一致的 `INT4` 版本号（例如旧值 `v1_hybrid_reranker` 转为 `1`），并调整为：
 
 ```plain
+eval_version         INT4 NOT NULL
 hit                 BOOLEAN NULL
 rank                INT NULL
 faithfulness        FLOAT NULL
@@ -480,7 +481,7 @@ GET  /api/v1/eval/{kb_id}/history
 运行接口：
 
 - 同步返回本次聚合报告。
-- `eval_version` 去除首尾空白，长度不超过数据库字段上限，只接受稳定的版本标识字符。
+- `eval_version` 为正整数版本号，与文档 `version` 字段保持一致；旧的 `vN_*` 标识在迁移时提取为 `N`。
 - 同一知识库已有该版本结果时返回 409。
 - 没有 `ACTIVE` 问题时返回 409。
 - 所有题目结果均为 `FAILED` 时仍返回 200。

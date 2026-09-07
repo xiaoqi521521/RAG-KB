@@ -188,6 +188,7 @@ def test_parse_docx():
     assert docs[0].metadata["source"] == "policy.docx"
     assert docs[0].metadata["file_type"] == "DOCX"
     assert docs[0].metadata["page_num"] == 1
+    assert all(doc.metadata["page_num"] is not None for doc in docs)
 
 
 def test_parse_docx_converts_html_table_to_plain_text():
@@ -233,6 +234,7 @@ print("hello")
     assert "这不是标题" not in [doc.metadata.get("section_title") for doc in docs]
     assert all(doc.metadata["source"] == "hr-handbook.md" for doc in docs)
     assert all(doc.metadata["file_type"] == "MD" for doc in docs)
+    assert [doc.metadata["page_num"] for doc in docs] == list(range(1, len(docs) + 1))
     assert all("title" not in doc.metadata for doc in docs)
 
 

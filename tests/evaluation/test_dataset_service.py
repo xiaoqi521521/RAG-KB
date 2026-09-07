@@ -113,6 +113,30 @@ async def test_update_rejects_dataset_that_already_has_evaluation_results() -> N
 
 
 @pytest.mark.asyncio
+async def test_update_and_archive_are_saved_through_the_dataset_repository() -> None:
+    dataset = EvalDataset(
+        id=9,
+        kb_id=3,
+        question="旧问题",
+        expected_answer="旧答案",
+        status=EvalDatasetStatus.ACTIVE.value,
+        created_by=1,
+    )
+    repository = FakeEvaluationRepository(datasets=[dataset])
+    service = EvaluationDatasetService(repository)  # type: ignore[arg-type]
+
+    updated = await service.update_dataset(
+        kb_id=3,
+        dataset_id=9,
+        request=EvalDatasetWriteRequest(question="新问题", expected_answer="新答案"),
+    )
+    archived = await service.archive_dataset(kb_id=3, dataset_id=9)
+
+    assert updated.question == "新问题"
+    assert archived.status == EvalDatasetStatus.ARCHIVED.value
+
+
+@pytest.mark.asyncio
 async def test_archive_is_scoped_and_idempotent_without_physical_delete() -> None:
     dataset = EvalDataset(
         id=9,

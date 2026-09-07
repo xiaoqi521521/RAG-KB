@@ -51,6 +51,19 @@ def test_login_returns_access_token_for_demo_user(monkeypatch: pytest.MonkeyPatc
     assert body["data"]
 
 
+def test_login_returns_access_token_for_hr002_demo_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _client(monkeypatch) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": "hr002", "password": "demo123"},
+        )
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["data"], str)
+
+
 def test_login_rejects_invalid_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     with _client(monkeypatch) as client:
         response = client.post(
@@ -81,3 +94,20 @@ def test_login_token_resolves_demo_identity_on_protected_route(
 
     assert response.status_code == 200
     assert response.json() == {"user_id": 1, "department_id": "HR", "role": "MEMBER"}
+
+
+def test_login_token_resolves_hr002_identity_on_protected_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _client(monkeypatch) as client:
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"username": "hr002", "password": "demo123"},
+        )
+        response = client.get(
+            "/me",
+            headers={"Authorization": f"Bearer {login_response.json()['data']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"user_id": 4, "department_id": "HR", "role": "MEMBER"}

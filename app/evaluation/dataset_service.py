@@ -33,14 +33,15 @@ class EvaluationDatasetService:
         request: EvalDatasetWriteRequest,
         user: CurrentUser,
     ) -> EvalDataset:
-        """创建默认处于 ACTIVE 的人工标准问题。"""
+        """创建默认处于 ACTIVE 的人工标准问题（可通过 status 字段自定义）。"""
         await self._validate_chunk_ids(kb_id, request.expected_chunk_ids)
+        status = request.status or EvalDatasetStatus.ACTIVE.value
         return await self.repository.create_dataset(
             kb_id=kb_id,
             question=request.question,
             expected_answer=request.expected_answer,
             expected_chunk_ids=request.expected_chunk_ids,
-            status=EvalDatasetStatus.ACTIVE.value,
+            status=status,
             created_by=user.user_id,
         )
 
@@ -51,7 +52,7 @@ class EvaluationDatasetService:
         dataset_id: int,
         request: EvalDatasetWriteRequest,
     ) -> EvalDataset:
-        """编辑未参与评估且未归档的标准问题。"""
+        """编辑未参与评估且未归档的标准问题（可更新状态）。"""
         dataset = await self._get_dataset(kb_id, dataset_id)
         if dataset.status == EvalDatasetStatus.ARCHIVED.value:
             raise HTTPException(
@@ -68,6 +69,8 @@ class EvaluationDatasetService:
         dataset.question = request.question
         dataset.expected_answer = request.expected_answer
         dataset.expected_chunk_ids = request.expected_chunk_ids
+        if request.status is not None:
+            dataset.status = request.status
         dataset.review_reason = None
         return await self.repository.save_dataset(dataset)
 

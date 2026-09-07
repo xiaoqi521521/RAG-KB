@@ -20,7 +20,8 @@ INSERT INTO kb_permission (kb_id, subject_type, subject_id, permission, granted_
 VALUES
     (1, 'DEPARTMENT', 'HR',   'WRITE', 1),
     (1, 'DEPARTMENT', 'TECH', 'READ',  1),
-    (1, 'DEPARTMENT', 'PROD', 'READ',  1);
+    (1, 'DEPARTMENT', 'PROD', 'READ',  1),
+    (1, 'USER',       '4',    'ADMIN', 3);
 
 -- 技术知识库：技术部门有写权限
 INSERT INTO kb_permission (kb_id, subject_type, subject_id, permission, granted_by)

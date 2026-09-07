@@ -91,6 +91,16 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     trace_id = raw_trace_id if isinstance(raw_trace_id, str) else None
     token = trace_id_var.set(trace_id)
     try:
+        # 强制输出到 stderr 以确保能看到错误
+        import sys
+        import traceback
+        print(f"\n{'='*80}", file=sys.stderr)
+        print(f"UNHANDLED EXCEPTION in {request.method} {request.url}", file=sys.stderr)
+        print(f"Exception type: {type(exc).__name__}", file=sys.stderr)
+        print(f"Exception: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print(f"{'='*80}\n", file=sys.stderr)
+
         logger.exception(
             "未处理的请求异常：method=%s error_type=%s",
             request.method,

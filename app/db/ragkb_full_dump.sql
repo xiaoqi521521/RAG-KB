@@ -26,14 +26,16 @@ CREATE TABLE "public"."kb_answer_feedback" (
   "user_id" int8 NOT NULL,
   "feedback" int2 NOT NULL,
   "comment" text COLLATE "pg_catalog"."default",
-  "created_at" timestamp(6) NOT NULL DEFAULT now()
+  "created_at" timestamp(6) NOT NULL DEFAULT now(),
+  "updated_at" timestamp(6) NOT NULL DEFAULT now()
 )
 ;
 
 -- ----------------------------
 -- Records of kb_answer_feedback
 -- ----------------------------
-INSERT INTO "public"."kb_answer_feedback" VALUES (1, 28, 1, -1, '回答不完整', '2026-07-16 20:26:50.383506');
+INSERT INTO "public"."kb_answer_feedback" (id, message_id, user_id, feedback, comment, created_at, updated_at)
+VALUES (1, 28, 1, -1, '回答不完整', '2026-07-16 20:26:50.383506', '2026-07-16 20:26:50.383506');
 
 -- ----------------------------
 -- Table structure for kb_chat_message
@@ -48,8 +50,10 @@ CREATE TABLE "public"."kb_chat_message" (
   "token_count" int4 DEFAULT 0,
   "latency_ms" int4 DEFAULT 0,
   "feedback" int2,
-  "created_at" timestamp(6) NOT NULL DEFAULT now(),
-  "kb_ids" int8[]
+  "kb_ids" int8[],
+  "answer_mode" varchar(30) NOT NULL DEFAULT 'knowledge_base',
+  "knowledge_base_searched" bool NOT NULL DEFAULT true,
+  "created_at" timestamp(6) NOT NULL DEFAULT now()
 )
 ;
 COMMENT ON COLUMN "public"."kb_chat_message"."sources" IS 'JSON格式：[{"docId":1,"docName":"手册.pdf","chunkId":100,"pageNum":5,"excerpt":"...","score":0.92}]';
@@ -57,8 +61,8 @@ COMMENT ON COLUMN "public"."kb_chat_message"."sources" IS 'JSON格式：[{"docId
 -- ----------------------------
 -- Records of kb_chat_message
 -- ----------------------------
-INSERT INTO "public"."kb_chat_message" VALUES (1, 'c97d3a94-8fa7-4e97-80cb-6925acb37acd', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 14:21:10.164491', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (2, 'c97d3a94-8fa7-4e97-80cb-6925acb37acd', 'ASSISTANT', '根据参考内容，年假申请流程如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (1, 'c97d3a94-8fa7-4e97-80cb-6925acb37acd', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 14:21:10.164491', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (2, 'c97d3a94-8fa7-4e97-80cb-6925acb37acd', 'ASSISTANT', '根据参考内容，年假申请流程如下：
 
 1. **提交渠道**：所有假期申请须通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。
 2. **审批层级**：年假由主管审批（来源：[参考1]）。
@@ -66,19 +70,19 @@ INSERT INTO "public"."kb_chat_message" VALUES (2, 'c97d3a94-8fa7-4e97-80cb-6925a
 4. **业务繁忙期限制**：每季度末后两周原则上不批准年假（来源：[参考1]）。
 
 在知识库中未找到年假申请的其他具体信息（如紧急情况处理等）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 4981, NULL, '2026-07-14 14:21:10.175859', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (3, '55904dd3-74bf-4936-b17c-3cfa4b105a3c', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 14:25:38.277835', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (4, '55904dd3-74bf-4936-b17c-3cfa4b105a3c', 'ASSISTANT', '根据公司制度，申请年假需通过钉钉OA系统提交申请，审批完成后方可休假（来源：[参考1]）。年假的审批层级为主管（来源：[参考1]）。此外，请注意以下规则：年假须在当年12月31日前使用完毕，不得跨年结转；入职当年年假按实际工作月数折算（不足半月不计）；若连续休假超过5天，须提前10个工作日申请；业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。紧急情况下可先电话通知主管，事后补办手续（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 9398, NULL, '2026-07-14 14:25:38.280335', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (5, 'e94f8eea-15e1-4475-ba49-84081d748bd6', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 14:26:51.164292', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (6, 'e94f8eea-15e1-4475-ba49-84081d748bd6', 'ASSISTANT', '根据公司规定，年假申请需通过钉钉OA系统提交，经主管审批后方可休假（来源：[参考1]）。若年假连续超过5天，须提前10个工作日申请（来源：[参考1]）。业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 6505, NULL, '2026-07-14 14:26:51.166723', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (7, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:02:37.25321', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (8, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后方可休假。审批层级为主管（来源：[参考1]）。若年假连续超过5天，须提前10个工作日申请（来源：[参考1]）。此外，业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。年假须在当年12月31日前使用完毕，不得跨年结转（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932645487353, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 239, 9947, NULL, '2026-07-14 15:02:37.257688', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (9, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'USER', '那需要提前多久申请？', NULL, 0, 0, NULL, '2026-07-14 15:03:12.352212', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (10, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'ASSISTANT', '根据公司制度，年假连续超过5天时，须提前10个工作日申请（来源：[参考1]）。对于不超过5天的年假，知识库中未找到具体的提前申请时间要求（来源：[参考1]）。所有假期申请均须通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6464065124052922, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 212, 8938, NULL, '2026-07-14 15:03:12.353217', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (11, 'e6924c04-8963-4b4c-a6c9-c325f50d38f0', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 15:10:03.367852', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (23, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:21:49.798598', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (25, '44243562-22ad-4675-b5cc-c1bb23607661', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 15:22:43.15138', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (36, 'e8d87a8d-77d0-4498-85a5-96f84efdb3b1', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 115, 6143, NULL, '2026-07-17 14:22:59.230359', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (12, 'e6924c04-8963-4b4c-a6c9-c325f50d38f0', 'ASSISTANT', '根据公司制度，年假申请流程如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (3, '55904dd3-74bf-4936-b17c-3cfa4b105a3c', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 14:25:38.277835', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (4, '55904dd3-74bf-4936-b17c-3cfa4b105a3c', 'ASSISTANT', '根据公司制度，申请年假需通过钉钉OA系统提交申请，审批完成后方可休假（来源：[参考1]）。年假的审批层级为主管（来源：[参考1]）。此外，请注意以下规则：年假须在当年12月31日前使用完毕，不得跨年结转；入职当年年假按实际工作月数折算（不足半月不计）；若连续休假超过5天，须提前10个工作日申请；业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。紧急情况下可先电话通知主管，事后补办手续（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 9398, NULL, '2026-07-14 14:25:38.280335', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (5, 'e94f8eea-15e1-4475-ba49-84081d748bd6', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 14:26:51.164292', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (6, 'e94f8eea-15e1-4475-ba49-84081d748bd6', 'ASSISTANT', '根据公司规定，年假申请需通过钉钉OA系统提交，经主管审批后方可休假（来源：[参考1]）。若年假连续超过5天，须提前10个工作日申请（来源：[参考1]）。业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 6505, NULL, '2026-07-14 14:26:51.166723', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (7, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:02:37.25321', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (8, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后方可休假。审批层级为主管（来源：[参考1]）。若年假连续超过5天，须提前10个工作日申请（来源：[参考1]）。此外，业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。年假须在当年12月31日前使用完毕，不得跨年结转（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932645487353, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 239, 9947, NULL, '2026-07-14 15:02:37.257688', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (9, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'USER', '那需要提前多久申请？', NULL, 0, 0, NULL, '2026-07-14 15:03:12.352212', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (10, '2262991d-3df3-49b7-bc18-b6940c6b4aa9', 'ASSISTANT', '根据公司制度，年假连续超过5天时，须提前10个工作日申请（来源：[参考1]）。对于不超过5天的年假，知识库中未找到具体的提前申请时间要求（来源：[参考1]）。所有假期申请均须通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6464065124052922, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 212, 8938, NULL, '2026-07-14 15:03:12.353217', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (11, 'e6924c04-8963-4b4c-a6c9-c325f50d38f0', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 15:10:03.367852', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (23, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:21:49.798598', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (25, '44243562-22ad-4675-b5cc-c1bb23607661', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 15:22:43.15138', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (36, 'e8d87a8d-77d0-4498-85a5-96f84efdb3b1', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 115, 6143, NULL, '2026-07-17 14:22:59.230359', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (12, 'e6924c04-8963-4b4c-a6c9-c325f50d38f0', 'ASSISTANT', '根据公司制度，年假申请流程如下：
 
 1. **申请渠道**：所有假期申请须通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。
 2. **审批层级**：年假的审批层级为主管（来源：[参考1]）。
@@ -87,22 +91,22 @@ INSERT INTO "public"."kb_chat_message" VALUES (12, 'e6924c04-8963-4b4c-a6c9-c325
 5. **紧急情况**：紧急情况下可先电话通知主管，事后补办手续（来源：[参考1]）。
 
 在知识库中未找到年假申请的其他具体步骤或表格模板。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 312, 9622, NULL, '2026-07-14 15:10:03.374851', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (13, 'f71826cb-efe5-4164-8348-aad52e82158d', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:14:06.705692', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (14, 'f71826cb-efe5-4164-8348-aad52e82158d', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。年假连续超过5天须提前10个工作日申请（来源：[参考1]）。审批层级为主管（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932645487353, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 7823, NULL, '2026-07-14 15:14:06.706693', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (15, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:14:38.743769', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (16, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后方可休假。若年假连续超过5天，须提前10个工作日申请。紧急情况下可先电话通知主管，事后补办手续。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 6377, NULL, '2026-07-14 15:14:38.745062', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (17, '10d6d731-a9b5-49d1-a3f7-7ea56e4c0aee', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:17:32.644388', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (18, '10d6d731-a9b5-49d1-a3f7-7ea56e4c0aee', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后才能休假。审批层级为主管（来源：[参考1]）。如果年假连续超过5天，须提前10个工作日申请（来源：[参考1]）。此外，年假须在当年12月31日前使用完毕，不得跨年结转；业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 5713, NULL, '2026-07-14 15:17:32.644886', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (19, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:18:47.606488', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (20, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请流程如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (13, 'f71826cb-efe5-4164-8348-aad52e82158d', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:14:06.705692', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (14, 'f71826cb-efe5-4164-8348-aad52e82158d', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。年假连续超过5天须提前10个工作日申请（来源：[参考1]）。审批层级为主管（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932645487353, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 7823, NULL, '2026-07-14 15:14:06.706693', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (15, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:14:38.743769', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (16, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后方可休假。若年假连续超过5天，须提前10个工作日申请。紧急情况下可先电话通知主管，事后补办手续。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 6377, NULL, '2026-07-14 15:14:38.745062', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (17, '10d6d731-a9b5-49d1-a3f7-7ea56e4c0aee', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:17:32.644388', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (18, '10d6d731-a9b5-49d1-a3f7-7ea56e4c0aee', 'ASSISTANT', '根据公司制度，年假申请需通过钉钉OA系统提交，审批完成后才能休假。审批层级为主管（来源：[参考1]）。如果年假连续超过5天，须提前10个工作日申请（来源：[参考1]）。此外，年假须在当年12月31日前使用完毕，不得跨年结转；业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 5713, NULL, '2026-07-14 15:17:32.644886', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (19, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:18:47.606488', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (20, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请流程如下：
 
 1. 所有假期申请须通过钉钉OA系统提交，审批完成后方可休假。（来源：[参考1]）
 2. 若年假连续超过5天，须提前10个工作日申请。（来源：[参考1]）
 3. 紧急情况下可先电话通知主管，事后补办手续。（来源：[参考1]）
 
 此外，年假须在当年12月31日前使用完毕，不得跨年结转；业务繁忙期（每季度末后两周）原则上不批准年假。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.7040932645487353, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 6388, NULL, '2026-07-14 15:18:47.607611', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (21, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:20:02.139515', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (22, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请流程及注意事项如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (21, '3997af46-0f99-4582-9127-7492309c7da5', 'USER', '年假怎么申请', NULL, 0, 0, NULL, '2026-07-14 15:20:02.139515', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (22, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请流程及注意事项如下：
 
 1. **申请渠道**：所有假期申请须通过**钉钉OA系统**提交，审批完成后方可休假。（来源：[参考1]）
 2. **提前申请**：若年假连续超过5天，须**提前10个工作日**申请。（来源：[参考1]）
@@ -110,7 +114,7 @@ INSERT INTO "public"."kb_chat_message" VALUES (22, '3997af46-0f99-4582-9127-7492
 4. **使用期限**：年假须在**当年12月31日前**使用完毕，不得跨年结转。（来源：[参考1]）
 5. **限制时段**：**业务繁忙期（每季度末后两周）**原则上不批准年假。（来源：[参考1]）
 6. **审批层级**：年假由**主管**审批。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 6260, NULL, '2026-07-14 15:20:02.142647', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (24, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请流程及规则如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (24, '3997af46-0f99-4582-9127-7492309c7da5', 'ASSISTANT', '根据公司制度，年假申请流程及规则如下：
 
 1. **申请渠道**：所有假期申请须通过**钉钉OA系统**提交，审批完成后方可休假。（来源：[参考1]）
 2. **审批层级**：年假由**主管**审批。（来源：[参考1]）
@@ -120,10 +124,10 @@ INSERT INTO "public"."kb_chat_message" VALUES (24, '3997af46-0f99-4582-9127-7492
 6. **限制时段**：**业务繁忙期（每季度末后两周）**原则上不批准年假。（来源：[参考1]）
 
 此外，入职当年年假按实际工作月数折算（不足半月不计）。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.7040932736534607, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 0, 9015, NULL, '2026-07-14 15:21:49.798598', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (26, '44243562-22ad-4675-b5cc-c1bb23607661', 'ASSISTANT', '年假申请需通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。年假连续超过5天须提前10个工作日申请，业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。年假须在当年12月31日前使用完毕，不得跨年结转（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 192, 8109, NULL, '2026-07-14 15:22:43.152532', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (27, '4401f939-c434-4191-b86b-1e21eca983fd', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 19:23:26.019971', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (29, '33bea8ff-16cf-4e60-82ab-ab414e3035df', 'USER', 'Commit Message 格式', NULL, 0, 0, NULL, '2026-07-14 19:26:30.478564', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (30, '33bea8ff-16cf-4e60-82ab-ab414e3035df', 'ASSISTANT', '根据技术规范文档，Commit Message 必须遵循以下格式：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (26, '44243562-22ad-4675-b5cc-c1bb23607661', 'ASSISTANT', '年假申请需通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。年假连续超过5天须提前10个工作日申请，业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。年假须在当年12月31日前使用完毕，不得跨年结转（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 192, 8109, NULL, '2026-07-14 15:22:43.152532', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (27, '4401f939-c434-4191-b86b-1e21eca983fd', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 19:23:26.019971', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (29, '33bea8ff-16cf-4e60-82ab-ab414e3035df', 'USER', 'Commit Message 格式', NULL, 0, 0, NULL, '2026-07-14 19:26:30.478564', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (30, '33bea8ff-16cf-4e60-82ab-ab414e3035df', 'ASSISTANT', '根据技术规范文档，Commit Message 必须遵循以下格式：
 
 `type(scope): message`
 
@@ -141,10 +145,10 @@ INSERT INTO "public"."kb_chat_message" VALUES (30, '33bea8ff-16cf-4e60-82ab-ab41
 - `fix(order): 修复订单金额计算精度问题`
 
 （来源：[参考1]）', '[{"kb_id": 2, "score": 0.03278688524590164, "excerpt": "技术规范文档 v1.4\n技术委员会 2025 年修订版\n\n第一章 代码规范\n\n1.1 提交规范\n\n所有代码提交必须遵循以下 Commit Message 格式：\n\ntype(scope): message\n\ntype 类型：\n- feat：新功能。\n- fix：Bug 修复。\n- docs：文档修改。\n- refactor：重构，不影响功能。\n- perf：性能优化。\n- test：测试相关。\n-", "chunk_id": 185, "chunk_index": 0, "document_id": 7, "page_number": 1, "document_name": "tech-spec.txt", "section_title": null, "reference_index": 1}]', 272, 7122, NULL, '2026-07-14 19:26:30.480429', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (31, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 19:27:30.60351', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (32, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'ASSISTANT', '根据公司制度，年假申请须通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。审批层级为主管（来源：[参考1]）。此外，如需连续休假超过5天，须提前10个工作日申请；业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 169, 6913, NULL, '2026-07-14 19:27:30.605515', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (33, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 19:34:03.67655', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (34, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'ASSISTANT', '根据公司制度，年假申请流程如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (31, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 19:27:30.60351', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (32, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'ASSISTANT', '根据公司制度，年假申请须通过钉钉OA系统提交，审批完成后方可休假（来源：[参考1]）。审批层级为主管（来源：[参考1]）。此外，如需连续休假超过5天，须提前10个工作日申请；业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 169, 6913, NULL, '2026-07-14 19:27:30.605515', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (33, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-14 19:34:03.67655', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (34, 'da4a7944-b2cb-434b-84d4-8da3570207cc', 'ASSISTANT', '根据公司制度，年假申请流程如下：
 
 1. **申请渠道**：所有假期申请须通过**钉钉OA系统**提交，审批完成后方可休假（来源：[参考1]）。
 2. **审批层级**：年假审批由**主管**审批（来源：[参考1]）。
@@ -153,8 +157,8 @@ INSERT INTO "public"."kb_chat_message" VALUES (34, 'da4a7944-b2cb-434b-84d4-8da3
    - 业务繁忙期（每季度末后两周）原则上不批准年假（来源：[参考1]）。
 
 紧急情况下可先电话通知主管，事后补办手续（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 246, 13145, NULL, '2026-07-14 19:34:03.679124', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (35, 'e8d87a8d-77d0-4498-85a5-96f84efdb3b1', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:22:59.226008', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (28, '4401f939-c434-4191-b86b-1e21eca983fd', 'ASSISTANT', '根据参考内容，年假申请流程如下：
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (35, 'e8d87a8d-77d0-4498-85a5-96f84efdb3b1', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:22:59.226008', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (28, '4401f939-c434-4191-b86b-1e21eca983fd', 'ASSISTANT', '根据参考内容，年假申请流程如下：
 
 1. **申请方式**：所有假期申请须通过**钉钉OA系统**提交，审批完成后方可休假（来源：[参考1]）。
 2. **审批层级**：年假由**主管**审批（来源：[参考1]）。
@@ -162,30 +166,30 @@ INSERT INTO "public"."kb_chat_message" VALUES (28, '4401f939-c434-4191-b86b-1e21
 4. **限制时段**：**业务繁忙期（每季度末后两周）**原则上不批准年假（来源：[参考1]）。
 
 此外，年假须在当年12月31日前使用完毕，不得跨年结转（来源：[参考1]）。', '[{"kb_id": 1, "score": 0.6849306272374274, "excerpt": "第五章 请假制度\n\n5.1 假期类型汇总\n\n[表格]\n假期类型 | 天数 | 薪资待遇 | 审批层级\n年假 | 5-20天 | 全薪 | 主管\n病假(有证明) | 按实际天数 | 按比例发放 | 主管+HR\n事假 | 按实际天数 | 无薪 | 主管\n婚假 | 3天 | 全薪 | 主管+HR\n产假(女) | 158天 | 生育津贴 | HR\n陪产假(男) | 15天 | 全薪 | 主管+HR\n丧假 ", "chunk_id": 175, "chunk_index": 8, "document_id": 6, "page_number": 6, "document_name": "policy.pdf", "section_title": "第五章 请假制度", "reference_index": 1}]', 243, 14424, -1, '2026-07-14 19:23:26.027404', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (37, '5d12c96c-9ca4-41a6-9810-370144e87038', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:24:58.893544', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (38, '5d12c96c-9ca4-41a6-9810-370144e87038', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 131, NULL, '2026-07-17 14:24:58.895148', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (39, '56c50e2e-6c6f-4543-afdb-77b0b7a0da19', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:25:09.801056', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (40, '56c50e2e-6c6f-4543-afdb-77b0b7a0da19', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 56, NULL, '2026-07-17 14:25:09.801544', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (41, '34eb1fe9-432a-4024-9e05-04d22e27f686', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:25:10.92804', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (42, '34eb1fe9-432a-4024-9e05-04d22e27f686', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 11, NULL, '2026-07-17 14:25:10.928537', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (43, '01bdd392-f7d6-4b23-a79f-f3f9c99c0e3a', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:25:12.091763', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (44, '01bdd392-f7d6-4b23-a79f-f3f9c99c0e3a', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 37, NULL, '2026-07-17 14:25:12.092287', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (45, '7417962b-d9a7-4f77-8961-1d7a79dc005e', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 13:41:56.023795', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (46, '7417962b-d9a7-4f77-8961-1d7a79dc005e', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 94, 6744, NULL, '2026-07-23 13:41:56.027271', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (47, '8c48d753-e34b-4354-a7eb-2e5771b700fe', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 15:50:35.262317', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (48, '8c48d753-e34b-4354-a7eb-2e5771b700fe', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 105, 8316, NULL, '2026-07-23 15:50:35.267212', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (49, '7f885e5c-35ef-442c-bf64-e7fb9fcd25c6', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 15:52:48.540657', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (50, '7f885e5c-35ef-442c-bf64-e7fb9fcd25c6', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 109, NULL, '2026-07-23 15:52:48.542376', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (51, '89138573-c83e-40b3-af3b-08c0973c13b3', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 15:54:16.325107', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (52, '89138573-c83e-40b3-af3b-08c0973c13b3', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 82, 3241, NULL, '2026-07-23 15:54:16.325603', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (53, '90b87c17-fa1e-4a8b-9f29-3a23d1755215', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 23:10:07.4716', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (54, '90b87c17-fa1e-4a8b-9f29-3a23d1755215', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 116, 5912, NULL, '2026-07-23 23:10:07.489381', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (55, '9d2325be-9e48-4678-99ca-8732165910c4', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 23:32:59.784048', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (56, '9d2325be-9e48-4678-99ca-8732165910c4', 'ASSISTANT', '根据员工手册，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 121, 5856, NULL, '2026-07-23 23:32:59.79185', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (57, '79957bc2-a143-4afd-b364-6c373c7ca039', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 23:48:19.133288', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (58, '79957bc2-a143-4afd-b364-6c373c7ca039', 'ASSISTANT', '根据公司规定，年假申请需提前 **3 个工作日** 在 **OA 系统** 提交，经 **直属 Leader** 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 113, 4597, NULL, '2026-07-23 23:48:19.135782', '{1}');
-INSERT INTO "public"."kb_chat_message" VALUES (59, '974b50bd-a396-4321-8716-ddceb038727e', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-24 00:03:34.213766', NULL);
-INSERT INTO "public"."kb_chat_message" VALUES (60, '974b50bd-a396-4321-8716-ddceb038727e', 'ASSISTANT', '根据公司规定，年假申请需提前 **3 个工作日** 在 **OA 系统** 提交，经 **直属 Leader** 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 90, 4757, NULL, '2026-07-24 00:03:34.215383', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (37, '5d12c96c-9ca4-41a6-9810-370144e87038', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:24:58.893544', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (38, '5d12c96c-9ca4-41a6-9810-370144e87038', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 131, NULL, '2026-07-17 14:24:58.895148', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (39, '56c50e2e-6c6f-4543-afdb-77b0b7a0da19', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:25:09.801056', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (40, '56c50e2e-6c6f-4543-afdb-77b0b7a0da19', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 56, NULL, '2026-07-17 14:25:09.801544', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (41, '34eb1fe9-432a-4024-9e05-04d22e27f686', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:25:10.92804', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (42, '34eb1fe9-432a-4024-9e05-04d22e27f686', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 11, NULL, '2026-07-17 14:25:10.928537', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (43, '01bdd392-f7d6-4b23-a79f-f3f9c99c0e3a', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-17 14:25:12.091763', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (44, '01bdd392-f7d6-4b23-a79f-f3f9c99c0e3a', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 37, NULL, '2026-07-17 14:25:12.092287', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (45, '7417962b-d9a7-4f77-8961-1d7a79dc005e', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 13:41:56.023795', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (46, '7417962b-d9a7-4f77-8961-1d7a79dc005e', 'ASSISTANT', '年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 94, 6744, NULL, '2026-07-23 13:41:56.027271', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (47, '8c48d753-e34b-4354-a7eb-2e5771b700fe', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 15:50:35.262317', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (48, '8c48d753-e34b-4354-a7eb-2e5771b700fe', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 105, 8316, NULL, '2026-07-23 15:50:35.267212', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (49, '7f885e5c-35ef-442c-bf64-e7fb9fcd25c6', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 15:52:48.540657', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (50, '7f885e5c-35ef-442c-bf64-e7fb9fcd25c6', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 0, 109, NULL, '2026-07-23 15:52:48.542376', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (51, '89138573-c83e-40b3-af3b-08c0973c13b3', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 15:54:16.325107', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (52, '89138573-c83e-40b3-af3b-08c0973c13b3', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 82, 3241, NULL, '2026-07-23 15:54:16.325603', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (53, '90b87c17-fa1e-4a8b-9f29-3a23d1755215', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 23:10:07.4716', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (54, '90b87c17-fa1e-4a8b-9f29-3a23d1755215', 'ASSISTANT', '根据公司规定，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 116, 5912, NULL, '2026-07-23 23:10:07.489381', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (55, '9d2325be-9e48-4678-99ca-8732165910c4', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 23:32:59.784048', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (56, '9d2325be-9e48-4678-99ca-8732165910c4', 'ASSISTANT', '根据员工手册，年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 121, 5856, NULL, '2026-07-23 23:32:59.79185', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (57, '79957bc2-a143-4afd-b364-6c373c7ca039', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-23 23:48:19.133288', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (58, '79957bc2-a143-4afd-b364-6c373c7ca039', 'ASSISTANT', '根据公司规定，年假申请需提前 **3 个工作日** 在 **OA 系统** 提交，经 **直属 Leader** 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 113, 4597, NULL, '2026-07-23 23:48:19.135782', '{1}');
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (59, '974b50bd-a396-4321-8716-ddceb038727e', 'USER', '年假怎么申请？', NULL, 0, 0, NULL, '2026-07-24 00:03:34.213766', NULL);
+INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids) VALUES (60, '974b50bd-a396-4321-8716-ddceb038727e', 'ASSISTANT', '根据公司规定，年假申请需提前 **3 个工作日** 在 **OA 系统** 提交，经 **直属 Leader** 审批后生效。（来源：[参考1]）', '[{"kb_id": 1, "score": 0.03278688524590164, "excerpt": "年假申请需提前 3 个工作日在 OA 系统提交，经直属 Leader 审批后生效。\n\n3.2 病假\n\n员工因病无法正常工作，需：\n1. 当天上午 9 点前通知直属 Leader 和 HR。\n2. 病假超过 3 天需提供医院证明。\n3. 当年累计病假超过 30 天，按事假处理。\n\n3.3 婚假\n\n员工结婚享有 3 天婚假。需提前 1 个月告知 HR，并在婚后 1 个月内提交结婚证复印件。\n\n第四章 ", "chunk_id": 194, "chunk_index": 1, "document_id": 9, "page_number": 1, "document_name": "hr-handbook.txt", "section_title": null, "reference_index": 1}]', 90, 4757, NULL, '2026-07-24 00:03:34.215383', '{1}');
 
 -- ----------------------------
 -- Table structure for kb_chat_session
@@ -582,21 +586,22 @@ CREATE TABLE "public"."kb_eval_dataset" (
   "expected_answer" text COLLATE "pg_catalog"."default",
   "expected_chunk_ids" int8[],
   "created_by" int8 NOT NULL,
-  "created_at" timestamp(6) NOT NULL DEFAULT now(),
   "status" varchar(20) COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'ACTIVE'::character varying,
   "review_reason" varchar(50) COLLATE "pg_catalog"."default",
-  "source_feedback_id" int8
+  "source_feedback_id" int8,
+  "created_at" timestamp(6) NOT NULL DEFAULT now(),
+  "updated_at" timestamp(6) NOT NULL DEFAULT now()
 )
 ;
 
 -- ----------------------------
 -- Records of kb_eval_dataset
 -- ----------------------------
-INSERT INTO "public"."kb_eval_dataset" VALUES (3, 2, 'API 限流策略是什么？', '单用户每分钟最多 100 次调用，采用滑动窗口算法，超出后返回 429 状态码。', NULL, 2, '2026-06-21 07:34:25.257068', 'ACTIVE', NULL, NULL);
-INSERT INTO "public"."kb_eval_dataset" VALUES (4, 2, '代码提交规范有哪些？', 'Commit message 格式为 type(scope): message，type 包括 feat/fix/docs/refactor。', NULL, 2, '2026-06-21 07:34:25.257068', 'ACTIVE', NULL, NULL);
-INSERT INTO "public"."kb_eval_dataset" VALUES (5, 3, '如何申请 API 访问权限？', '在开发者控制台创建 API Key，免费配额为每日 1000 次调用，付费套餐按量计费。', NULL, 3, '2026-06-21 07:34:25.257068', 'ACTIVE', NULL, NULL);
-INSERT INTO "public"."kb_eval_dataset" VALUES (1, 1, '新员工入职第一天需要做什么？', '领取工牌和电脑，配置 VPN 和开发环境，与直属 Leader 完成对齐会，阅读代码规范。', '{193}', 1, '2026-06-21 07:34:25.257068', 'ACTIVE', NULL, NULL);
-INSERT INTO "public"."kb_eval_dataset" VALUES (2, 1, '年假是怎么规定的？', '工作满 1 年未满 10 年享有 5 天年假，工作满 10 年以上享有 10 天年假。', '{193}', 1, '2026-06-21 07:34:25.257068', 'ACTIVE', NULL, NULL);
+INSERT INTO "public"."kb_eval_dataset" (id, kb_id, question, expected_answer, expected_chunk_ids, created_by, status, review_reason, source_feedback_id, created_at, updated_at) VALUES (3, 2, 'API 限流策略是什么？', '单用户每分钟最多 100 次调用，采用滑动窗口算法，超出后返回 429 状态码。', NULL, 2, 'ACTIVE', NULL, NULL, '2026-06-21 07:34:25.257068', '2026-06-21 07:34:25.257068');
+INSERT INTO "public"."kb_eval_dataset" (id, kb_id, question, expected_answer, expected_chunk_ids, created_by, status, review_reason, source_feedback_id, created_at, updated_at) VALUES (4, 2, '代码提交规范有哪些？', 'Commit message 格式为 type(scope): message，type 包括 feat/fix/docs/refactor。', NULL, 2, 'ACTIVE', NULL, NULL, '2026-06-21 07:34:25.257068', '2026-06-21 07:34:25.257068');
+INSERT INTO "public"."kb_eval_dataset" (id, kb_id, question, expected_answer, expected_chunk_ids, created_by, status, review_reason, source_feedback_id, created_at, updated_at) VALUES (5, 3, '如何申请 API 访问权限？', '在开发者控制台创建 API Key，免费配额为每日 1000 次调用，付费套餐按量计费。', NULL, 3, 'ACTIVE', NULL, NULL, '2026-06-21 07:34:25.257068', '2026-06-21 07:34:25.257068');
+INSERT INTO "public"."kb_eval_dataset" (id, kb_id, question, expected_answer, expected_chunk_ids, created_by, status, review_reason, source_feedback_id, created_at, updated_at) VALUES (1, 1, '新员工入职第一天需要做什么？', '领取工牌和电脑，配置 VPN 和开发环境，与直属 Leader 完成对齐会，阅读代码规范。', '{193}', 1, 'ACTIVE', NULL, NULL, '2026-06-21 07:34:25.257068', '2026-06-21 07:34:25.257068');
+INSERT INTO "public"."kb_eval_dataset" (id, kb_id, question, expected_answer, expected_chunk_ids, created_by, status, review_reason, source_feedback_id, created_at, updated_at) VALUES (2, 1, '年假是怎么规定的？', '工作满 1 年未满 10 年享有 5 天年假，工作满 10 年以上享有 10 天年假。', '{193}', 1, 'ACTIVE', NULL, NULL, '2026-06-21 07:34:25.257068', '2026-06-21 07:34:25.257068');
 
 -- ----------------------------
 -- Table structure for kb_eval_result
@@ -605,24 +610,24 @@ DROP TABLE IF EXISTS "public"."kb_eval_result";
 CREATE TABLE "public"."kb_eval_result" (
   "id" int8 NOT NULL DEFAULT nextval('kb_eval_result_id_seq'::regclass),
   "dataset_id" int8 NOT NULL,
-  "eval_version" varchar(50) COLLATE "pg_catalog"."default" NOT NULL,
+  "eval_version" int4 NOT NULL,
+  "actual_answer" text COLLATE "pg_catalog"."default",
   "hit" bool,
   "rank" int4,
-  "actual_answer" text COLLATE "pg_catalog"."default",
   "faithfulness" float8,
   "answer_relevancy" float8,
-  "eval_at" timestamp(6) NOT NULL DEFAULT now(),
   "context_recall" float8,
   "context_precision" float8,
   "status" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
-  "error_type" varchar(100) COLLATE "pg_catalog"."default"
+  "error_type" varchar(100) COLLATE "pg_catalog"."default",
+  "eval_at" timestamp(6) NOT NULL DEFAULT now()
 )
 ;
 
 -- ----------------------------
 -- Records of kb_eval_result
 -- ----------------------------
-INSERT INTO "public"."kb_eval_result" VALUES (1, 2, 'v1_hybrid_reranker', 'f', 2, '根据公司规定，员工年假规定如下：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (1, 2, 1, 'f', 2, '根据公司规定，员工年假规定如下：
 
 - **年假天数按工龄计算**：
   - 工作满1年未满10年：5天（来源：[参考2]）。
@@ -630,14 +635,14 @@ INSERT INTO "public"."kb_eval_result" VALUES (1, 2, 'v1_hybrid_reranker', 'f', 2
   - 工作不满1年：按入职月份折算，每满1个月享有0.4天（来源：[参考2]）。
 
 - **年假申请流程**：需提前3个工作日在OA系统提交，经直属Leader审批后生效（来源：[参考1]）。', 1, 0.8870711265881289, '2026-07-16 17:48:31.020981', 1, 0.49999999995, 'SUCCESS', NULL);
-INSERT INTO "public"."kb_eval_result" VALUES (2, 1, 'v1_hybrid_reranker', 'f', 1, '新员工入职第一天，请按以下步骤完成：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (2, 1, 1, 'f', 1, '新员工入职第一天，请按以下步骤完成：
 
 1. 8:30 前到达前台，凭录用通知书领取工牌。（来源：[参考1]）
 2. 前往 IT 部领取笔记本电脑，并根据《开发环境配置指南》完成环境搭建。（来源：[参考1]）
 3. 与直属 Leader 进行 30 分钟入职对齐会，了解团队和当前工作重点。（来源：[参考1]）
 4. 阅读《代码规范文档》并在 HR 系统签字确认。（来源：[参考1]）
 5. 完成 OA 系统账号激活和基础信息填写。（来源：[参考1]）', NULL, 0.9762825314129917, '2026-07-16 17:48:31.020981', 1, 0.9999999999, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (3, 2, 'v2_hybrid_reranker', 'f', 2, '根据公司员工手册，年假规定如下：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (3, 2, 2, 'f', 2, '根据公司员工手册，年假规定如下：
 
 1. **年假天数**：按工龄计算：
    - 工作满1年未满10年：5天。
@@ -645,7 +650,7 @@ INSERT INTO "public"."kb_eval_result" VALUES (3, 2, 'v2_hybrid_reranker', 'f', 2
    - 工作不满1年：按入职月份折算，每满1个月享有0.4天。（来源：[参考2]）
 
 2. **申请流程**：年假申请需提前3个工作日在OA系统提交，经直属Leader审批后生效。（来源：[参考1]）', NULL, 0.8429950146893352, '2026-07-16 18:05:40.766735', 1, 0.49999999995, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (4, 1, 'v2_hybrid_reranker', 'f', 1, '新员工入职第一天需按以下步骤完成：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (4, 1, 2, 'f', 1, '新员工入职第一天需按以下步骤完成：
 
 1. 8:30 前到达前台，凭录用通知书领取工牌。
 2. 前往 IT 部领取笔记本电脑，并根据《开发环境配置指南》完成环境搭建。
@@ -654,14 +659,14 @@ INSERT INTO "public"."kb_eval_result" VALUES (4, 1, 'v2_hybrid_reranker', 'f', 1
 5. 完成 OA 系统账号激活和基础信息填写。
 
 （来源：[参考1]）', NULL, 0.951796215884425, '2026-07-16 18:05:40.766735', 0.75, 0.9999999999, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (5, 2, 'v3_hybrid_reranker', 'f', 2, '根据公司规定，年假的规定如下：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (5, 2, 3, 'f', 2, '根据公司规定，年假的规定如下：
 
 - 年假天数按工龄计算：
   - 工作满1年未满10年：5天。
   - 工作满10年以上：10天。
   - 工作不满1年：按入职月份折算，每满1个月享有0.4天。（来源：[参考2]）
 - 年假申请需提前3个工作日在OA系统提交，经直属Leader审批后生效。（来源：[参考1]）', 1, 0.8882709483465344, '2026-07-16 19:01:58.792491', 1, 0.49999999995, 'SUCCESS', NULL);
-INSERT INTO "public"."kb_eval_result" VALUES (6, 1, 'v3_hybrid_reranker', 'f', 1, '新员工入职第一天需按以下步骤完成：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (6, 1, 3, 'f', 1, '新员工入职第一天需按以下步骤完成：
 
 1. 8:30前到达前台，凭录用通知书领取工牌。
 2. 前往IT部领取笔记本电脑，并根据《开发环境配置指南》完成环境搭建。
@@ -670,14 +675,14 @@ INSERT INTO "public"."kb_eval_result" VALUES (6, 1, 'v3_hybrid_reranker', 'f', 1
 5. 完成OA系统账号激活和基础信息填写。
 
 （来源：[参考1]）', NULL, 0.9796968689497684, '2026-07-16 19:01:58.792491', 0.75, 0.9999999999, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (7, 2, 'v4_hybrid_reranker', 'f', 2, '年假规定如下：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (7, 2, 4, 'f', 2, '年假规定如下：
 
 - 员工年假按工龄计算：
   - 工作满1年未满10年：5天。
   - 工作满10年以上：10天。
   - 工作不满1年：按入职月份折算，每满1个月享有0.4天。（来源：[参考2]）
 - 年假申请需提前3个工作日在OA系统提交，经直属Leader审批后生效。（来源：[参考1]）', 1, 0.7364469554153784, '2026-07-16 19:05:06.007512', 1, 0.49999999995, 'SUCCESS', NULL);
-INSERT INTO "public"."kb_eval_result" VALUES (8, 1, 'v4_hybrid_reranker', 'f', 1, '根据员工手册，新员工入职第一天需要按以下步骤完成：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (8, 1, 4, 'f', 1, '根据员工手册，新员工入职第一天需要按以下步骤完成：
 
 1. 8:30前到达前台，凭录用通知书领取工牌。
 2. 前往IT部领取笔记本电脑，并根据《开发环境配置指南》完成环境搭建。
@@ -686,7 +691,7 @@ INSERT INTO "public"."kb_eval_result" VALUES (8, 1, 'v4_hybrid_reranker', 'f', 1
 5. 完成OA系统账号激活和基础信息填写。
 
 （来源：[参考1]）', NULL, 0.9796968689497684, '2026-07-16 19:05:06.007512', 0.75, 0.9999999999, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (9, 2, 'v5_hybrid_reranker', 'f', 2, '根据公司员工手册，年假规定如下：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (9, 2, 5, 'f', 2, '根据公司员工手册，年假规定如下：
 
 1. **年假天数**：按工龄计算。
    - 工作满1年未满10年：5天。
@@ -694,7 +699,7 @@ INSERT INTO "public"."kb_eval_result" VALUES (9, 2, 'v5_hybrid_reranker', 'f', 2
    - 工作不满1年：按入职月份折算，每满1个月享有0.4天。（来源：[参考2]）
 
 2. **申请流程**：年假申请需提前3个工作日在OA系统提交，经直属Leader审批后生效。（来源：[参考1]）', NULL, 0.8968841430030213, '2026-07-16 19:35:41.037252', 1, 0.49999999995, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (10, 1, 'v5_hybrid_reranker', 'f', 1, '新员工入职第一天需要按以下步骤完成：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (10, 1, 5, 'f', 1, '新员工入职第一天需要按以下步骤完成：
 
 1. 8:30前到达前台，凭录用通知书领取工牌。
 2. 前往IT部领取笔记本电脑，并根据《开发环境配置指南》完成环境搭建。
@@ -703,13 +708,13 @@ INSERT INTO "public"."kb_eval_result" VALUES (10, 1, 'v5_hybrid_reranker', 'f', 
 5. 完成OA系统账号激活和基础信息填写。
 
 （来源：[参考1]）', NULL, 0.9796968689497684, '2026-07-16 19:35:41.037252', 0.8, 0.9999999999, 'PARTIAL', 'ragas_metric_failed');
-INSERT INTO "public"."kb_eval_result" VALUES (11, 2, 'v6_hybrid_reranker', 'f', 2, '根据公司规定，年假天数按工龄计算：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (11, 2, 6, 'f', 2, '根据公司规定，年假天数按工龄计算：
 - 工作满1年未满10年：5天。
 - 工作满10年以上：10天。
 - 工作不满1年：按入职月份折算，每满1个月享有0.4天。（来源：[参考2]）
 
 年假申请需提前3个工作日在OA系统提交，经直属Leader审批后生效。（来源：[参考1]）', 0.6, 0.7749644986358808, '2026-07-16 20:10:34.35815', 1, 0.49999999995, 'SUCCESS', NULL);
-INSERT INTO "public"."kb_eval_result" VALUES (12, 1, 'v6_hybrid_reranker', 'f', 1, '根据《员工手册》，新员工入职第一天需按以下步骤完成：
+INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer, faithfulness, answer_relevancy, eval_at, context_recall, context_precision, status, error_type) VALUES (12, 1, 6, 'f', 1, '根据《员工手册》，新员工入职第一天需按以下步骤完成：
 
 1. 8:30前到达前台，凭录用通知书领取工牌。
 2. 前往IT部领取笔记本电脑，并根据《开发环境配置指南》完成环境搭建。
@@ -821,6 +826,7 @@ INSERT INTO "public"."kb_permission" VALUES (2, 1, 'DEPARTMENT', 'TECH', 'READ',
 INSERT INTO "public"."kb_permission" VALUES (3, 1, 'DEPARTMENT', 'PROD', 'READ', 1, '2026-06-21 07:34:25.257068');
 INSERT INTO "public"."kb_permission" VALUES (4, 2, 'DEPARTMENT', 'TECH', 'WRITE', 2, '2026-06-21 07:34:25.257068');
 INSERT INTO "public"."kb_permission" VALUES (5, 2, 'DEPARTMENT', 'PROD', 'READ', 2, '2026-06-21 07:34:25.257068');
+INSERT INTO "public"."kb_permission" VALUES (6, 1, 'USER', '4', 'ADMIN', 3, '2026-09-03 00:00:00');
 
 -- ----------------------------
 -- Uniques structure for table kb_answer_feedback
@@ -844,10 +850,6 @@ CREATE INDEX "idx_message_session" ON "public"."kb_chat_message" USING btree (
   "session_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST,
   "created_at" "pg_catalog"."timestamp_ops" ASC NULLS LAST
 );
-
-ALTER TABLE "public"."kb_chat_message"
-  ADD COLUMN IF NOT EXISTS "answer_mode" varchar(30) NOT NULL DEFAULT 'knowledge_base',
-  ADD COLUMN IF NOT EXISTS "knowledge_base_searched" bool NOT NULL DEFAULT true;
 
 -- ----------------------------
 -- Primary Key structure for table kb_chat_message

@@ -24,6 +24,7 @@ from app.schemas.evaluation import (
     CurrentChunkSummaryItem,
     EvalDatasetItem,
     EvalDatasetWriteRequest,
+    EvaluationHistoryPage,
     EvaluationReportItem,
     normalize_eval_version,
 )
@@ -73,43 +74,72 @@ def get_evaluation_ragas_evaluator() -> GenerationEvaluator:
 @router.post("/{kb_id}/run")
 async def run_evaluation(
     kb_id: int,
-    version: str = Query(...),
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
     run_service: EvaluationRunService = Depends(get_evaluation_run_service),
     rag_executor: EvaluationRagExecutor = Depends(get_evaluation_rag_executor),
     ragas_evaluator: GenerationEvaluator = Depends(get_evaluation_ragas_evaluator),
 ) -> ApiResponse[EvaluationReportItem]:
-    """同步运行当前 V4 管道并返回本次检索聚合报告。"""
+    """同步运行当前 V4 管道并自动使用下一个评估版本。"""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Starting evaluation run: kb_id=%s user_id=%s", kb_id, user.user_id)
+
     await permission_service.require_admin(kb_id, user)
-    try:
-        eval_version = normalize_eval_version(version)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="评估版本格式无效",
-        ) from exc
     report = await run_service.run(
         kb_id=kb_id,
-        eval_version=eval_version,
         user=user,
         rag_executor=rag_executor,
         ragas_evaluator=ragas_evaluator,
     )
+    logger.info("Evaluation run completed: kb_id=%s eval_version=%s", kb_id, report.eval_version)
     return ApiResponse.ok(EvaluationReportItem.model_validate(report))
+
 
 
 @router.get("/{kb_id}/history")
 async def list_evaluation_history(
     kb_id: int,
+    version: str | None = Query(default=None),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
     user: CurrentUser = Depends(get_current_user),
     permission_service: PermissionService = Depends(get_permission_service),
     run_service: EvaluationRunService = Depends(get_evaluation_run_service),
-) -> ApiResponse[list[EvaluationReportItem]]:
-    """按评估时间倒序返回聚合历史，不暴露逐题结果。"""
+) -> ApiResponse[list[EvaluationReportItem] | EvaluationHistoryPage]:
+    """按评估时间倒序返回聚合历史，分页参数存在时附带总数和版本列表。"""
     await permission_service.require_admin(kb_id, user)
-    reports = await run_service.list_history(kb_id=kb_id)
-    return ApiResponse.ok([EvaluationReportItem.model_validate(item) for item in reports])
+    eval_version = None
+    if version is not None:
+        try:
+            eval_version = normalize_eval_version(version)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="评估版本格式无效",
+            ) from exc
+    if page is None and page_size is None:
+        reports = await run_service.list_history(kb_id=kb_id, eval_version=eval_version)
+        return ApiResponse.ok([EvaluationReportItem.model_validate(item) for item in reports])
+    effective_page = page or 1
+    effective_page_size = page_size or 10
+    offset = (effective_page - 1) * effective_page_size
+    reports = await run_service.list_history(
+        kb_id=kb_id,
+        eval_version=eval_version,
+        limit=effective_page_size,
+        offset=offset,
+    )
+    total = await run_service.count_history(kb_id=kb_id, eval_version=eval_version)
+    versions = await run_service.list_history_versions(kb_id=kb_id)
+    data = EvaluationHistoryPage(
+        items=[EvaluationReportItem.model_validate(item) for item in reports],
+        total=total,
+        page=effective_page,
+        page_size=effective_page_size,
+        versions=versions,
+    )
+    return ApiResponse.ok(data)
 
 
 @router.get("/{kb_id}/dataset")

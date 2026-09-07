@@ -39,7 +39,7 @@ class EvaluationReport:
     """一个知识库评估版本的检索聚合报告。"""
 
     kb_id: int
-    eval_version: str
+    eval_version: int
     total_questions: int
     success_count: int
     partial_count: int
@@ -77,6 +77,9 @@ class EvaluationRepository:
         statement = select(EvalDataset).where(EvalDataset.kb_id == kb_id)
         if status is not None:
             statement = statement.where(EvalDataset.status == status)
+        else:
+            # 归档是取消点踩候选后的软删除状态，默认业务列表不应继续展示。
+            statement = statement.where(EvalDataset.status != EvalDatasetStatus.ARCHIVED.value)
         result = await self.session.execute(
             statement.order_by(EvalDataset.created_at.desc(), EvalDataset.id.desc())
         )
@@ -132,7 +135,7 @@ class EvaluationRepository:
         result = await self.session.execute(statement)
         return bool(result.scalar_one())
 
-    async def version_exists(self, *, kb_id: int, eval_version: str) -> bool:
+    async def version_exists(self, *, kb_id: int, eval_version: int) -> bool:
         """按标准问题所属知识库检查评估版本是否已经存在。"""
         statement = select(
             select(EvalResult.id)
@@ -146,6 +149,16 @@ class EvaluationRepository:
         result = await self.session.execute(statement)
         return bool(result.scalar_one())
 
+    async def next_report_version(self, *, kb_id: int) -> int:
+        """返回目标知识库下一个评估版本号。"""
+        statement = (
+            select(func.coalesce(func.max(EvalResult.eval_version), 0) + 1)
+            .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
+            .where(EvalDataset.kb_id == kb_id)
+        )
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
     async def save_results(self, results: list[EvalResult]) -> None:
         """在当前请求事务中一次加入并刷新全部逐题结果。"""
         self.session.add_all(results)
@@ -155,7 +168,7 @@ class EvaluationRepository:
         self,
         *,
         kb_id: int,
-        eval_version: str,
+        eval_version: int,
     ) -> EvaluationReport | None:
         """读取目标知识库的单个评估版本聚合报告。"""
         result = await self.session.execute(
@@ -164,10 +177,45 @@ class EvaluationRepository:
         row = result.one_or_none()
         return self._report_from_row(kb_id, row) if row is not None else None
 
-    async def list_reports(self, *, kb_id: int) -> list[EvaluationReport]:
-        """按评估时间倒序列出目标知识库的版本聚合报告。"""
-        result = await self.session.execute(self._report_statement(kb_id=kb_id))
+    async def list_reports(
+        self,
+        *,
+        kb_id: int,
+        eval_version: int | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[EvaluationReport]:
+        """按评估时间倒序列出报告，可按评估版本精确过滤和分页。"""
+        statement = self._report_statement(kb_id=kb_id)
+        if eval_version is not None:
+            statement = statement.where(EvalResult.eval_version == eval_version)
+        if limit is not None:
+            statement = statement.offset(offset).limit(limit)
+        result = await self.session.execute(statement)
         return [self._report_from_row(kb_id, row) for row in result.all()]
+
+    async def count_reports(self, *, kb_id: int, eval_version: int | None = None) -> int:
+        """统计知识库中可展示的评估版本数。"""
+        report_statement = self._report_statement(kb_id=kb_id).order_by(None)
+        if eval_version is not None:
+            report_statement = report_statement.where(EvalResult.eval_version == eval_version)
+        statement = select(func.count()).select_from(
+            report_statement.subquery()
+        )
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
+    async def list_report_versions(self, *, kb_id: int) -> list[int]:
+        """列出知识库全部评估版本，供最新报告筛选使用。"""
+        statement = (
+            select(EvalResult.eval_version)
+            .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
+            .where(EvalDataset.kb_id == kb_id)
+            .group_by(EvalResult.eval_version)
+            .order_by(func.max(EvalResult.eval_at).desc())
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
 
     async def list_valid_chunk_ids(
         self,

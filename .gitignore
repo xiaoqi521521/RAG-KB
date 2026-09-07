@@ -5,12 +5,19 @@
 docs/logs/
 
 .venv/
+venv/
 .uv-cache/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 __pycache__/
 *.py[cod]
+*.log
+*.pid
 
 .idea/
 .drawio-tmp/
+.claude/
+.codebase-memory/
+.scratch/runtime/
+.git-commit-message.txt

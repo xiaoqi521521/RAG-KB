@@ -11,7 +11,7 @@ declare module 'axios' {
 
 const instance = axios.create({
   baseURL: '/api/v1',
-  timeout: 60000,
+  timeout: 300000, // 5分钟，评估任务可能需要较长时间
   headers: { 'Content-Type': 'application/json' },
 });
 

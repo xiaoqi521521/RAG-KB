@@ -263,6 +263,13 @@ class AnswerFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=shanghai_now_naive,
+        server_default=SHANGHAI_NOW_SQL,
+        onupdate=shanghai_now_naive,
+    )
 
 
 class EvalDataset(Base):
@@ -280,6 +287,7 @@ class EvalDataset(Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     expected_answer: Mapped[str | None] = mapped_column(Text)
     expected_chunk_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -288,9 +296,15 @@ class EvalDataset(Base):
     )
     review_reason: Mapped[str | None] = mapped_column(String(50))
     source_feedback_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
-    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=shanghai_now_naive,
+        server_default=SHANGHAI_NOW_SQL,
+        onupdate=shanghai_now_naive,
     )
 
 
@@ -321,10 +335,10 @@ class EvalResult(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    eval_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    eval_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_answer: Mapped[str | None] = mapped_column(Text)
     hit: Mapped[bool | None] = mapped_column(Boolean)
     rank: Mapped[int | None] = mapped_column(Integer)
-    actual_answer: Mapped[str | None] = mapped_column(Text)
     faithfulness: Mapped[float | None] = mapped_column(Float)
     answer_relevancy: Mapped[float | None] = mapped_column(Float)
     context_recall: Mapped[float | None] = mapped_column(Float)
