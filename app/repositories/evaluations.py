@@ -58,6 +58,7 @@ class EvaluationReport:
     avg_context_precision: float | None
     refusal_count: int
     refusal_rate: float
+    duration_ms: int | None
     eval_at: datetime
 
 
@@ -331,6 +332,7 @@ class EvaluationRepository:
             cast(total_questions, Float), 0.0
         )
         evaluated_at = func.max(EvalResult.eval_at)
+        duration_ms = func.max(EvalResult.duration_ms)
 
         return (
             select(
@@ -363,6 +365,7 @@ class EvaluationRepository:
                 func.avg(EvalResult.context_precision).label("avg_context_precision"),
                 refusal_count.label("refusal_count"),
                 refusal_rate.label("refusal_rate"),
+                duration_ms.label("duration_ms"),
                 evaluated_at.label("eval_at"),
             )
             .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
@@ -395,5 +398,6 @@ class EvaluationRepository:
             avg_context_precision=values["avg_context_precision"],
             refusal_count=values["refusal_count"],
             refusal_rate=values["refusal_rate"],
+            duration_ms=values["duration_ms"],
             eval_at=values["eval_at"],
         )

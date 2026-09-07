@@ -109,6 +109,7 @@ async def test_version_and_report_queries_are_scoped_through_dataset_knowledge_b
         assert f"count(kb_eval_result.{metric})" in report_sql
         assert f"avg(kb_eval_result.{metric})" in report_sql
     assert "kb_eval_result.actual_answer =" in report_sql
+    assert "max(kb_eval_result.duration_ms)" in report_sql
     assert "ORDER BY max(kb_eval_result.eval_at) DESC" in report_sql
 
 

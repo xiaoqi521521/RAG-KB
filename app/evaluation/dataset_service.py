@@ -52,18 +52,29 @@ class EvaluationDatasetService:
         dataset_id: int,
         request: EvalDatasetWriteRequest,
     ) -> EvalDataset:
-        """编辑未参与评估且未归档的标准问题（可更新状态）。"""
+        """编辑标准问题；已归档记录可编辑，未归档已评估记录仅允许归档。"""
         dataset = await self._get_dataset(kb_id, dataset_id)
-        if dataset.status == EvalDatasetStatus.ARCHIVED.value:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="已归档标准问题不能编辑",
-            )
-        if await self.repository.has_results(dataset_id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="已参与评估的标准问题不能原地修改，请归档后新建",
-            )
+        if dataset.status != EvalDatasetStatus.ARCHIVED.value:
+            has_results = await self.repository.has_results(dataset_id)
+            if has_results and request.status != EvalDatasetStatus.ARCHIVED.value:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="已参与评估的标准问题不能原地修改，请归档后新建",
+                )
+            if has_results and (
+                request.question != dataset.question
+                or request.expected_answer != dataset.expected_answer
+                or request.expected_chunk_ids != dataset.expected_chunk_ids
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="已参与评估的标准问题仅允许归档，不能同时修改内容",
+                )
+            if has_results:
+                # 归档只改状态，不校验旧标注是否仍指向当前文档版本。
+                dataset.status = EvalDatasetStatus.ARCHIVED.value
+                dataset.review_reason = None
+                return await self.repository.save_dataset(dataset)
 
         await self._validate_chunk_ids(kb_id, request.expected_chunk_ids)
         dataset.question = request.question

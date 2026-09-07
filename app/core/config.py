@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     token_budget_daily_cny: Decimal = Field(default=Decimal("1.00"), gt=0)
     token_budget_timezone: str = "Asia/Shanghai"
     token_request_alert_cost_cny: Decimal = Field(default=Decimal("0.01"), gt=0)
+    prometheus_base_url: str = "http://prometheus:9090"
+    prometheus_query_timeout_seconds: float = Field(default=5.0, gt=0)
 
     embedding_input_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)
     chat_input_cost_cny_per_1k_tokens: Decimal = Field(default=Decimal("0"), ge=0)
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
     reranker_endpoint: str
     reranker_model: str = "qwen3-rerank"
     reranker_timeout_ms: int = 800
+    reranker_max_retries: int = Field(default=1, ge=0, le=2)
     reranker_top_n: int = 5
 
     rag_chunk_size: int = 512
@@ -80,6 +83,7 @@ class Settings(BaseSettings):
     rag_context_max_tokens: int = 3000
     rag_faithfulness_sample_rate: float = Field(default=0.2, ge=0, le=1)
     rag_faithfulness_timeout_seconds: float = Field(default=5.0, gt=0)
+    evaluation_rag_concurrency: int = Field(default=4, ge=1, le=16)
 
     max_upload_file_size_mb: int = 50
     max_upload_request_size_mb: int = 100

@@ -268,6 +268,7 @@ def test_eval_result_model_and_sql_define_metric_constraints():
         "context_precision",
         "status",
         "error_type",
+        "duration_ms",
         "eval_at",
     ]
     assert columns["hit"].nullable is True
@@ -276,11 +277,13 @@ def test_eval_result_model_and_sql_define_metric_constraints():
     assert columns["context_precision"].nullable is True
     assert columns["status"].nullable is False
     assert columns["error_type"].nullable is True
+    assert columns["duration_ms"].nullable is True
     assert {constraint.name for constraint in EvalResult.__table__.constraints} >= {
         "uq_eval_result_dataset_version",
         "ck_eval_result_status",
         "ck_eval_result_rank",
         "ck_eval_result_scores",
+        "ck_eval_result_duration",
     }
 
     schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
@@ -289,10 +292,17 @@ def test_eval_result_model_and_sql_define_metric_constraints():
     assert "context_precision FLOAT" in schema_sql
     assert "status              VARCHAR(20)     NOT NULL" in schema_sql
     assert "error_type          VARCHAR(100)" in schema_sql
+    assert "duration_ms         INTEGER" in schema_sql
     assert "uq_eval_result_dataset_version" in schema_sql
     assert schema_sql.index("eval_version") < schema_sql.index("actual_answer")
     assert schema_sql.index("actual_answer") < schema_sql.index("hit")
     assert schema_sql.index("error_type") < schema_sql.index("eval_at")
+
+    duration_migration_sql = Path(
+        "app/db/migrations/20260907_add_eval_duration.sql"
+    ).read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS duration_ms INTEGER" in duration_migration_sql
+    assert "ck_eval_result_duration" in duration_migration_sql
 
     migration_sql = Path("app/db/migrations/20260715_extend_eval_result.sql").read_text(
         encoding="utf-8"

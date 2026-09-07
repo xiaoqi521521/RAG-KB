@@ -75,7 +75,7 @@ async def update_dataset(
     dataset_id: int,
     request: EvalDatasetWriteRequest,
 ) -> EvalDataset:
-    """编辑未参与评估且未归档的标准问题（可更新状态）。"""
+    """编辑标准问题；已归档记录可编辑，未归档已评估记录仅允许归档。"""
     dataset = await self._get_dataset(kb_id, dataset_id)
     # ... 校验逻辑 ...
     

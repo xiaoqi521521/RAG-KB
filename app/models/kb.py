@@ -331,6 +331,10 @@ class EvalResult(Base):
             "(context_precision IS NULL OR context_precision BETWEEN 0.0 AND 1.0)",
             name="ck_eval_result_scores",
         ),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0",
+            name="ck_eval_result_duration",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -345,6 +349,7 @@ class EvalResult(Base):
     context_precision: Mapped[float | None] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     error_type: Mapped[str | None] = mapped_column(String(100))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
     eval_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )

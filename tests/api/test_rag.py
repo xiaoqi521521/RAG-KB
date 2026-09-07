@@ -145,6 +145,7 @@ class FakeSettings:
     rag_min_score: float = 0.5
     rag_rrf_k: int = 60
     reranker_timeout_ms: int = 800
+    reranker_max_retries: int = 1
     reranker_top_n: int = 5
     rag_faithfulness_sample_rate: float = 0.2
     rag_faithfulness_timeout_seconds: float = 5

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 import time
+import asyncio
 from dataclasses import dataclass
 
 import httpx
 
-from app.integrations.dashscope import DashScopeRerankerClient
+from app.integrations.dashscope import DashScopeRerankerClient, RerankApiResponse
 from app.repositories.chunks import ChunkSearchHit
 
 logger = logging.getLogger(__name__)
@@ -28,12 +29,21 @@ class RerankResult:
 class RerankerService:
     """Reranker 编排服务，负责精排映射和失败降级。"""
 
-    def __init__(self, *, client: DashScopeRerankerClient, top_n: int) -> None:
+    def __init__(
+        self,
+        *,
+        client: DashScopeRerankerClient,
+        top_n: int,
+        max_retries: int = 0,
+    ) -> None:
         """初始化精排服务依赖。"""
         if top_n <= 0:
             raise ValueError("top_n must be positive")
+        if isinstance(max_retries, bool) or not 0 <= max_retries <= 2:
+            raise ValueError("max_retries must be between 0 and 2")
         self.client = client
         self.top_n = top_n
+        self.max_retries = max_retries
 
     async def rerank(
         self,
@@ -66,7 +76,7 @@ class RerankerService:
             )
 
         try:
-            response = await self.client.rerank(
+            response = await self._invoke_with_retry(
                 query=question.strip(),
                 documents=[hit.content for hit in candidates],
                 top_n=effective_top_n,
@@ -137,6 +147,31 @@ class RerankerService:
                 )
             )
         return sorted(mapped, key=lambda hit: hit.score, reverse=True)
+
+    async def _invoke_with_retry(
+        self,
+        *,
+        query: str,
+        documents: list[str],
+        top_n: int,
+    ) -> RerankApiResponse:
+        """对瞬时超时做有限重试；最终失败仍交由调用方降级。"""
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self.client.rerank(
+                    query=query,
+                    documents=documents,
+                    top_n=top_n,
+                )
+            except httpx.TimeoutException:
+                if attempt >= self.max_retries:
+                    raise
+                logger.warning(
+                    "[Reranker] 精排超时，准备重试：attempt=%s max_retries=%s",
+                    attempt + 1,
+                    self.max_retries,
+                )
+                await asyncio.sleep(0.2)
 
     def _degrade(
         self,

@@ -113,6 +113,98 @@ async def test_update_rejects_dataset_that_already_has_evaluation_results() -> N
 
 
 @pytest.mark.asyncio
+async def test_update_allows_evaluated_dataset_to_be_archived_without_content_change() -> None:
+    dataset = EvalDataset(
+        id=9,
+        kb_id=3,
+        question="旧问题",
+        expected_answer="旧答案",
+        expected_chunk_ids=[10],
+        status=EvalDatasetStatus.ACTIVE.value,
+        created_by=1,
+    )
+    repository = FakeEvaluationRepository(datasets=[dataset], evaluated_ids={9})
+    service = EvaluationDatasetService(repository)  # type: ignore[arg-type]
+
+    archived = await service.update_dataset(
+        kb_id=3,
+        dataset_id=9,
+        request=EvalDatasetWriteRequest(
+            question="旧问题",
+            expected_answer="旧答案",
+            expected_chunk_ids=[10],
+            status=EvalDatasetStatus.ARCHIVED.value,
+        ),
+    )
+
+    assert archived is dataset
+    assert archived.status == EvalDatasetStatus.ARCHIVED.value
+    assert archived.question == "旧问题"
+    assert archived.expected_chunk_ids == [10]
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_content_change_while_archiving_evaluated_dataset() -> None:
+    dataset = EvalDataset(
+        id=9,
+        kb_id=3,
+        question="旧问题",
+        expected_answer="旧答案",
+        expected_chunk_ids=[10],
+        status=EvalDatasetStatus.ACTIVE.value,
+        created_by=1,
+    )
+    repository = FakeEvaluationRepository(datasets=[dataset], evaluated_ids={9})
+    service = EvaluationDatasetService(repository)  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.update_dataset(
+            kb_id=3,
+            dataset_id=9,
+            request=EvalDatasetWriteRequest(
+                question="新问题",
+                expected_answer="旧答案",
+                expected_chunk_ids=[10],
+                status=EvalDatasetStatus.ARCHIVED.value,
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "已参与评估的标准问题仅允许归档，不能同时修改内容"
+    assert dataset.status == EvalDatasetStatus.ACTIVE.value
+    assert dataset.question == "旧问题"
+
+
+@pytest.mark.asyncio
+async def test_update_allows_archived_dataset_with_historical_results() -> None:
+    dataset = EvalDataset(
+        id=9,
+        kb_id=3,
+        question="旧问题",
+        expected_answer="旧答案",
+        status=EvalDatasetStatus.ARCHIVED.value,
+        created_by=1,
+    )
+    repository = FakeEvaluationRepository(datasets=[dataset], evaluated_ids={9})
+    service = EvaluationDatasetService(repository)  # type: ignore[arg-type]
+
+    updated = await service.update_dataset(
+        kb_id=3,
+        dataset_id=9,
+        request=EvalDatasetWriteRequest(
+            question="修订后问题",
+            expected_answer="修订后答案",
+            status=EvalDatasetStatus.ACTIVE.value,
+        ),
+    )
+
+    assert updated is dataset
+    assert updated.question == "修订后问题"
+    assert updated.expected_answer == "修订后答案"
+    assert updated.status == EvalDatasetStatus.ACTIVE.value
+
+
+@pytest.mark.asyncio
 async def test_update_and_archive_are_saved_through_the_dataset_repository() -> None:
     dataset = EvalDataset(
         id=9,

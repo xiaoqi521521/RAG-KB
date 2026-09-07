@@ -109,6 +109,7 @@ class FakeEvaluationRunService:
             avg_context_precision=0.7,
             refusal_count=1,
             refusal_rate=0.5,
+            duration_ms=1234,
             eval_at=datetime(2026, 7, 15),
         )
 

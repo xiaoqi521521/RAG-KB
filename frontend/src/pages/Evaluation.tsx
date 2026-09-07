@@ -53,6 +53,20 @@ function formatRate(value: number | null | undefined): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function formatDuration(value: number | null | undefined): string {
+  if (value == null) {
+    return '--';
+  }
+  if (value < 1000) {
+    return `${value}ms`;
+  }
+  const seconds = value / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}s`;
+  }
+  return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+}
+
 function getErrorDetail(error: unknown): string | undefined {
   const data = (error as { response?: { data?: { message?: string; detail?: string } } })?.response
     ?.data;
@@ -358,13 +372,71 @@ export default function EvalPage() {
 
   const reportCards = latestReport
     ? [
-        { label: '命中率@5', value: formatRate(latestReport.hit_rate_at_5) },
-        { label: 'MRR@5', value: formatRate(latestReport.mrr_at_5) },
-        { label: '忠实度', value: formatRate(latestReport.avg_faithfulness) },
-        { label: '答案相关性', value: formatRate(latestReport.avg_answer_relevancy) },
-        { label: '上下文召回', value: formatRate(latestReport.avg_context_recall) },
-        { label: '上下文精度', value: formatRate(latestReport.avg_context_precision) },
-        { label: '拒答率', value: formatRate(latestReport.refusal_rate) },
+        {
+          label: '命中率@5',
+          value: formatRate(latestReport.hit_rate_at_5),
+          rate: latestReport.hit_rate_at_5,
+        },
+        {
+          label: 'MRR@5',
+          value: formatRate(latestReport.mrr_at_5),
+          rate: latestReport.mrr_at_5,
+        },
+        {
+          label: '忠实度',
+          value: formatRate(latestReport.avg_faithfulness),
+          rate: latestReport.avg_faithfulness,
+        },
+        {
+          label: '答案相关性',
+          value: formatRate(latestReport.avg_answer_relevancy),
+          rate: latestReport.avg_answer_relevancy,
+        },
+        {
+          label: '上下文召回',
+          value: formatRate(latestReport.avg_context_recall),
+          rate: latestReport.avg_context_recall,
+        },
+        {
+          label: '上下文精度',
+          value: formatRate(latestReport.avg_context_precision),
+          rate: latestReport.avg_context_precision,
+        },
+        {
+          label: '拒答率',
+          value: formatRate(latestReport.refusal_rate),
+          rate: latestReport.refusal_rate,
+        },
+      ]
+    : [];
+
+  const runSummary = latestReport
+    ? [
+        {
+          label: '评估耗时',
+          value: formatDuration(latestReport.duration_ms),
+          tone: 'text-ink',
+        },
+        {
+          label: '题量',
+          value: String(latestReport.total_questions),
+          tone: 'text-ink',
+        },
+        {
+          label: '成功',
+          value: String(latestReport.success_count),
+          tone: 'text-pine',
+        },
+        {
+          label: '部分成功',
+          value: String(latestReport.partial_count),
+          tone: 'text-amber',
+        },
+        {
+          label: '失败',
+          value: String(latestReport.failed_count),
+          tone: 'text-seal',
+        },
       ]
     : [];
 
@@ -383,6 +455,12 @@ export default function EvalPage() {
       render: (value: string) => (
         <span className="font-data text-[12px]">{dayjs(value).format('MM-DD HH:mm')}</span>
       ),
+    },
+    {
+      title: '耗时',
+      key: 'duration_ms',
+      width: 90,
+      render: (_: unknown, record: EvaluationReport) => formatDuration(record.duration_ms),
     },
     {
       title: '题量',
@@ -655,16 +733,28 @@ export default function EvalPage() {
           <>
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3 mt-4">
               {reportCards.map((card) => (
-                <div key={card.label} className="border border-line bg-[#f7f8f4] p-3">
+                <div
+                  key={card.label}
+                  className="min-h-[96px] border border-line bg-[#f7f8f4] p-3 flex flex-col"
+                >
                   <div className="eyebrow">{card.label}</div>
                   <div className="font-data text-[19px] mt-1.5">{card.value}</div>
+                  <div className="score-track mt-auto">
+                    <div
+                      className="score-fill"
+                      style={{ width: `${Math.min(100, Math.max(0, (card.rate ?? 0) * 100))}%` }}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
-            <div className="grid grid-cols-3 gap-3 mt-3 text-[12.5px]">
-              <div>成功 {latestReport.success_count}</div>
-              <div>部分成功 {latestReport.partial_count}</div>
-              <div>失败 {latestReport.failed_count}</div>
+            <div className="mt-3 border-t border-line pt-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-x-6 gap-y-3">
+              {runSummary.map((item) => (
+                <div key={item.label}>
+                  <div className="eyebrow">{item.label}</div>
+                  <div className={`font-data text-[13.5px] mt-1 ${item.tone}`}>{item.value}</div>
+                </div>
+              ))}
             </div>
           </>
         ) : (

@@ -157,6 +157,7 @@ class InMemoryEvaluationRepository:
             avg_context_precision=precision,
             refusal_count=0,
             refusal_rate=0.0,
+            duration_ms=results[0].duration_ms,
             eval_at=results[0].eval_at,
         )
 

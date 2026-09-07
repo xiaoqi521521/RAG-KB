@@ -182,6 +182,12 @@ export interface TokenStats {
   currency: string;
 }
 
+export interface DailyUsagePoint {
+  date: string;
+  tokens: number;
+  cost: string;
+}
+
 export interface EvalDataset {
   id: number;
   kb_id: number;

@@ -142,6 +142,7 @@ class EvaluationReportItem(BaseModel):
     avg_context_precision: float | None = None
     refusal_count: int
     refusal_rate: float
+    duration_ms: int | None = None
     eval_at: datetime
 
 

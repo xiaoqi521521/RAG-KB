@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -184,6 +185,7 @@ class FakeEvaluationRepository:
             refusal_count=sum(result.actual_answer == RAG_REFUSAL_ANSWER for result in results),
             refusal_rate=sum(result.actual_answer == RAG_REFUSAL_ANSWER for result in results)
             / len(results),
+            duration_ms=results[0].duration_ms,
             eval_at=results[0].eval_at,
         )
 
@@ -386,6 +388,143 @@ async def test_run_maps_actual_execution_content_to_all_ragas_scores() -> None:
     ) == (0.9, 0.8, 0.7, 0.6)
     assert result.status == EvalResultStatus.SUCCESS.value
     assert result.error_type is None
+
+
+@pytest.mark.asyncio
+async def test_run_evaluates_eligible_questions_concurrently() -> None:
+    repository = FakeEvaluationRepository(
+        datasets=[
+            _dataset(1, [10], expected_answer="期望答案一"),
+            _dataset(2, [20], expected_answer="期望答案二"),
+            _dataset(3, [30], expected_answer="期望答案三"),
+        ]
+    )
+    executor = FakeRagExecutor(
+        [
+            _execution([10]),
+            _execution([20]),
+            _execution([30]),
+        ]
+    )
+
+    class ConcurrentRagasEvaluator:
+        def __init__(self) -> None:
+            self.samples: list[RagasEvaluationSample] = []
+            self.active_count = 0
+            self.max_active_count = 0
+
+        async def evaluate(self, sample: RagasEvaluationSample) -> RagasEvaluationResult:
+            self.samples.append(sample)
+            self.active_count += 1
+            self.max_active_count = max(self.max_active_count, self.active_count)
+            await asyncio.sleep(0)
+            self.active_count -= 1
+            return RagasEvaluationResult(
+                faithfulness=0.9,
+                answer_relevancy=0.8,
+                context_recall=0.7,
+                context_precision=0.6,
+                errors=(),
+            )
+
+    ragas = ConcurrentRagasEvaluator()
+    service = EvaluationRunService(repository=repository)  # type: ignore[arg-type]
+
+    report = await service.run(
+        kb_id=3,
+        eval_version="concurrent-generation",
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=ragas,  # type: ignore[arg-type]
+    )
+
+    assert ragas.max_active_count == 3
+    assert [sample.question for sample in ragas.samples] == ["问题 1", "问题 2", "问题 3"]
+    results = repository.saved_batches[0]
+    assert [result.dataset_id for result in results] == [1, 2, 3]
+    assert report.eval_version == "concurrent-generation"
+
+
+@pytest.mark.asyncio
+async def test_run_limits_concurrent_rag_execution_and_keeps_result_order() -> None:
+    repository = FakeEvaluationRepository(
+        datasets=[
+            _dataset(1, [10]),
+            _dataset(2, [20]),
+            _dataset(3, [30]),
+        ]
+    )
+
+    class BoundedRagExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.active_count = 0
+            self.max_active_count = 0
+
+        async def execute(
+            self,
+            *,
+            question: str,
+            kb_ids: list[int],
+            user: CurrentUser,
+        ):
+            self.calls.append(question)
+            self.active_count += 1
+            self.max_active_count = max(self.max_active_count, self.active_count)
+            dataset_id = int(question.rsplit(" ", 1)[-1])
+            await asyncio.sleep((3 - dataset_id) * 0.01)
+            self.active_count -= 1
+            return _execution([dataset_id * 10])
+
+    executor = BoundedRagExecutor()
+    service = EvaluationRunService(
+        repository=repository,  # type: ignore[arg-type]
+        rag_concurrency=2,
+    )
+
+    report = await service.run(
+        kb_id=3,
+        eval_version="bounded-rag",
+        user=_user(),
+        rag_executor=executor,  # type: ignore[arg-type]
+        ragas_evaluator=FakeRagasEvaluator([]),
+    )
+
+    assert executor.max_active_count == 2
+    assert len(executor.calls) == 3
+    assert [result.dataset_id for result in repository.saved_batches[0]] == [1, 2, 3]
+    assert report.eval_version == "bounded-rag"
+
+
+@pytest.mark.asyncio
+async def test_run_stores_one_duration_for_all_questions_in_version() -> None:
+    repository = FakeEvaluationRepository(datasets=[_dataset(1, [10], expected_answer="期望答案")])
+    executor = FakeRagExecutor([_execution([10])])
+    ragas = FakeRagasEvaluator(
+        [
+            RagasEvaluationResult(
+                faithfulness=0.9,
+                answer_relevancy=0.8,
+                context_recall=0.7,
+                context_precision=0.6,
+                errors=(),
+            )
+        ]
+    )
+    service = EvaluationRunService(repository=repository)  # type: ignore[arg-type]
+
+    report = await service.run(
+        kb_id=3,
+        eval_version="duration-1",
+        user=_user(),
+        rag_executor=executor,
+        ragas_evaluator=ragas,
+    )
+
+    [result] = repository.saved_batches[0]
+    assert result.duration_ms is not None
+    assert result.duration_ms >= 0
+    assert report.duration_ms == result.duration_ms
 
 
 @pytest.mark.asyncio

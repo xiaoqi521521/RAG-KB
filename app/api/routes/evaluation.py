@@ -4,12 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
+from app.api.dependencies import get_app_token_metrics
 from app.api.routes.knowledge_bases import get_permission_service
-from app.api.routes.rag import RagQueryPipeline, get_rag_query_service
+from app.api.routes.rag import build_rag_query_service, get_faithfulness_metrics
 from app.core.clients import get_chat_model, get_embeddings
-from app.core.config import get_settings
-from app.core.context import CurrentUser
-from app.core.database import get_db
+from app.core.config import Settings, get_settings
+from app.core.context import CurrentUser, current_user_var
+from app.core.database import AsyncSessionLocal, get_db
 from app.evaluation.dataset_service import EvaluationDatasetService
 from app.evaluation.ragas_evaluator import RagasEvaluator
 from app.evaluation.service import (
@@ -30,6 +31,8 @@ from app.schemas.evaluation import (
 )
 from app.services.permissions import PermissionService
 from app.services.rag_query_v4 import RagQueryServiceV4
+from app.services.faithfulness_evaluator import FaithfulnessMetrics
+from app.services.token_metrics import TokenUsageRecorder
 
 router = APIRouter()
 
@@ -43,21 +46,77 @@ def get_evaluation_dataset_service(
 
 def get_evaluation_run_service(
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> EvaluationRunService:
     """构建评估结果读写和运行编排服务。"""
-    return EvaluationRunService(repository=EvaluationRepository(session))
+    return EvaluationRunService(
+        repository=EvaluationRepository(session),
+        rag_concurrency=settings.evaluation_rag_concurrency,
+    )
+
+
+class SessionScopedEvaluationRagExecutor:
+    """为每次评估题创建独立数据库会话，支持有界并行执行。"""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        token_metrics: TokenUsageRecorder,
+        faithfulness_metrics: FaithfulnessMetrics,
+    ) -> None:
+        self.settings = settings
+        self.token_metrics = token_metrics
+        self.faithfulness_metrics = faithfulness_metrics
+
+    async def execute(
+        self,
+        *,
+        question: str,
+        kb_ids: list[int],
+        user: CurrentUser,
+    ):
+        """在独立会话中执行单题 V4 管道，避免共享 AsyncSession 并发冲突。"""
+        current_user_token = current_user_var.set(user)
+        try:
+            async with AsyncSessionLocal() as session:
+                rag_service = build_rag_query_service(
+                    session=session,
+                    settings=self.settings,
+                    token_metrics=self.token_metrics,
+                    faithfulness_metrics=self.faithfulness_metrics,
+                    permission_service=get_permission_service(session),
+                )
+                if not isinstance(rag_service, RagQueryServiceV4):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="正式评估要求启用 V4 RAG 管道",
+                    )
+                return await rag_service.execute(
+                    question=question,
+                    kb_ids=kb_ids,
+                    user=user,
+                )
+        finally:
+            current_user_var.reset(current_user_token)
 
 
 def get_evaluation_rag_executor(
-    rag_service: RagQueryPipeline = Depends(get_rag_query_service),
+    settings: Settings = Depends(get_settings),
+    token_metrics: TokenUsageRecorder = Depends(get_app_token_metrics),
+    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
 ) -> EvaluationRagExecutor:
-    """校验正式运行复用的是当前部署 V4 共享执行接口。"""
-    if not isinstance(rag_service, RagQueryServiceV4):
+    """校验当前部署启用 V4 管道，并返回支持并发的评估执行器。"""
+    if settings.rag_query_pipeline != "v4":
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="正式评估要求启用 V4 RAG 管道",
         )
-    return rag_service
+    return SessionScopedEvaluationRagExecutor(
+        settings=settings,
+        token_metrics=token_metrics,
+        faithfulness_metrics=faithfulness_metrics,
+    )
 
 
 def get_evaluation_ragas_evaluator() -> GenerationEvaluator:

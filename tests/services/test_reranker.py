@@ -42,6 +42,25 @@ class FakeRerankerClient:
         return self.response
 
 
+class SequenceRerankerClient:
+    def __init__(self, responses: list[RerankApiResponse | Exception]) -> None:
+        self.responses = responses
+        self.calls = 0
+
+    async def rerank(
+        self,
+        *,
+        query: str,
+        documents: list[str],
+        top_n: int,
+    ) -> RerankApiResponse:
+        outcome = self.responses[self.calls]
+        self.calls += 1
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 @pytest.mark.asyncio
 async def test_rerank_maps_provider_indexes_back_to_original_hits(caplog: pytest.LogCaptureFixture) -> None:
     client = FakeRerankerClient(
@@ -106,6 +125,46 @@ async def test_rerank_degrades_to_rrf_top_n_when_provider_times_out(caplog: pyte
     assert result.degraded is True
     assert result.degraded_reason == "reranker_timeout"
     assert "[Reranker] 精排失败或超时，降级使用 RRF 分数：timeout" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_rerank_retries_timeout_before_success() -> None:
+    client = SequenceRerankerClient(
+        [
+            httpx.TimeoutException("first timeout"),
+            RerankApiResponse(
+                results=[RerankApiResult(index=0, relevance_score=0.9)],
+                total_tokens=10,
+            ),
+        ]
+    )
+    service = RerankerService(client=client, top_n=2, max_retries=1)
+
+    result = await service.rerank(question="question", candidates=[_hit(10), _hit(11), _hit(12)])
+
+    assert result.degraded is False
+    assert result.degraded_reason is None
+    assert [hit.chunk_id for hit in result.hits] == [10]
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_rerank_degrades_after_retry_timeout_is_exhausted() -> None:
+    client = SequenceRerankerClient(
+        [
+            httpx.TimeoutException("first timeout"),
+            httpx.TimeoutException("second timeout"),
+        ]
+    )
+    service = RerankerService(client=client, top_n=2, max_retries=1)
+    candidates = [_hit(10), _hit(11), _hit(12)]
+
+    result = await service.rerank(question="question", candidates=candidates)
+
+    assert result.degraded is True
+    assert result.degraded_reason == "reranker_timeout"
+    assert result.hits == candidates[:2]
+    assert client.calls == 2
 
 
 @pytest.mark.asyncio

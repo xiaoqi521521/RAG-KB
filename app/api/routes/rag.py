@@ -82,12 +82,12 @@ def get_query_cache_service(
     )
 
 
-def get_rag_query_service(
-    session: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-    token_metrics: TokenMetrics = Depends(get_token_metrics),
-    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
-    permission_service: PermissionService = Depends(get_permission_service),
+def build_rag_query_service(
+    session: AsyncSession,
+    settings: Settings,
+    token_metrics: TokenMetrics,
+    faithfulness_metrics: FaithfulnessMetrics,
+    permission_service: PermissionService,
 ) -> RagQueryPipeline:
     """根据配置构建 RAG 查询服务及其依赖。
 
@@ -176,6 +176,7 @@ def get_rag_query_service(
             reranker=RerankerService(
                 client=DashScopeRerankerClient(settings=settings),
                 top_n=settings.reranker_top_n,
+                max_retries=settings.reranker_max_retries,
             ),
             confidence_filter=ConfidenceFilter(min_score=settings.rag_min_score),
             context_trimmer=ContextTrimmer(
@@ -197,6 +198,23 @@ def get_rag_query_service(
         )
 
     raise ValueError("rag_query_pipeline must be 'v1', 'v2', 'v3' or 'v4'")
+
+
+def get_rag_query_service(
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    token_metrics: TokenMetrics = Depends(get_token_metrics),
+    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
+    permission_service: PermissionService = Depends(get_permission_service),
+) -> RagQueryPipeline:
+    """根据当前请求依赖构建 RAG 查询服务。"""
+    return build_rag_query_service(
+        session=session,
+        settings=settings,
+        token_metrics=token_metrics,
+        faithfulness_metrics=faithfulness_metrics,
+        permission_service=permission_service,
+    )
 
 
 @router.post("/query")
