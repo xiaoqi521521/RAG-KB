@@ -2,6 +2,8 @@
 
 状态：设计已收敛，尚未实施。
 
+> 更新说明：本方案的 Token 指标出口决策已被 ADR 0011 取代——全量指标统一通过 OpenTelemetry API 记录，经 `opentelemetry-exporter-prometheus` 由 `/metrics` 暴露，指标名与标签保持不变，`prometheus_client` 仅作为 exposition 层保留。下文保留原始设计供追溯。
+
 本文基于当前代码、`CONTEXT.md`、ADR-0006、项目 `.env` 和用户确认的设计决策，目标是把现有三类 Token 统计扩展为可导出、可查看、可告警的六类 Token 监控，同时保留当前用户累计用量接口。
 
 ## 1. 设计结论
