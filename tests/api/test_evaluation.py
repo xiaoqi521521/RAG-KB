@@ -136,17 +136,36 @@ class FakeEvaluationRunService:
         return [self.report]
 
 
+class FakeBudgetGate:
+    def __init__(self) -> None:
+        self.request_scope_calls = 0
+
+    def request_scope(self) -> "FakeBudgetGate":
+        return self
+
+    async def __aenter__(self) -> None:
+        self.request_scope_calls += 1
+        return None
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+
 def _client(
     permission_service: FakePermissionService,
     dataset_service: FakeEvaluationDatasetService,
     run_service: FakeEvaluationRunService | None = None,
+    budget_gate: FakeBudgetGate | None = None,
 ) -> TestClient:
     from app.api.routes import evaluation
+
+    budget_gate = budget_gate or FakeBudgetGate()
 
     app = FastAPI()
     app.include_router(evaluation.router, prefix="/api/v1/eval")
     app.dependency_overrides[evaluation.get_current_user] = lambda: _user()
     app.dependency_overrides[evaluation.get_permission_service] = lambda: permission_service
+    app.dependency_overrides[evaluation.get_token_budget_gate] = lambda: budget_gate
     app.dependency_overrides[evaluation.get_evaluation_dataset_service] = lambda: dataset_service
     if run_service is not None:
         app.dependency_overrides[evaluation.get_evaluation_run_service] = lambda: run_service
@@ -225,8 +244,14 @@ def test_permission_failure_stops_before_dataset_or_chunk_reads() -> None:
 def test_run_and_history_are_admin_guarded_and_return_aggregate_only() -> None:
     permission_service = FakePermissionService()
     run_service = FakeEvaluationRunService()
+    budget_gate = FakeBudgetGate()
 
-    with _client(permission_service, FakeEvaluationDatasetService(), run_service) as client:
+    with _client(
+        permission_service,
+        FakeEvaluationDatasetService(),
+        run_service,
+        budget_gate,
+    ) as client:
         # 旧客户端即使继续传 version，也不能覆盖后端自动生成的版本。
         run_response = client.post("/api/v1/eval/3/run", params={"version": "999"})
         history_response = client.get("/api/v1/eval/3/history")
@@ -238,6 +263,7 @@ def test_run_and_history_are_admin_guarded_and_return_aggregate_only() -> None:
     assert run_response.json()["data"]["refusal_rate"] == 0.5
     assert run_response.json()["data"]["context_recall_sample_count"] == 0
     assert run_response.json()["data"]["avg_context_recall"] is None
+    assert budget_gate.request_scope_calls == 1
     assert "dataset_id" not in history_response.json()["data"][0]
     assert run_response.json()["data"]["eval_version"] == 1
     assert run_service.run_calls == [(3, None, 7)]
@@ -249,9 +275,7 @@ def test_history_filters_by_normalized_evaluation_version() -> None:
     run_service = FakeEvaluationRunService()
 
     with _client(FakePermissionService(), FakeEvaluationDatasetService(), run_service) as client:
-        response = client.get(
-            "/api/v1/eval/3/history", params={"version": " v1_hybrid_reranker "}
-        )
+        response = client.get("/api/v1/eval/3/history", params={"version": " v1_hybrid_reranker "})
 
     assert response.status_code == 200
     assert response.json()["data"][0]["eval_version"] == 1

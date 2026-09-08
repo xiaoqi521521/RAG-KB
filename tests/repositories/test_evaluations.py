@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+from decimal import Decimal
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from app.models import EvalResult, EvalResultStatus
+from app.models import EvalResult, EvalResultStatus, EvalRunUsage
 from app.repositories.evaluations import EvaluationRepository
 
 
@@ -32,6 +33,7 @@ class RecordingSession:
     def __init__(self) -> None:
         self.statements: list[Any] = []
         self.added_batches: list[list[Any]] = []
+        self.added_instances: list[Any] = []
         self.flush_count = 0
 
     async def execute(self, statement: Any) -> FakeResult:
@@ -40,6 +42,9 @@ class RecordingSession:
 
     def add_all(self, instances: list[Any]) -> None:
         self.added_batches.append(instances)
+
+    def add(self, instance: Any) -> None:
+        self.added_instances.append(instance)
 
     async def flush(self) -> None:
         self.flush_count += 1
@@ -79,9 +84,7 @@ async def test_chunk_validation_and_summary_queries_enforce_current_published_sc
         assert "kb_document.is_deleted IS false" in statement
     assert "kb_doc_chunk.id IN" in validation_sql
     assert "left(kb_doc_chunk.content," in summary_sql
-    assert "kb_doc_chunk.content" not in summary_sql.replace(
-        "left(kb_doc_chunk.content,", ""
-    )
+    assert "kb_doc_chunk.content" not in summary_sql.replace("left(kb_doc_chunk.content,", "")
 
 
 @pytest.mark.asyncio
@@ -114,7 +117,7 @@ async def test_version_and_report_queries_are_scoped_through_dataset_knowledge_b
 
 
 @pytest.mark.asyncio
-async def test_save_results_adds_and_flushes_one_final_batch() -> None:
+async def test_save_results_adds_results_and_run_usage_in_one_flush() -> None:
     session = RecordingSession()
     repository = EvaluationRepository(session)  # type: ignore[arg-type]
     results = [
@@ -128,7 +131,21 @@ async def test_save_results_adds_and_flushes_one_final_batch() -> None:
         )
     ]
 
-    await repository.save_results(results)
+    run_usage = EvalRunUsage(
+        kb_id=3,
+        eval_version=1,
+        generation_usage_tokens=100,
+        generation_estimated_cost_cny=Decimal("0.001000"),
+        ragas_input_tokens=10,
+        ragas_evaluation_tokens=5,
+        ragas_embedding_tokens=2,
+        ragas_input_cost_cny=Decimal("0.000010"),
+        ragas_evaluation_cost_cny=Decimal("0.000010"),
+        ragas_embedding_cost_cny=Decimal("0.000001"),
+    )
+
+    await repository.save_results(results, run_usage=run_usage)
 
     assert session.added_batches == [results]
+    assert session.added_instances == [run_usage]
     assert session.flush_count == 1

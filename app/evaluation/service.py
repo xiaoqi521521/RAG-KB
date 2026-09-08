@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 import time
 from typing import Protocol
@@ -20,7 +20,13 @@ from app.evaluation.ragas_evaluator import (
     RagasEvaluationResult,
     RagasEvaluationSample,
 )
-from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
+from app.models import (
+    EvalDataset,
+    EvalDatasetStatus,
+    EvalResult,
+    EvalResultStatus,
+    EvalRunUsage,
+)
 from app.repositories.evaluations import EvaluationReport, EvaluationRepository
 from app.services.token_budget import (
     GlobalTokenBudgetGate,
@@ -35,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EvaluationUsageCollector:
-    """按题累计评估期间模型消耗，随评估结果逐题落库。"""
+    """按题累计 RAG 执行期间的模型消耗，run 完成后统一汇总。"""
 
     usage_tokens: int = 0
     estimated_cost_cny: Decimal = Decimal("0")
@@ -84,7 +90,7 @@ class GenerationEvaluator(Protocol):
 
 
 class EvaluationRunService:
-    """有界并行执行 RAG，并并发执行题目级 RAGAS 后原子保存结果。"""
+    """有界并行执行 RAG，并并发执行题目级 RAGAS 后原子保存结果与 run 用量。"""
 
     def __init__(
         self,
@@ -214,18 +220,27 @@ class EvaluationRunService:
                 )
             return phase
 
-        await asyncio.gather(
-            *(execute_dataset(dataset) for dataset in datasets)
-        )
+        await asyncio.gather(*(execute_dataset(dataset) for dataset in datasets))
 
         # RAGAS 不使用请求数据库会话；每题 RAG 完成后立即启动评分，
         # 让评分与仍在执行的其他题目 RAG 重叠。
         ragas_results = await asyncio.gather(*ragas_tasks, return_exceptions=True)
-        ragas_phases_by_dataset = dict(
-            zip(ragas_dataset_ids, ragas_results, strict=True)
-        )
+        ragas_phases_by_dataset = dict(zip(ragas_dataset_ids, ragas_results, strict=True))
 
         usage = ragas_evaluator.usage
+        generation_usage_tokens = sum(
+            phase.usage_collector.usage_tokens
+            for phase in rag_phases_by_dataset.values()
+            if phase.usage_collector is not None
+        )
+        generation_estimated_cost_cny = sum(
+            (
+                phase.usage_collector.estimated_cost_cny
+                for phase in rag_phases_by_dataset.values()
+                if phase.usage_collector is not None
+            ),
+            Decimal("0"),
+        ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
         if self.token_metrics is not None and usage.total_tokens > 0:
             # 判定调用的输入与输出分桶计价，与在线管道口径一致；不归属任何个人。
             token_metrics = self.token_metrics
@@ -250,6 +265,43 @@ class EvaluationRunService:
                 kb_id=kb_id,
                 user_scoped=False,
             )
+
+        ragas_input_cost_cny = (
+            self.token_metrics.estimate_cost(
+                tokens=usage.llm_prompt_tokens,
+                token_type="input",
+            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            if self.token_metrics is not None
+            else Decimal("0")
+        )
+        ragas_evaluation_cost_cny = (
+            self.token_metrics.estimate_cost(
+                tokens=usage.llm_completion_tokens,
+                token_type="evaluation",
+            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            if self.token_metrics is not None
+            else Decimal("0")
+        )
+        ragas_embedding_cost_cny = (
+            self.token_metrics.estimate_cost(
+                tokens=usage.embedding_tokens,
+                token_type="embedding",
+            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            if self.token_metrics is not None
+            else Decimal("0")
+        )
+        run_usage = EvalRunUsage(
+            kb_id=kb_id,
+            eval_version=eval_version,
+            generation_usage_tokens=generation_usage_tokens,
+            generation_estimated_cost_cny=generation_estimated_cost_cny,
+            ragas_input_tokens=usage.llm_prompt_tokens,
+            ragas_evaluation_tokens=usage.llm_completion_tokens,
+            ragas_embedding_tokens=usage.embedding_tokens,
+            ragas_input_cost_cny=ragas_input_cost_cny,
+            ragas_evaluation_cost_cny=ragas_evaluation_cost_cny,
+            ragas_embedding_cost_cny=ragas_embedding_cost_cny,
+        )
 
         results: list[EvalResult] = []
         for dataset in datasets:
@@ -277,7 +329,7 @@ class EvaluationRunService:
             result.duration_ms = duration_ms
 
         try:
-            await self.repository.save_results(results)
+            await self.repository.save_results(results, run_usage=run_usage)
         except IntegrityError as exc:
             # 并发运行由数据库唯一约束兜底，整个请求事务随后统一回滚。
             raise HTTPException(
@@ -288,20 +340,6 @@ class EvaluationRunService:
         report = await self.repository.get_report(kb_id=kb_id, eval_version=eval_version)
         if report is None:
             raise RuntimeError("evaluation report missing after result persistence")
-        if self.token_metrics is not None and usage.total_tokens > 0:
-            # 报告费用 = 逐题落库的生成消耗 + 本次 RAGAS 判定消耗，凑齐"这次评估花了多少"。
-            ragas_cost = (
-                self.token_metrics.estimate_cost(tokens=usage.llm_prompt_tokens, token_type="input")
-                + self.token_metrics.estimate_cost(
-                    tokens=usage.llm_completion_tokens,
-                    token_type="evaluation",
-                )
-                + self.token_metrics.estimate_cost(tokens=usage.embedding_tokens, token_type="embedding")
-            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
-            report = replace(
-                report,
-                estimated_cost_cny=(report.estimated_cost_cny or Decimal("0")) + ragas_cost,
-            )
         return report
 
     async def list_history(
@@ -342,7 +380,7 @@ class EvaluationRunService:
         user: CurrentUser,
         rag_executor: EvaluationRagExecutor,
         evaluated_at: datetime,
-        ) -> _RagPhase:
+    ) -> _RagPhase:
         """执行单题 RAG，并准备可并发执行的 RAGAS 输入。"""
         usage_collector = EvaluationUsageCollector()
         try:
@@ -369,8 +407,6 @@ class EvaluationRunService:
                     actual_answer=None,
                     status=EvalResultStatus.FAILED.value,
                     error_type="rag_execution_failed",
-                    usage_tokens=0,
-                    estimated_cost_cny=Decimal("0"),
                     eval_at=evaluated_at,
                 ),
                 usage_collector=usage_collector,
@@ -393,17 +429,13 @@ class EvaluationRunService:
                     actual_answer=execution.public_response.answer,
                     status=EvalResultStatus.PARTIAL.value,
                     error_type="reranker_degraded",
-                    usage_tokens=0,
-                    estimated_cost_cny=Decimal("0"),
                     eval_at=evaluated_at,
                 ),
                 usage_collector=usage_collector,
             )
 
         actual_answer = (
-            RAG_REFUSAL_ANSWER
-            if execution.explicit_refusal
-            else execution.public_response.answer
+            RAG_REFUSAL_ANSWER if execution.explicit_refusal else execution.public_response.answer
         )
         hit: bool | None = None
         rank: int | None = None
@@ -434,8 +466,6 @@ class EvaluationRunService:
                 rank=rank,
                 actual_answer=actual_answer,
                 status=EvalResultStatus.SUCCESS.value,
-                usage_tokens=0,
-                estimated_cost_cny=Decimal("0"),
                 eval_at=evaluated_at,
             )
 
@@ -505,8 +535,7 @@ class EvaluationRunService:
                 logger.info(
                     "RAGAS question evaluation partial: failed_metrics=%s error_types=%s",
                     ",".join(error.metric.value for error in generation.errors) or "unknown",
-                    ",".join(error.error_type.value for error in generation.errors)
-                    or "unknown",
+                    ",".join(error.error_type.value for error in generation.errors) or "unknown",
                 )
 
         return EvalResult(
@@ -521,9 +550,5 @@ class EvaluationRunService:
             context_precision=context_precision,
             status=result_status,
             error_type=error_type,
-            usage_tokens=phase.usage_collector.usage_tokens,
-            estimated_cost_cny=phase.usage_collector.estimated_cost_cny.quantize(
-                Decimal("0.000001"), rounding=ROUND_HALF_UP
-            ),
             eval_at=phase.evaluated_at,
         )

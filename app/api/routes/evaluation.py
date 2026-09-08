@@ -160,22 +160,25 @@ async def run_evaluation(
     run_service: EvaluationRunService = Depends(get_evaluation_run_service),
     rag_executor: EvaluationRagExecutor = Depends(get_evaluation_rag_executor),
     ragas_evaluator: GenerationEvaluator = Depends(get_evaluation_ragas_evaluator),
+    budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
 ) -> ApiResponse[EvaluationReportItem]:
     """同步运行当前 V4 管道并自动使用下一个评估版本。"""
     import logging
+
     logger = logging.getLogger(__name__)
     logger.info("Starting evaluation run: kb_id=%s user_id=%s", kb_id, user.user_id)
 
     await permission_service.require_admin(kb_id, user)
-    report = await run_service.run(
-        kb_id=kb_id,
-        user=user,
-        rag_executor=rag_executor,
-        ragas_evaluator=ragas_evaluator,
-    )
+    # 评估是一整批模型调用，纳入同一请求成本观测；超阈值时复用全局高成本告警。
+    async with budget_gate.request_scope():
+        report = await run_service.run(
+            kb_id=kb_id,
+            user=user,
+            rag_executor=rag_executor,
+            ragas_evaluator=ragas_evaluator,
+        )
     logger.info("Evaluation run completed: kb_id=%s eval_version=%s", kb_id, report.eval_version)
     return ApiResponse.ok(EvaluationReportItem.model_validate(report))
-
 
 
 @router.get("/{kb_id}/history")

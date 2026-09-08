@@ -105,7 +105,7 @@ class InMemoryEvaluationRepository:
     async def version_exists(self, *, kb_id: int, eval_version: str) -> bool:
         return eval_version in self.results
 
-    async def save_results(self, results: list[EvalResult]) -> None:
+    async def save_results(self, results: list[EvalResult], *, run_usage: object) -> None:
         self.results[results[0].eval_version] = results
 
     async def get_report(self, *, kb_id: int, eval_version: str) -> EvaluationReport | None:
@@ -122,9 +122,7 @@ class InMemoryEvaluationRepository:
 
         def average(attribute: str) -> tuple[int, float | None]:
             values = [
-                value
-                for result in results
-                if (value := getattr(result, attribute)) is not None
+                value for result in results if (value := getattr(result, attribute)) is not None
             ]
             return len(values), sum(values) / len(values) if values else None
 
@@ -136,8 +134,12 @@ class InMemoryEvaluationRepository:
             kb_id=kb_id,
             eval_version=version,
             total_questions=len(results),
-            success_count=sum(result.status == EvalResultStatus.SUCCESS.value for result in results),
-            partial_count=sum(result.status == EvalResultStatus.PARTIAL.value for result in results),
+            success_count=sum(
+                result.status == EvalResultStatus.SUCCESS.value for result in results
+            ),
+            partial_count=sum(
+                result.status == EvalResultStatus.PARTIAL.value for result in results
+            ),
             failed_count=sum(result.status == EvalResultStatus.FAILED.value for result in results),
             retrieval_sample_count=len(retrieval),
             hit_count=hit_count,
@@ -620,10 +622,7 @@ async def test_feedback_candidate_trace_reindex_and_replacement_use_postgres() -
         )
         await session.execute(text("UPDATE kb_document SET version = 2 WHERE id = 5"))
         await session.execute(
-            text(
-                "INSERT INTO kb_doc_chunk (id, doc_id, kb_id, doc_version) "
-                "VALUES (20, 5, 3, 2)"
-            )
+            text("INSERT INTO kb_doc_chunk (id, doc_id, kb_id, doc_version) VALUES (20, 5, 3, 2)")
         )
         dataset_service = EvaluationDatasetService(evaluation_repository)
         archived = await dataset_service.archive_dataset(kb_id=3, dataset_id=candidate_id)

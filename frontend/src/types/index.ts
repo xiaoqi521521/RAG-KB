@@ -152,6 +152,8 @@ export interface EvaluationReport {
   refusal_count: number;
   refusal_rate: number;
   duration_ms: number | null;
+  usage_tokens: number | null;
+  estimated_cost_cny: string | null;
   eval_at: string;
 }
 
@@ -186,6 +188,8 @@ export interface DailyUsagePoint {
   date: string;
   tokens: number;
   cost: string;
+  evaluation_tokens: number;
+  evaluation_cost: string;
 }
 
 export interface EvalDataset {

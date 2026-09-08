@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
 from app.core.config import Settings, get_settings
 from app.core.context import CurrentUser
+from app.core.database import get_db
+from app.repositories.evaluations import EvaluationRepository
 from app.schemas.common import ApiResponse
 from app.schemas.stats import DailyUsageResponse, TokenStatsResponse
 from app.services.token_cost import TokenCostService
@@ -28,12 +31,14 @@ def get_token_cost_service(
 
 def get_usage_history_service(
     settings: Settings = Depends(get_settings),
+    session: AsyncSession = Depends(get_db),
 ) -> UsageHistoryService:
-    """构建查询 Prometheus 每日用量历史的服务。"""
+    """构建 Prom 查询与评估 run 用量汇总服务。"""
     return UsageHistoryService(
         base_url=settings.prometheus_base_url,
         timeout_seconds=settings.prometheus_query_timeout_seconds,
         timezone=settings.token_budget_timezone,
+        run_usage_repository=EvaluationRepository(session),
     )
 
 
@@ -93,7 +98,13 @@ async def get_daily_usage_history(
         ) from exc
     return ApiResponse.ok(
         [
-            DailyUsageResponse(date=point.date, tokens=point.tokens, cost=f"{point.cost:.4f}")
+            DailyUsageResponse(
+                date=point.date,
+                tokens=point.tokens,
+                cost=f"{point.cost:.4f}",
+                evaluation_tokens=point.evaluation_tokens,
+                evaluation_cost=f"{point.evaluation_cost:.4f}",
+            )
             for point in points
         ]
     )

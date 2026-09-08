@@ -32,3 +32,5 @@ class DailyUsageResponse(BaseModel):
     date: str
     tokens: int = Field(ge=0)
     cost: str
+    evaluation_tokens: int = Field(ge=0)
+    evaluation_cost: str

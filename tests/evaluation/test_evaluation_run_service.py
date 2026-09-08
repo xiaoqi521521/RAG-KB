@@ -19,7 +19,13 @@ from app.evaluation.ragas_evaluator import (
     RagasUsage,
 )
 from app.evaluation.service import EvaluationRunService, EvaluationUsageCollector
-from app.models import EvalDataset, EvalDatasetStatus, EvalResult, EvalResultStatus
+from app.models import (
+    EvalDataset,
+    EvalDatasetStatus,
+    EvalResult,
+    EvalResultStatus,
+    EvalRunUsage,
+)
 from app.repositories.chunks import ChunkSearchHit
 from app.repositories.evaluations import EvaluationReport
 from app.schemas.rag import RagQueryResponse
@@ -147,6 +153,7 @@ class FakeEvaluationRepository:
         self.list_calls: list[tuple[int, str | None]] = []
         self.next_version_calls: list[int] = []
         self.saved_batches: list[list[EvalResult]] = []
+        self.saved_run_usages: list[EvalRunUsage] = []
 
     async def version_exists(self, *, kb_id: int, eval_version: int) -> bool:
         return self.version_exists_value
@@ -159,10 +166,16 @@ class FakeEvaluationRepository:
         self.list_calls.append((kb_id, status))
         return self.datasets
 
-    async def save_results(self, results: list[EvalResult]) -> None:
+    async def save_results(
+        self,
+        results: list[EvalResult],
+        *,
+        run_usage: EvalRunUsage,
+    ) -> None:
         if self.save_error is not None:
             raise self.save_error
         self.saved_batches.append(results)
+        self.saved_run_usages.append(run_usage)
 
     async def get_report(self, *, kb_id: int, eval_version: int) -> EvaluationReport | None:
         results = self.saved_batches[0]
@@ -190,7 +203,9 @@ class FakeEvaluationRepository:
                 result.answer_relevancy is not None for result in results
             ),
             avg_answer_relevancy=None,
-            context_recall_sample_count=sum(result.context_recall is not None for result in results),
+            context_recall_sample_count=sum(
+                result.context_recall is not None for result in results
+            ),
             avg_context_recall=None,
             context_precision_sample_count=sum(
                 result.context_precision is not None for result in results
@@ -200,9 +215,17 @@ class FakeEvaluationRepository:
             refusal_rate=sum(result.actual_answer == RAG_REFUSAL_ANSWER for result in results)
             / len(results),
             duration_ms=results[0].duration_ms,
-            usage_tokens=sum(result.usage_tokens for result in results),
-            estimated_cost_cny=sum(
-                (result.estimated_cost_cny for result in results), Decimal("0")
+            usage_tokens=(
+                self.saved_run_usages[0].generation_usage_tokens
+                + self.saved_run_usages[0].ragas_input_tokens
+                + self.saved_run_usages[0].ragas_evaluation_tokens
+                + self.saved_run_usages[0].ragas_embedding_tokens
+            ),
+            estimated_cost_cny=(
+                self.saved_run_usages[0].generation_estimated_cost_cny
+                + self.saved_run_usages[0].ragas_input_cost_cny
+                + self.saved_run_usages[0].ragas_evaluation_cost_cny
+                + self.saved_run_usages[0].ragas_embedding_cost_cny
             ),
             eval_at=results[0].eval_at,
         )
@@ -356,9 +379,7 @@ async def test_run_maps_concurrent_unique_conflict_to_http_conflict() -> None:
 
 @pytest.mark.asyncio
 async def test_run_maps_actual_execution_content_to_all_ragas_scores() -> None:
-    repository = FakeEvaluationRepository(
-        datasets=[_dataset(1, [10], expected_answer="期望答案")]
-    )
+    repository = FakeEvaluationRepository(datasets=[_dataset(1, [10], expected_answer="期望答案")])
     executor = FakeRagExecutor(
         [
             _execution(
@@ -669,9 +690,7 @@ class RecordingTokenMetrics:
 
 @pytest.mark.asyncio
 async def test_run_records_ragas_usage_without_personal_attribution() -> None:
-    repository = FakeEvaluationRepository(
-        datasets=[_dataset(1, [10], expected_answer="期望答案")]
-    )
+    repository = FakeEvaluationRepository(datasets=[_dataset(1, [10], expected_answer="期望答案")])
     executor = FakeRagExecutor([_execution([10])])
     usage = RagasUsage(llm_prompt_tokens=100, llm_completion_tokens=40, embedding_tokens=25)
     recorder = RecordingTokenMetrics()
@@ -705,10 +724,17 @@ async def test_run_records_ragas_usage_without_personal_attribution() -> None:
         (40, "chat-x", "evaluation", 3, False),
         (25, "embed-x", "embedding", 3, False),
     ]
-    assert repository.saved_batches[0][0].usage_tokens == 500
-    assert repository.saved_batches[0][0].estimated_cost_cny == Decimal("0.0005")
-    assert report.usage_tokens == 500
-    # 报告费用 = 逐题生成消耗 0.0005 + 判定消耗（六位量化）0.000193。
+    run_usage = repository.saved_run_usages[0]
+    assert run_usage.generation_usage_tokens == 500
+    assert run_usage.generation_estimated_cost_cny == Decimal("0.0005")
+    assert run_usage.ragas_input_tokens == 100
+    assert run_usage.ragas_evaluation_tokens == 40
+    assert run_usage.ragas_embedding_tokens == 25
+    assert run_usage.ragas_input_cost_cny == Decimal("0.000100")
+    assert run_usage.ragas_evaluation_cost_cny == Decimal("0.000080")
+    assert run_usage.ragas_embedding_cost_cny == Decimal("0.000013")
+    assert report.usage_tokens == 665
+    # 报告费用 = 生成消耗 0.0005 + 判定输入 0.000100 + 判定输出 0.000080 + 判定向量 0.000013。
     assert report.estimated_cost_cny == Decimal("0.000693")
 
 

@@ -84,8 +84,20 @@ class FakeUsageHistoryService:
         if self.unavailable:
             raise UsageHistoryError("Prometheus 不可达")
         return [
-            DailyUsagePoint(date="2026-09-06", tokens=1_200, cost=Decimal("0.1200")),
-            DailyUsagePoint(date="2026-09-07", tokens=3_400, cost=Decimal("0.3400")),
+            DailyUsagePoint(
+                date="2026-09-06",
+                tokens=1_200,
+                cost=Decimal("0.1200"),
+                evaluation_tokens=100,
+                evaluation_cost=Decimal("0.0100"),
+            ),
+            DailyUsagePoint(
+                date="2026-09-07",
+                tokens=3_400,
+                cost=Decimal("0.3400"),
+                evaluation_tokens=250,
+                evaluation_cost=Decimal("0.0250"),
+            ),
         ]
 
 
@@ -116,8 +128,20 @@ def test_daily_usage_returns_points_for_system_admin() -> None:
         "code": 200,
         "message": "success",
         "data": [
-            {"date": "2026-09-06", "tokens": 1_200, "cost": "0.1200"},
-            {"date": "2026-09-07", "tokens": 3_400, "cost": "0.3400"},
+            {
+                "date": "2026-09-06",
+                "tokens": 1_200,
+                "cost": "0.1200",
+                "evaluation_tokens": 100,
+                "evaluation_cost": "0.0100",
+            },
+            {
+                "date": "2026-09-07",
+                "tokens": 3_400,
+                "cost": "0.3400",
+                "evaluation_tokens": 250,
+                "evaluation_cost": "0.0250",
+            },
         ],
     }
     assert service.requested_days == [2]

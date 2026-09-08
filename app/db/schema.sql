@@ -261,8 +261,6 @@ CREATE TABLE kb_eval_result (
     status              VARCHAR(20)     NOT NULL,
     error_type          VARCHAR(100),
     duration_ms         INTEGER,                           -- 整轮评估执行耗时；历史数据可为空
-    usage_tokens        INTEGER         NOT NULL DEFAULT 0, -- 当题评估消耗的模型 Token 总数
-    estimated_cost_cny  NUMERIC(12, 6)  NOT NULL DEFAULT 0, -- 当题评估消耗的估算金额（CNY）
     eval_at         TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
     CONSTRAINT uq_eval_result_dataset_version UNIQUE (dataset_id, eval_version),
     CONSTRAINT ck_eval_result_status CHECK (status IN ('SUCCESS', 'PARTIAL', 'FAILED')),
@@ -273,8 +271,41 @@ CREATE TABLE kb_eval_result (
         AND (context_recall IS NULL OR context_recall BETWEEN 0.0 AND 1.0)
         AND (context_precision IS NULL OR context_precision BETWEEN 0.0 AND 1.0)
     ),
-    CONSTRAINT ck_eval_result_duration CHECK (duration_ms IS NULL OR duration_ms >= 0),
-    CONSTRAINT ck_eval_result_usage CHECK (usage_tokens >= 0 AND estimated_cost_cny >= 0)
+    CONSTRAINT ck_eval_result_duration CHECK (duration_ms IS NULL OR duration_ms >= 0)
+);
+
+CREATE TABLE kb_eval_run_usage (
+    id                          BIGSERIAL PRIMARY KEY,
+    kb_id                       BIGINT          NOT NULL,
+    eval_version                INTEGER         NOT NULL,
+    generation_usage_tokens     INTEGER         NOT NULL,
+    generation_estimated_cost_cny NUMERIC(12, 6) NOT NULL,
+    ragas_input_tokens          INTEGER         NOT NULL,
+    ragas_evaluation_tokens     INTEGER         NOT NULL,
+    ragas_embedding_tokens      INTEGER         NOT NULL,
+    ragas_input_cost_cny        NUMERIC(12, 6)  NOT NULL,
+    ragas_evaluation_cost_cny   NUMERIC(12, 6)  NOT NULL,
+    ragas_embedding_cost_cny    NUMERIC(12, 6)  NOT NULL,
+    usage_tokens                INTEGER GENERATED ALWAYS AS (
+        generation_usage_tokens + ragas_input_tokens
+        + ragas_evaluation_tokens + ragas_embedding_tokens
+    ) STORED,
+    estimated_cost_cny          NUMERIC(12, 6) GENERATED ALWAYS AS (
+        generation_estimated_cost_cny + ragas_input_cost_cny
+        + ragas_evaluation_cost_cny + ragas_embedding_cost_cny
+    ) STORED,
+    created_at                  TIMESTAMP       NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT uq_eval_run_usage_kb_version UNIQUE (kb_id, eval_version),
+    CONSTRAINT ck_eval_run_usage_values CHECK (
+        generation_usage_tokens >= 0
+        AND generation_estimated_cost_cny >= 0
+        AND ragas_input_tokens >= 0
+        AND ragas_evaluation_tokens >= 0
+        AND ragas_embedding_tokens >= 0
+        AND ragas_input_cost_cny >= 0
+        AND ragas_evaluation_cost_cny >= 0
+        AND ragas_embedding_cost_cny >= 0
+    )
 );
 
 -- ================================================================
@@ -394,6 +425,20 @@ COMMENT ON COLUMN kb_eval_result.context_precision IS 'RAGAS Context Precision �
 COMMENT ON COLUMN kb_eval_result.status IS '评估状态：SUCCESS=评估成功，PARTIAL=部分完成或发生降级，FAILED=评估失败';
 COMMENT ON COLUMN kb_eval_result.error_type IS '评估失败或降级类型';
 COMMENT ON COLUMN kb_eval_result.duration_ms IS '整轮评估执行耗时，单位为毫秒；历史数据可为空';
-COMMENT ON COLUMN kb_eval_result.usage_tokens IS '当题评估消耗的模型 Token 总数';
-COMMENT ON COLUMN kb_eval_result.estimated_cost_cny IS '当题评估消耗的估算金额，单位为 CNY';
 COMMENT ON COLUMN kb_eval_result.eval_at IS '评估执行时间';
+
+COMMENT ON TABLE kb_eval_run_usage IS '评估 run 级模型用量与估算成本';
+COMMENT ON COLUMN kb_eval_run_usage.id IS '评估 run 用量主键';
+COMMENT ON COLUMN kb_eval_run_usage.kb_id IS '所属知识库 ID';
+COMMENT ON COLUMN kb_eval_run_usage.eval_version IS '评估版本号';
+COMMENT ON COLUMN kb_eval_run_usage.generation_usage_tokens IS '本次评估 RAG 生成管道 Token 总数';
+COMMENT ON COLUMN kb_eval_run_usage.generation_estimated_cost_cny IS '本次评估 RAG 生成管道估算成本，单位 CNY';
+COMMENT ON COLUMN kb_eval_run_usage.ragas_input_tokens IS 'RAGAS 判定 LLM 输入 Token';
+COMMENT ON COLUMN kb_eval_run_usage.ragas_evaluation_tokens IS 'RAGAS 判定 LLM 输出 Token，对应 evaluation 桶';
+COMMENT ON COLUMN kb_eval_run_usage.ragas_embedding_tokens IS 'RAGAS 判定 Embedding Token';
+COMMENT ON COLUMN kb_eval_run_usage.ragas_input_cost_cny IS 'RAGAS 判定输入估算成本，单位 CNY';
+COMMENT ON COLUMN kb_eval_run_usage.ragas_evaluation_cost_cny IS 'RAGAS 判定输出估算成本，单位 CNY';
+COMMENT ON COLUMN kb_eval_run_usage.ragas_embedding_cost_cny IS 'RAGAS 判定 Embedding 估算成本，单位 CNY';
+COMMENT ON COLUMN kb_eval_run_usage.usage_tokens IS '生成管道与 RAGAS 判定的 Token 总数';
+COMMENT ON COLUMN kb_eval_run_usage.estimated_cost_cny IS '生成管道与 RAGAS 判定的估算总成本，单位 CNY';
+COMMENT ON COLUMN kb_eval_run_usage.created_at IS 'run 用量写入时间';

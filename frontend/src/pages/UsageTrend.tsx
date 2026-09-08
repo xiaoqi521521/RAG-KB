@@ -43,6 +43,14 @@ export default function UsageTrendPage() {
   const ordered = points ? [...points].reverse() : [];
   const totalTokens = ordered.reduce((sum, item) => sum + item.tokens, 0);
   const totalCost = ordered.reduce((sum, item) => sum + Number(item.cost), 0);
+  const totalEvaluationTokens = ordered.reduce(
+    (sum, item) => sum + item.evaluation_tokens,
+    0,
+  );
+  const totalEvaluationCost = ordered.reduce(
+    (sum, item) => sum + Number(item.evaluation_cost),
+    0,
+  );
 
   return (
     <div className="min-h-full px-4 py-5 md:px-6 md:py-6">
@@ -78,8 +86,22 @@ export default function UsageTrendPage() {
             <div className="font-data text-[13px] text-soft mt-4">
               TOTAL TOKENS {formatNumber(totalTokens)}
             </div>
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <div>
+                <div className="eyebrow">EVALUATION TOKENS</div>
+                <div className="font-data text-[13.5px] mt-1">
+                  {formatNumber(totalEvaluationTokens)}
+                </div>
+              </div>
+              <div>
+                <div className="eyebrow">EVALUATION COST</div>
+                <div className="font-data text-[13.5px] mt-1">
+                  ¥{totalEvaluationCost.toFixed(4)}
+                </div>
+              </div>
+            </div>
             <div className="mt-5 pt-4 border-t border-line text-[12.5px] text-soft leading-relaxed">
-              数据来自 Prometheus 每日聚合，按部署时区自然日统计；成本为配置单价下的估算值，不是账单。
+              Token 总量与预估成本来自 Prometheus 每日聚合；评估 Token 与评估成本包含评估 run 的 RAG 执行和 RAGAS 判定。按部署时区自然日统计，成本为配置单价下的估算值，不是账单。
             </div>
           </section>
 
@@ -104,8 +126,20 @@ export default function UsageTrendPage() {
                 render={(value: number) => <span className="font-data">{formatNumber(value)}</span>}
               />
               <Table.Column
+                title="评估 Token"
+                dataIndex="evaluation_tokens"
+                align="right"
+                render={(value: number) => <span className="font-data">{formatNumber(value)}</span>}
+              />
+              <Table.Column
                 title="预估成本（CNY）"
                 dataIndex="cost"
+                align="right"
+                render={(value: string) => <span className="font-data">{value}</span>}
+              />
+              <Table.Column
+                title="评估成本（CNY）"
+                dataIndex="evaluation_cost"
                 align="right"
                 render={(value: string) => <span className="font-data">{value}</span>}
               />

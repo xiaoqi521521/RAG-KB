@@ -67,6 +67,14 @@ function formatDuration(value: number | null | undefined): string {
   return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
 }
 
+function formatNumber(value: number): string {
+  return value.toLocaleString('zh-CN');
+}
+
+function formatUsageCost(value: string | null | undefined): string {
+  return value == null ? '未记录' : `¥${value}`;
+}
+
 function getErrorDetail(error: unknown): string | undefined {
   const data = (error as { response?: { data?: { message?: string; detail?: string } } })?.response
     ?.data;
@@ -418,6 +426,19 @@ export default function EvalPage() {
           tone: 'text-ink',
         },
         {
+          label: 'Token 总量',
+          value:
+            latestReport.usage_tokens == null
+              ? '未记录'
+              : formatNumber(latestReport.usage_tokens),
+          tone: 'text-ink',
+        },
+        {
+          label: '预估成本（CNY）',
+          value: formatUsageCost(latestReport.estimated_cost_cny),
+          tone: 'text-ink',
+        },
+        {
           label: '题量',
           value: String(latestReport.total_questions),
           tone: 'text-ink',
@@ -461,6 +482,21 @@ export default function EvalPage() {
       key: 'duration_ms',
       width: 90,
       render: (_: unknown, record: EvaluationReport) => formatDuration(record.duration_ms),
+    },
+    {
+      title: 'Token 总量',
+      dataIndex: 'usage_tokens',
+      key: 'usage_tokens',
+      width: 100,
+      render: (value: number | null) =>
+        value == null ? '未记录' : <span className="font-data">{formatNumber(value)}</span>,
+    },
+    {
+      title: '预估成本（CNY）',
+      dataIndex: 'estimated_cost_cny',
+      key: 'estimated_cost_cny',
+      width: 130,
+      render: (value: string | null) => <span className="font-data">{formatUsageCost(value)}</span>,
     },
     {
       title: '题量',
@@ -748,7 +784,7 @@ export default function EvalPage() {
                 </div>
               ))}
             </div>
-            <div className="mt-3 border-t border-line pt-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-x-6 gap-y-3">
+            <div className="mt-3 border-t border-line pt-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-x-6 gap-y-3">
               {runSummary.map((item) => (
                 <div key={item.label}>
                   <div className="eyebrow">{item.label}</div>
@@ -826,7 +862,7 @@ export default function EvalPage() {
               showTotal: (total) => `共 ${total} 条`,
             }}
             size="small"
-            scroll={{ x: 1800 }}
+            scroll={{ x: 2050 }}
             locale={{ emptyText: '暂无评估记录' }}
           />
         </div>

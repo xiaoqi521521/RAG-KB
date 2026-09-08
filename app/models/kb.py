@@ -10,6 +10,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
     DateTime,
     Float,
     Index,
@@ -101,7 +102,9 @@ class KnowledgeBase(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     department_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
@@ -212,7 +215,9 @@ class ChatSession(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     kb_ids: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str | None] = mapped_column(String(200))
-    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
@@ -236,8 +241,12 @@ class ChatMessage(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, default=0, server_default="0")
     feedback: Mapped[int | None] = mapped_column(SmallInteger)
     kb_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
-    answer_mode: Mapped[str] = mapped_column(String(30), nullable=False, default="knowledge_base", server_default="knowledge_base")
-    knowledge_base_searched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    answer_mode: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="knowledge_base", server_default="knowledge_base"
+    )
+    knowledge_base_searched: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )
@@ -337,10 +346,6 @@ class EvalResult(Base):
             "duration_ms IS NULL OR duration_ms >= 0",
             name="ck_eval_result_duration",
         ),
-        CheckConstraint(
-            "usage_tokens >= 0 AND estimated_cost_cny >= 0",
-            name="ck_eval_result_usage",
-        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -356,10 +361,59 @@ class EvalResult(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     error_type: Mapped[str | None] = mapped_column(String(100))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
-    usage_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    estimated_cost_cny: Mapped[Decimal] = mapped_column(
-        Numeric(12, 6), nullable=False, default=Decimal("0"), server_default="0"
-    )
     eval_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
+    )
+
+
+class EvalRunUsage(Base):
+    """一次评估版本的 run 级模型消耗，替代逐题用量落库。"""
+
+    __tablename__ = "kb_eval_run_usage"
+    __table_args__ = (
+        UniqueConstraint(
+            "kb_id",
+            "eval_version",
+            name="uq_eval_run_usage_kb_version",
+        ),
+        CheckConstraint(
+            "generation_usage_tokens >= 0 AND generation_estimated_cost_cny >= 0 AND "
+            "ragas_input_tokens >= 0 AND ragas_evaluation_tokens >= 0 AND "
+            "ragas_embedding_tokens >= 0 AND ragas_input_cost_cny >= 0 AND "
+            "ragas_evaluation_cost_cny >= 0 AND ragas_embedding_cost_cny >= 0",
+            name="ck_eval_run_usage_values",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    eval_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation_usage_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation_estimated_cost_cny: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    ragas_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    ragas_evaluation_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    ragas_embedding_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    ragas_input_cost_cny: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    ragas_evaluation_cost_cny: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    ragas_embedding_cost_cny: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    usage_tokens: Mapped[int] = mapped_column(
+        Integer,
+        Computed(
+            "generation_usage_tokens + ragas_input_tokens + ragas_evaluation_tokens "
+            "+ ragas_embedding_tokens",
+            persisted=True,
+        ),
+        nullable=False,
+    )
+    estimated_cost_cny: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6),
+        Computed(
+            "generation_estimated_cost_cny + ragas_input_cost_cny "
+            "+ ragas_evaluation_cost_cny + ragas_embedding_cost_cny",
+            persisted=True,
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=shanghai_now_naive, server_default=SHANGHAI_NOW_SQL
     )

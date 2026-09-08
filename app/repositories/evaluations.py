@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Float, case, cast, func, select, update
+from sqlalchemy import Float, and_, case, cast, func, select, update
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.models import (
     EvalDatasetStatus,
     EvalResult,
     EvalResultStatus,
+    EvalRunUsage,
     KbDocument,
 )
 
@@ -33,6 +34,15 @@ class CurrentChunkSummary:
     section_title: str | None
     token_count: int
     excerpt: str
+
+
+@dataclass(frozen=True)
+class EvaluationRunUsageDailySummary:
+    """单个自然日内的评估 run 总消耗汇总。"""
+
+    date: date
+    tokens: int
+    cost: Decimal
 
 
 @dataclass(frozen=True)
@@ -164,10 +174,54 @@ class EvaluationRepository:
         result = await self.session.execute(statement)
         return int(result.scalar_one())
 
-    async def save_results(self, results: list[EvalResult]) -> None:
-        """在当前请求事务中一次加入并刷新全部逐题结果。"""
+    async def save_results(
+        self,
+        results: list[EvalResult],
+        *,
+        run_usage: EvalRunUsage,
+    ) -> None:
+        """在当前请求事务中一次加入逐题结果和 run 级用量。"""
         self.session.add_all(results)
+        self.session.add(run_usage)
         await self.session.flush()
+
+    async def sum_run_usage_by_day(
+        self,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> list[EvaluationRunUsageDailySummary]:
+        """按本地自然日汇总 run 级生成消耗和 RAGAS 判定消耗。
+
+        Args:
+            start_at: 起始时间，包含边界；数据库中的 created_at 为本地无时区时间。
+            end_at: 结束时间，不包含边界。
+
+        Returns:
+            按日期升序排列的评估 run Token 与成本汇总。
+        """
+        usage_date = func.date(EvalRunUsage.created_at).label("usage_date")
+        result = await self.session.execute(
+            select(
+                usage_date,
+                func.coalesce(func.sum(EvalRunUsage.usage_tokens), 0).label("tokens"),
+                func.coalesce(func.sum(EvalRunUsage.estimated_cost_cny), 0).label("cost"),
+            )
+            .where(
+                EvalRunUsage.created_at >= start_at,
+                EvalRunUsage.created_at < end_at,
+            )
+            .group_by(usage_date)
+            .order_by(usage_date)
+        )
+        return [
+            EvaluationRunUsageDailySummary(
+                date=row.usage_date,
+                tokens=int(row.tokens),
+                cost=Decimal(row.cost),
+            )
+            for row in result.all()
+        ]
 
     async def get_report(
         self,
@@ -204,9 +258,7 @@ class EvaluationRepository:
         report_statement = self._report_statement(kb_id=kb_id).order_by(None)
         if eval_version is not None:
             report_statement = report_statement.where(EvalResult.eval_version == eval_version)
-        statement = select(func.count()).select_from(
-            report_statement.subquery()
-        )
+        statement = select(func.count()).select_from(report_statement.subquery())
         result = await self.session.execute(statement)
         return int(result.scalar_one())
 
@@ -329,12 +381,8 @@ class EvaluationRepository:
             cast(retrieval_sample_count, Float), 0.0
         )
         total_questions = func.count(EvalResult.id)
-        refusal_count = func.sum(
-            case((EvalResult.actual_answer == RAG_REFUSAL_ANSWER, 1), else_=0)
-        )
-        refusal_rate = cast(refusal_count, Float) / func.nullif(
-            cast(total_questions, Float), 0.0
-        )
+        refusal_count = func.sum(case((EvalResult.actual_answer == RAG_REFUSAL_ANSWER, 1), else_=0))
+        refusal_rate = cast(refusal_count, Float) / func.nullif(cast(total_questions, Float), 0.0)
         evaluated_at = func.max(EvalResult.eval_at)
         duration_ms = func.max(EvalResult.duration_ms)
 
@@ -357,26 +405,33 @@ class EvaluationRepository:
                 mrr.label("mrr_at_5"),
                 func.count(EvalResult.faithfulness).label("faithfulness_sample_count"),
                 func.avg(EvalResult.faithfulness).label("avg_faithfulness"),
-                func.count(EvalResult.answer_relevancy).label(
-                    "answer_relevancy_sample_count"
-                ),
+                func.count(EvalResult.answer_relevancy).label("answer_relevancy_sample_count"),
                 func.avg(EvalResult.answer_relevancy).label("avg_answer_relevancy"),
                 func.count(EvalResult.context_recall).label("context_recall_sample_count"),
                 func.avg(EvalResult.context_recall).label("avg_context_recall"),
-                func.count(EvalResult.context_precision).label(
-                    "context_precision_sample_count"
-                ),
+                func.count(EvalResult.context_precision).label("context_precision_sample_count"),
                 func.avg(EvalResult.context_precision).label("avg_context_precision"),
                 refusal_count.label("refusal_count"),
                 refusal_rate.label("refusal_rate"),
                 duration_ms.label("duration_ms"),
-                func.sum(EvalResult.usage_tokens).label("usage_tokens"),
-                func.sum(EvalResult.estimated_cost_cny).label("estimated_cost_cny"),
+                func.coalesce(EvalRunUsage.usage_tokens, 0).label("usage_tokens"),
+                func.coalesce(EvalRunUsage.estimated_cost_cny, 0).label("estimated_cost_cny"),
                 evaluated_at.label("eval_at"),
             )
             .join(EvalDataset, EvalResult.dataset_id == EvalDataset.id)
+            .outerjoin(
+                EvalRunUsage,
+                and_(
+                    EvalDataset.kb_id == EvalRunUsage.kb_id,
+                    EvalResult.eval_version == EvalRunUsage.eval_version,
+                ),
+            )
             .where(EvalDataset.kb_id == kb_id)
-            .group_by(EvalResult.eval_version)
+            .group_by(
+                EvalResult.eval_version,
+                EvalRunUsage.usage_tokens,
+                EvalRunUsage.estimated_cost_cny,
+            )
             .order_by(evaluated_at.desc())
         )
 

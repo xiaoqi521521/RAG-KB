@@ -23,5 +23,7 @@
     {"id": 8, "type": "stat", "title": "北京时间当天预算已用金额", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 24}, "targets": [{"expr": "rag_token_budget_used_cny{scope=\"global\"}", "legendFormat": "CNY/today"}], "fieldConfig": {"defaults": {"unit": "currencyCNY"}}},
     {"id": 9, "type": "timeseries", "title": "近 24 小时 Token 增量", "gridPos": {"h": 8, "w": 12, "x": 6, "y": 24}, "targets": [{"expr": "sum by (token_type) (increase(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[24h]))", "legendFormat": "{{token_type}}"}]},
     {"id": 10, "type": "state-timeline", "title": "告警状态", "gridPos": {"h": 8, "w": 6, "x": 18, "y": 24}, "targets": [{"expr": "ALERTS{alertname=~\"RagTokenBudgetWarning|RagTokenBudgetExhausted|RagSingleRequestCostLimit|RagTokenUsageUnavailable|RagTokenSinkWriteFailure\"}", "legendFormat": "{{alertname}} / {{severity}}"}]}
+    ,{"id": 11, "type": "timeseries", "title": "评估判定 Token 速率", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32}, "targets": [{"expr": "sum by (model,kb_id) (rate(rag_token_usage_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"}[5m]))", "legendFormat": "{{model}} / kb={{kb_id}}"}]}
+    ,{"id": 12, "type": "timeseries", "title": "评估判定成本速率（CNY）", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32}, "targets": [{"expr": "sum by (model,kb_id) (rate(rag_token_usage_cost_cny_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"}[5m]))", "legendFormat": "{{model}} / kb={{kb_id}}"}], "fieldConfig": {"defaults": {"unit": "currencyCNY"}}}
   ]
 }
