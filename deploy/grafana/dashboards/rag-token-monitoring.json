@@ -107,7 +107,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Token 用量（所选时间范围）",
+      "title": "Token 累计用量",
       "gridPos": {
         "x": 6,
         "y": 0,
@@ -116,15 +116,16 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type) (increase(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[$__range]))",
+          "expr": "sum by (token_type) (rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"})",
           "legendFormat": "{{token_type}}"
         }
-      ]
+      ],
+      "description": "计数器自后端进程启动起累加，进程重启后清零。"
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "估算成本（所选时间范围）",
+      "title": "累计估算成本（CNY）",
       "gridPos": {
         "x": 15,
         "y": 0,
@@ -133,7 +134,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type, model, kb_id) (increase(rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[$__range]))",
+          "expr": "sum by (token_type, model, kb_id) (rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"})",
           "legendFormat": "{{token_type}} / {{model}} / kb={{kb_id}}"
         }
       ],
@@ -141,7 +142,8 @@
         "defaults": {
           "unit": "currencyCNY"
         }
-      }
+      },
+      "description": "计数器自后端进程启动起累加，进程重启后清零。"
     },
     {
       "id": 4,
@@ -188,7 +190,7 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "评估判定成本（所选时间范围）",
+      "title": "评估判定累计成本（CNY）",
       "gridPos": {
         "x": 16,
         "y": 8,
@@ -197,7 +199,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model, kb_id) (increase(rag_token_usage_cost_cny_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"}[$__range]))",
+          "expr": "sum by (model, kb_id) (rag_token_usage_cost_cny_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"})",
           "legendFormat": "{{model}} / kb={{kb_id}}"
         }
       ],
@@ -205,7 +207,8 @@
         "defaults": {
           "unit": "currencyCNY"
         }
-      }
+      },
+      "description": "计数器自后端进程启动起累加，进程重启后清零。"
     },
     {
       "id": 7,
