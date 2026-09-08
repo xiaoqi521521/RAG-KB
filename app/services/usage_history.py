@@ -11,11 +11,9 @@ from app.repositories.evaluations import EvaluationRunUsageDailySummary
 import httpx
 
 _CURRENCY_QUANTUM = Decimal("0.0001")
-_DAY_SECONDS = 86400
 _SCRAPE_STEP_SECONDS = 15
+_HISTORY_STEP_SECONDS = 60
 _NEW_SERIES_GAP_SECONDS = 30
-_TOKENS_QUERY = "sum(increase(rag_token_usage_total[1d]))"
-_COST_QUERY = "sum(increase(rag_token_usage_cost_cny_total[1d]))"
 _TOKENS_SERIES_QUERY = "rag_token_usage_total"
 _COST_SERIES_QUERY = "rag_token_usage_cost_cny_total"
 
@@ -78,7 +76,6 @@ class UsageHistoryService:
         effective_now = now.astimezone(self.timezone) if now else datetime.now(self.timezone)
         dates = self._range_dates(days=days, now=effective_now)
         history_dates = dates[:-1]
-        history_sample_times = [_epoch(_next_midnight(day, self.timezone)) for day in history_dates]
         current_time = _epoch(effective_now)
         today_start = _epoch(_midnight(dates[-1], self.timezone))
         evaluation_usage_by_date = await self._load_run_usage_by_date(dates=dates)
@@ -86,22 +83,23 @@ class UsageHistoryService:
         async with httpx.AsyncClient(
             base_url=self.base_url, timeout=self.timeout_seconds
         ) as client:
+            tokens_by_day: dict[date, float] = {}
+            cost_by_day: dict[date, float] = {}
             if history_dates:
-                tokens_by_time = await self._query_daily_increase(
+                history_start = _epoch(_midnight(history_dates[0], self.timezone))
+                history_end = _epoch(_next_midnight(history_dates[-1], self.timezone)) - 1
+                tokens_by_day = await self._sum_series_increase_by_day(
                     client,
-                    _TOKENS_QUERY,
-                    start=history_sample_times[0],
-                    end=history_sample_times[-1],
+                    _TOKENS_SERIES_QUERY,
+                    start=history_start,
+                    end=history_end,
                 )
-                cost_by_time = await self._query_daily_increase(
+                cost_by_day = await self._sum_series_increase_by_day(
                     client,
-                    _COST_QUERY,
-                    start=history_sample_times[0],
-                    end=history_sample_times[-1],
+                    _COST_SERIES_QUERY,
+                    start=history_start,
+                    end=history_end,
                 )
-            else:
-                tokens_by_time = {}
-                cost_by_time = {}
 
             # 当天尚未到达次日零点，不能再用次日 increase 采样；改用原始 counter 增量。
             today_tokens = await self._sum_series_increase(
@@ -119,9 +117,8 @@ class UsageHistoryService:
 
         return _build_points(
             dates,
-            history_sample_times,
-            tokens_by_time,
-            cost_by_time,
+            tokens_by_day,
+            cost_by_day,
             evaluation_usage_by_date,
             today_tokens,
             today_cost,
@@ -149,59 +146,6 @@ class UsageHistoryService:
         today = effective_now.date()
         return [today - timedelta(offset) for offset in range(days - 1, -1, -1)]
 
-    async def _query_daily_increase(
-        self,
-        client: httpx.AsyncClient,
-        query: str,
-        *,
-        start: int,
-        end: int,
-    ) -> dict[int, float]:
-        return await self._query_range(
-            client,
-            query,
-            start=start,
-            end=end,
-            step=_DAY_SECONDS,
-        )
-
-    async def _query_range(
-        self,
-        client: httpx.AsyncClient,
-        query: str,
-        *,
-        start: int,
-        end: int,
-        step: int,
-    ) -> dict[int, float]:
-        try:
-            response = await client.get(
-                "/api/v1/query_range",
-                params={"query": query, "start": start, "end": end, "step": step},
-            )
-        except httpx.HTTPError as exc:
-            raise UsageHistoryError("Prometheus 不可达") from exc
-        if response.status_code != 200:
-            raise UsageHistoryError(f"Prometheus 查询失败: status={response.status_code}")
-        try:
-            payload = response.json()
-            results = payload["data"]["result"]
-            # 空序列表示窗口无用量；不能让 evaluation 空数据拖垮整个面板。
-            if not results:
-                return {}
-            series = results[0]
-            raw_values = series.get("values", [])
-        except (IndexError, KeyError, TypeError, ValueError) as exc:
-            raise UsageHistoryError("Prometheus 响应格式异常") from exc
-        samples: dict[int, float] = {}
-        for timestamp, raw_value in raw_values:
-            try:
-                value = float(raw_value)
-            except (TypeError, ValueError):
-                continue
-            samples[int(timestamp)] = value
-        return samples
-
     async def _query_range_series(
         self,
         client: httpx.AsyncClient,
@@ -209,6 +153,7 @@ class UsageHistoryService:
         *,
         start: int,
         end: int,
+        step: int,
     ) -> list[list[tuple[int, float]]]:
         try:
             response = await client.get(
@@ -217,7 +162,7 @@ class UsageHistoryService:
                     "query": query,
                     "start": start,
                     "end": end,
-                    "step": _SCRAPE_STEP_SECONDS,
+                    "step": step,
                 },
             )
         except httpx.HTTPError as exc:
@@ -250,8 +195,32 @@ class UsageHistoryService:
             query,
             start=start,
             end=end,
+            step=_SCRAPE_STEP_SECONDS,
         )
         return sum(_counter_increase(values, start) for values in series_values)
+
+    async def _sum_series_increase_by_day(
+        self,
+        client: httpx.AsyncClient,
+        query: str,
+        *,
+        start: int,
+        end: int,
+    ) -> dict[date, float]:
+        series_values = await self._query_range_series(
+            client,
+            query,
+            start=start,
+            end=end,
+            step=_HISTORY_STEP_SECONDS,
+        )
+        totals: dict[date, float] = {}
+        for samples in series_values:
+            for day, value in _counter_increase_by_day(
+                samples, start, self.timezone
+            ).items():
+                totals[day] = totals.get(day, 0.0) + value
+        return totals
 
 
 def _midnight(day: date, timezone: ZoneInfo) -> datetime:
@@ -282,25 +251,50 @@ def _counter_increase(samples: list[tuple[int, float]], range_start: int) -> flo
     return total
 
 
+def _counter_increase_by_day(
+    samples: list[tuple[int, float]],
+    range_start: int,
+    timezone: ZoneInfo,
+) -> dict[date, float]:
+    """按自然日累计单条 counter 序列增量；进程重启导致的回退视为重置后的新值。"""
+    if not samples:
+        return {}
+
+    totals: dict[date, float] = {}
+    first_time, first_value = samples[0]
+    # 当天中途新建的序列没有零点样本，首值属于其出现当天。
+    if first_time > range_start + _NEW_SERIES_GAP_SECONDS:
+        day = datetime.fromtimestamp(first_time, tz=timezone).date()
+        totals[day] = totals.get(day, 0.0) + first_value
+    previous = first_value
+    for timestamp, value in samples[1:]:
+        delta = value - previous
+        day = datetime.fromtimestamp(timestamp, tz=timezone).date()
+        if delta < 0:
+            totals[day] = totals.get(day, 0.0) + value
+        else:
+            totals[day] = totals.get(day, 0.0) + delta
+        previous = value
+    return totals
+
+
 def _build_points(
     dates: list[date],
-    history_sample_times: list[int],
-    tokens_by_time: dict[int, float],
-    cost_by_time: dict[int, float],
+    tokens_by_day: dict[date, float],
+    cost_by_day: dict[date, float],
     evaluation_usage_by_date: dict[date, tuple[int, Decimal]],
     today_tokens: float,
     today_cost: float,
 ) -> list[DailyUsagePoint]:
-    """历史日用自然日 increase，当天用原始 counter 序列累计，确保包含当前时间。"""
+    """历史日与当天均按原始 counter 序列增量精确累计，确保包含当前时间。"""
     points: list[DailyUsagePoint] = []
-    for index, day in enumerate(dates):
-        if index == len(dates) - 1:
+    for day in dates:
+        if day == dates[-1]:
             tokens = today_tokens
             cost = today_cost
         else:
-            sample_time = history_sample_times[index]
-            tokens = tokens_by_time.get(sample_time, 0.0)
-            cost = cost_by_time.get(sample_time, 0.0)
+            tokens = tokens_by_day.get(day, 0.0)
+            cost = cost_by_day.get(day, 0.0)
         evaluation_tokens, evaluation_cost = evaluation_usage_by_date.get(day, (0, Decimal("0")))
         points.append(
             DailyUsagePoint(
