@@ -219,10 +219,75 @@
       },
       "targets": [
         {
-          "expr": "ALERTS{alertname=~\"RagTokenBudgetWarning|RagTokenBudgetExhausted|RagSingleRequestCostLimit|RagTokenUsageUnavailable|RagTokenSinkWriteFailure\"}",
+          "expr": "ALERTS{alertstate=\"firing\",alertname=~\"RagTokenBudgetWarning|RagTokenBudgetExhausted|RagSingleRequestCostLimit|RagTokenSinkWriteFailure\"}",
           "legendFormat": "{{alertname}} / {{severity}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RagSingleRequestCostLimit / critical"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#F2495C"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RagTokenBudgetExhausted / critical"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#F2495C"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RagTokenBudgetWarning / warning"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FADE2A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RagTokenSinkWriteFailure / warning"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FADE2A"
+                }
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
