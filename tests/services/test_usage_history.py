@@ -217,6 +217,5 @@ async def test_daily_usage_combines_history_and_today_without_evaluation_series(
     range_requests = [
         params for url, params in StubAsyncClient.requests if url.endswith("query_range")
     ]
-    assert all(params["step"] == 60 for params in range_requests[:2])
-    assert all(params["step"] == 15 for params in range_requests[2:])
+    assert all(params["step"] == 15 for params in range_requests)
     assert run_usage_repository.calls == [(datetime(2026, 9, 7), datetime(2026, 9, 9))]

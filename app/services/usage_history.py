@@ -12,7 +12,6 @@ import httpx
 
 _CURRENCY_QUANTUM = Decimal("0.0001")
 _SCRAPE_STEP_SECONDS = 15
-_HISTORY_STEP_SECONDS = 60
 _NEW_SERIES_GAP_SECONDS = 30
 _TOKENS_SERIES_QUERY = "rag_token_usage_total"
 _COST_SERIES_QUERY = "rag_token_usage_cost_cny_total"
@@ -86,20 +85,23 @@ class UsageHistoryService:
             tokens_by_day: dict[date, float] = {}
             cost_by_day: dict[date, float] = {}
             if history_dates:
-                history_start = _epoch(_midnight(history_dates[0], self.timezone))
-                history_end = _epoch(_next_midnight(history_dates[-1], self.timezone)) - 1
-                tokens_by_day = await self._sum_series_increase_by_day(
-                    client,
-                    _TOKENS_SERIES_QUERY,
-                    start=history_start,
-                    end=history_end,
-                )
-                cost_by_day = await self._sum_series_increase_by_day(
-                    client,
-                    _COST_SERIES_QUERY,
-                    start=history_start,
-                    end=history_end,
-                )
+                # 每个历史日单独分片查询：15s 步长能看到进程重启的 counter 重置，
+                # 且单日 5760 点始终低于 Prometheus 单序列 11000 点的查询上限。
+                for day in history_dates:
+                    day_start = _epoch(_midnight(day, self.timezone))
+                    day_end = _epoch(_next_midnight(day, self.timezone)) - 1
+                    tokens_by_day[day] = await self._sum_series_increase(
+                        client,
+                        _TOKENS_SERIES_QUERY,
+                        start=day_start,
+                        end=day_end,
+                    )
+                    cost_by_day[day] = await self._sum_series_increase(
+                        client,
+                        _COST_SERIES_QUERY,
+                        start=day_start,
+                        end=day_end,
+                    )
 
             # 当天尚未到达次日零点，不能再用次日 increase 采样；改用原始 counter 增量。
             today_tokens = await self._sum_series_increase(
@@ -199,29 +201,6 @@ class UsageHistoryService:
         )
         return sum(_counter_increase(values, start) for values in series_values)
 
-    async def _sum_series_increase_by_day(
-        self,
-        client: httpx.AsyncClient,
-        query: str,
-        *,
-        start: int,
-        end: int,
-    ) -> dict[date, float]:
-        series_values = await self._query_range_series(
-            client,
-            query,
-            start=start,
-            end=end,
-            step=_HISTORY_STEP_SECONDS,
-        )
-        totals: dict[date, float] = {}
-        for samples in series_values:
-            for day, value in _counter_increase_by_day(
-                samples, start, self.timezone
-            ).items():
-                totals[day] = totals.get(day, 0.0) + value
-        return totals
-
 
 def _midnight(day: date, timezone: ZoneInfo) -> datetime:
     return datetime.combine(day, time.min, tzinfo=timezone)
@@ -249,33 +228,6 @@ def _counter_increase(samples: list[tuple[int, float]], range_start: int) -> flo
         total += value if delta < 0 else delta
         previous = value
     return total
-
-
-def _counter_increase_by_day(
-    samples: list[tuple[int, float]],
-    range_start: int,
-    timezone: ZoneInfo,
-) -> dict[date, float]:
-    """按自然日累计单条 counter 序列增量；进程重启导致的回退视为重置后的新值。"""
-    if not samples:
-        return {}
-
-    totals: dict[date, float] = {}
-    first_time, first_value = samples[0]
-    # 当天中途新建的序列没有零点样本，首值属于其出现当天。
-    if first_time > range_start + _NEW_SERIES_GAP_SECONDS:
-        day = datetime.fromtimestamp(first_time, tz=timezone).date()
-        totals[day] = totals.get(day, 0.0) + first_value
-    previous = first_value
-    for timestamp, value in samples[1:]:
-        delta = value - previous
-        day = datetime.fromtimestamp(timestamp, tz=timezone).date()
-        if delta < 0:
-            totals[day] = totals.get(day, 0.0) + value
-        else:
-            totals[day] = totals.get(day, 0.0) + delta
-        previous = value
-    return totals
 
 
 def _build_points(
