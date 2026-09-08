@@ -188,7 +188,7 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "评估判定成本速率（CNY）",
+      "title": "评估判定成本（所选时间范围）",
       "gridPos": {
         "x": 16,
         "y": 8,
@@ -197,7 +197,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model,kb_id) (rate(rag_token_usage_cost_cny_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"}[5m]))",
+          "expr": "sum by (model, kb_id) (increase(rag_token_usage_cost_cny_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"}[$__range]))",
           "legendFormat": "{{model}} / kb={{kb_id}}"
         }
       ],
