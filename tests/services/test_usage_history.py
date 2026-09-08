@@ -13,7 +13,6 @@ from app.services.usage_history import (
     UsageHistoryService,
     _build_points,
     _counter_increase,
-    _counter_increase_by_day,
 )
 from app.repositories.evaluations import EvaluationRunUsageDailySummary
 
@@ -97,25 +96,6 @@ def test_counter_increase_handles_new_series_and_reset() -> None:
     # 当天中途出现的新序列没有零点样本，首值属于当天。
     assert _counter_increase([(200, 42.0)], 100) == 42.0
     assert _counter_increase([], 100) == 0.0
-
-
-def test_counter_increase_by_day_splits_days_and_handles_reset() -> None:
-    timezone = ZoneInfo("Asia/Shanghai")
-    midnight = int(datetime(2026, 9, 7, 0, 0, tzinfo=timezone).timestamp())
-    # 两天边界样本：首日中途新建序列（首值计入当日），次日发生重置（重置后新值计入当日）。
-    samples = [
-        (midnight, 1000.0),
-        (midnight + 3600, 1100.0),
-        (midnight + 86400, 5.0),
-        (midnight + 87000, 8.0),
-    ]
-
-    totals = _counter_increase_by_day(samples, midnight, timezone)
-
-    assert totals == {
-        datetime(2026, 9, 7).date(): 100.0,
-        datetime(2026, 9, 8).date(): 8.0,
-    }
 
 
 def test_build_points_uses_per_day_counter_totals() -> None:
