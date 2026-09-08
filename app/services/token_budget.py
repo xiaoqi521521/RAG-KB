@@ -110,18 +110,11 @@ class GlobalTokenBudgetGate:
             callbacks=[self._observe_budget_used],
         )
         self._budget_limit_value = float(daily_budget)
-        self._budget_limit = effective_meter.create_observable_gauge(
-            "rag_token_budget_limit_cny",
-            description="Configured global daily CNY budget",
-            callbacks=[self._observe_budget_limit],
-        )
-        self._rejected = effective_meter.create_counter(
-            "rag_token_budget_rejected",
-            description="Requests rejected by the global CNY budget",
-        )
-        self._request_cost = effective_meter.create_histogram(
-            "rag_token_request_cost_cny",
-            description="Observed CNY cost for one completed request",
+        # 比例在应用内计算，预算上限作为静态配置不再单独导出指标。
+        self._budget_ratio = effective_meter.create_observable_gauge(
+            "rag_token_budget_usage_ratio",
+            description="Current global daily CNY budget usage ratio",
+            callbacks=[self._observe_budget_ratio],
         )
         self._request_over_limit = effective_meter.create_counter(
             "rag_token_request_cost_over_limit",
@@ -137,8 +130,10 @@ class GlobalTokenBudgetGate:
     def _observe_budget_used(self, options: CallbackOptions) -> Iterable[Observation]:
         yield Observation(self._budget_used_value, {"scope": "global"})
 
-    def _observe_budget_limit(self, options: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(self._budget_limit_value, {"scope": "global"})
+    def _observe_budget_ratio(self, options: CallbackOptions) -> Iterable[Observation]:
+        if self._budget_limit_value <= 0:
+            return
+        yield Observation(self._budget_used_value / self._budget_limit_value, {"scope": "global"})
 
     def current_key(self, now: datetime | None = None) -> str:
         """返回当前部署时区下的每日预算 Redis key。"""
@@ -166,7 +161,6 @@ class GlobalTokenBudgetGate:
         if current == Decimal("-2"):
             raise TokenBudgetUnavailableError("金额预算数据不可用")
         if current < Decimal("0"):
-            self._rejected.add(1, {"reason": "daily_budget_exhausted"})
             raise TokenBudgetExhaustedError("今日金额预算已用尽")
         self._budget_used_value = float(current)
 
@@ -211,7 +205,6 @@ class GlobalTokenBudgetGate:
         try:
             yield
         finally:
-            self._request_cost.record(float(accumulator.total))
             _REQUEST_COST.reset(token)
 
     def _record_write_failure(self, *, sink: str, token_type: str) -> None:

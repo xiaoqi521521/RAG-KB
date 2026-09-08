@@ -4,7 +4,6 @@ from typing import Any, cast
 
 import uvicorn
 from fastapi import FastAPI, Response
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.router import api_router
@@ -59,18 +58,9 @@ async def lifespan(app: FastAPI):
         chat_output_price=settings.chat_output_cost_cny_per_1k_tokens,
         reranker_price=settings.reranker_cost_cny_per_1k_tokens,
     )
-    if meter_provider is not None:
-        # 指标统一走 OTel HTTP 埋点；/metrics 自身不参与统计，避免抓取自增。
-        FastAPIInstrumentor.instrument_app(
-            app,
-            meter_provider=meter_provider,
-            excluded_urls="/metrics$",
-        )
     try:
         yield
     finally:
-        if meter_provider is not None:
-            FastAPIInstrumentor.uninstrument_app(app)
         shutdown_metrics(meter_provider)
         await close_clients()
 

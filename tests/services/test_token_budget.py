@@ -104,6 +104,8 @@ async def test_budget_preserves_decimal_usage_from_redis() -> None:
 
     samples = _data_points(reader, "rag_token_budget_used_cny")
     assert samples[0].value == 0.25
+    ratio = _data_points(reader, "rag_token_budget_usage_ratio")
+    assert ratio[0].value == 0.25
 
 
 @pytest.mark.asyncio

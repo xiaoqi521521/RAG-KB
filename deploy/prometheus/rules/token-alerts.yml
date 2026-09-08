@@ -1,12 +1,6 @@
 groups:
   - name: rag-kb-token-monitoring
     rules:
-      - record: rag_token_budget_usage_ratio
-        expr: |
-          rag_token_budget_used_cny{scope="global"}
-          /
-          rag_token_budget_limit_cny{scope="global"}
-
       - alert: RagTokenBudgetWarning
         expr: rag_token_budget_usage_ratio >= 0.8
         for: 5m
@@ -32,15 +26,6 @@ groups:
         annotations:
           summary: "发现高成本请求"
           description: "最近 5 分钟存在成本超过配置单次请求阈值的已完成请求。"
-
-      - alert: RagTokenUsageUnavailable
-        expr: increase(rag_token_usage_unavailable_total[15m]) > 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Provider Token usage 不可用"
-          description: "Token 成本统计可能低估，请检查模型响应 usage。"
 
       - alert: RagTokenSinkWriteFailure
         expr: increase(rag_token_write_failure_total[15m]) > 0
