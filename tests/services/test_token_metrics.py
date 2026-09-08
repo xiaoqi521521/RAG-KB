@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
-from prometheus_client import CollectorRegistry
-from prometheus_client.parser import text_string_to_metric_families
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app.core.context import CurrentUser, current_user_var
 from app.services.token_metrics import (
@@ -57,24 +57,33 @@ class FakeRedis:
         return self.hash_values.copy()
 
 
-def _build_recorder() -> tuple[TokenUsageRecorder, FakeRedis]:
+def _build_recorder() -> tuple[TokenUsageRecorder, FakeRedis, InMemoryMetricReader]:
     redis = FakeRedis()
-    return TokenUsageRecorder(redis_client=redis, registry=CollectorRegistry()), redis
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    return TokenUsageRecorder(redis_client=redis, meter=provider.get_meter("tests")), redis, reader
 
 
-def _metric_values(recorder: TokenUsageRecorder, family_name: str) -> list[object]:
-    families = {
-        family.name: family for family in text_string_to_metric_families(recorder.render_metrics())
-    }
-    return families[family_name].samples if family_name in families else []
+def _metric_values(reader: InMemoryMetricReader, metric_name: str) -> list[object]:
+    metrics_data = reader.get_metrics_data()
+    return [
+        data_point
+        for resource in metrics_data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == metric_name
+        for data_point in metric.data.data_points
+    ]
 
 
 @pytest.mark.asyncio
 async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
     redis = FakeRedis()
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
     recorder = TokenUsageRecorder(
         redis_client=redis,
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
         chat_input_price=Decimal("0.001"),
         chat_output_price=Decimal("0.002"),
     )
@@ -97,23 +106,29 @@ async def test_record_chat_usage_writes_v2_and_allowed_labels() -> None:
         ("rag:token:v3:stats:7", "answerGenerationTokens", 8),
     ]
     assert "estimatedCostCny" not in redis.hash_values
-    usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
+    usage = _metric_values(reader, "rag_token_usage")
     assert {
-        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
-        for sample in usage
+        (
+            data_point.attributes["model"],
+            data_point.attributes["token_type"],
+            data_point.attributes["kb_id"],
+        ): data_point.value
+        for data_point in usage
     } == {
         ("deepseek-v4-flash", "input", "multi"): 120.0,
         ("deepseek-v4-flash", "answer_generation", "multi"): 8.0,
     }
-    assert all(set(sample.labels) == {"model", "token_type", "kb_id"} for sample in usage)
+    assert all(set(data_point.attributes) == {"model", "token_type", "kb_id"} for data_point in usage)
 
 
 @pytest.mark.asyncio
 async def test_record_chat_usage_records_intent_output_bucket() -> None:
     redis = FakeRedis()
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
     recorder = TokenUsageRecorder(
         redis_client=redis,
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
         chat_input_price=Decimal("0.001"),
         chat_output_price=Decimal("0.002"),
     )
@@ -136,10 +151,14 @@ async def test_record_chat_usage_records_intent_output_bucket() -> None:
         ("rag:token:v3:stats:7", "intentTokens", 8),
     ]
     assert "estimatedCostCny" not in redis.hash_values
-    usage = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
+    usage = _metric_values(reader, "rag_token_usage")
     assert {
-        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
-        for sample in usage
+        (
+            data_point.attributes["model"],
+            data_point.attributes["token_type"],
+            data_point.attributes["kb_id"],
+        ): data_point.value
+        for data_point in usage
     } == {
         ("deepseek-v4-flash", "input", "multi"): 120.0,
         ("deepseek-v4-flash", "intent", "multi"): 8.0,
@@ -148,7 +167,7 @@ async def test_record_chat_usage_records_intent_output_bucket() -> None:
 
 @pytest.mark.asyncio
 async def test_record_usage_writes_evaluation_bucket_without_personal_attribution() -> None:
-    recorder, redis = _build_recorder()
+    recorder, redis, reader = _build_recorder()
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
         await recorder.record_usage(
@@ -162,14 +181,14 @@ async def test_record_usage_writes_evaluation_bucket_without_personal_attributio
         current_user_var.reset(token)
 
     assert redis.calls == []
-    usage = [
-        sample
-        for sample in _metric_values(recorder, "rag_token_usage")
-        if sample.name.endswith("_total")
-    ]
+    usage = _metric_values(reader, "rag_token_usage")
     assert {
-        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
-        for sample in usage
+        (
+            data_point.attributes["model"],
+            data_point.attributes["token_type"],
+            data_point.attributes["kb_id"],
+        ): data_point.value
+        for data_point in usage
     } == {
         ("deepseek-v4-flash", "evaluation", "3"): 12.0,
     }
@@ -177,7 +196,7 @@ async def test_record_usage_writes_evaluation_bucket_without_personal_attributio
 
 @pytest.mark.asyncio
 async def test_suppress_switch_skips_personal_redis_but_keeps_prometheus() -> None:
-    recorder, redis = _build_recorder()
+    recorder, redis, reader = _build_recorder()
     user_token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="USER"))
     suppress_token = suppress_user_usage_var.set(True)
     try:
@@ -192,18 +211,18 @@ async def test_suppress_switch_skips_personal_redis_but_keeps_prometheus() -> No
         current_user_var.reset(user_token)
 
     assert redis.calls == []
-    samples = [
-        sample
-        for sample in _metric_values(recorder, "rag_token_usage")
-        if sample.name.endswith("_total")
-    ]
-    assert samples[0].labels == {"model": "deepseek-v4-flash", "token_type": "input", "kb_id": "2"}
+    samples = _metric_values(reader, "rag_token_usage")
+    assert dict(samples[0].attributes) == {
+        "model": "deepseek-v4-flash",
+        "token_type": "input",
+        "kb_id": "2",
+    }
     assert samples[0].value == 9.0
 
 
 @pytest.mark.asyncio
 async def test_offline_embedding_does_not_write_user_v2() -> None:
-    recorder, redis = _build_recorder()
+    recorder, redis, reader = _build_recorder()
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
         await recorder.record_usage(
@@ -218,13 +237,17 @@ async def test_offline_embedding_does_not_write_user_v2() -> None:
         current_user_var.reset(token)
 
     assert redis.calls == []
-    samples = [sample for sample in _metric_values(recorder, "rag_token_usage") if sample.name.endswith("_total")]
-    assert samples[0].labels == {"model": "text-embedding-v3", "token_type": "embedding", "kb_id": "2"}
+    samples = _metric_values(reader, "rag_token_usage")
+    assert dict(samples[0].attributes) == {
+        "model": "text-embedding-v3",
+        "token_type": "embedding",
+        "kb_id": "2",
+    }
 
 
 @pytest.mark.asyncio
 async def test_redis_write_failure_does_not_break_prometheus_recording() -> None:
-    recorder, redis = _build_recorder()
+    recorder, redis, reader = _build_recorder()
     redis.fail = True
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
     try:
@@ -237,13 +260,16 @@ async def test_redis_write_failure_does_not_break_prometheus_recording() -> None
     finally:
         current_user_var.reset(token)
 
-    assert any(sample.value == 5 for sample in _metric_values(recorder, "rag_token_usage"))
-    assert any(sample.labels["sink"] == "redis" for sample in _metric_values(recorder, "rag_token_write_failure"))
+    assert any(data_point.value == 5 for data_point in _metric_values(reader, "rag_token_usage"))
+    assert any(
+        data_point.attributes["sink"] == "redis"
+        for data_point in _metric_values(reader, "rag_token_write_failure")
+    )
 
 
 @pytest.mark.asyncio
 async def test_redis_write_timeout_does_not_break_prometheus_recording() -> None:
-    recorder, redis = _build_recorder()
+    recorder, redis, reader = _build_recorder()
     recorder.write_timeout_seconds = 0.001
     redis.delay_seconds = 0.01
     token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="ADMIN"))
@@ -257,8 +283,11 @@ async def test_redis_write_timeout_does_not_break_prometheus_recording() -> None
     finally:
         current_user_var.reset(token)
 
-    assert any(sample.value == 5 for sample in _metric_values(recorder, "rag_token_usage"))
-    assert any(sample.labels["sink"] == "redis" for sample in _metric_values(recorder, "rag_token_write_failure"))
+    assert any(data_point.value == 5 for data_point in _metric_values(reader, "rag_token_usage"))
+    assert any(
+        data_point.attributes["sink"] == "redis"
+        for data_point in _metric_values(reader, "rag_token_write_failure")
+    )
 
 
 def test_usage_extraction_supports_langchain_and_openai_metadata() -> None:
@@ -295,9 +324,11 @@ async def test_missing_generation_usage_logs_unavailable_signal(caplog: pytest.L
 @pytest.mark.asyncio
 async def test_read_user_tokens_derives_costs_from_configured_prices() -> None:
     redis = FakeRedis()
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
     recorder = TokenUsageRecorder(
         redis_client=redis,
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
         embedding_price=Decimal("0.0005"),
         chat_input_price=Decimal("0.001"),
         chat_output_price=Decimal("0.002"),
@@ -333,7 +364,7 @@ async def test_read_user_tokens_derives_costs_from_configured_prices() -> None:
 
 @pytest.mark.asyncio
 async def test_read_user_tokens_rejects_unreadable_redis_data() -> None:
-    recorder, redis = _build_recorder()
+    recorder, redis, _ = _build_recorder()
     redis.hash_values = {"inputTokens": "not-a-number"}
     with pytest.raises(TokenMetricsUnavailableError):
         await recorder.read_user_tokens(7)

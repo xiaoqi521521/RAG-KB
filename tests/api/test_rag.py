@@ -13,7 +13,6 @@ from app.repositories.chunks import ChunkSearchHit
 from app.schemas.query_cache import QueryCacheEntry
 from app.schemas.rag import RagQueryResponse, SourceCitation
 from app.services.enhanced_retriever import EnhancedRetrieveResult
-from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.rag_query import RAG_REFUSAL_ANSWER, RagQueryService
 from app.services.rag_query_v2 import RagQueryServiceV2
 from app.services.rag_query_v3 import RagQueryServiceV3
@@ -278,7 +277,6 @@ def test_dependency_builder_can_select_basic_query_pipeline(
         session=object(),
         settings=FakeSettings(rag_query_pipeline="v1"),
         token_metrics=token_metrics,
-        faithfulness_metrics=FaithfulnessMetrics(),
     )
 
     assert isinstance(service, RagQueryService)
@@ -300,7 +298,6 @@ def test_dependency_builder_can_select_hybrid_query_pipeline(
         session=object(),
         settings=FakeSettings(rag_query_pipeline="v2"),
         token_metrics=token_metrics,
-        faithfulness_metrics=FaithfulnessMetrics(),
     )
 
     assert isinstance(service, RagQueryServiceV2)
@@ -319,7 +316,6 @@ def test_dependency_builder_can_select_hyde_query_pipeline(monkeypatch: pytest.M
         session=object(),
         settings=FakeSettings(rag_query_pipeline="v3"),
         token_metrics=token_metrics,
-        faithfulness_metrics=FaithfulnessMetrics(),
     )
 
     assert isinstance(service, RagQueryServiceV3)
@@ -336,12 +332,10 @@ def test_dependency_builder_can_select_reranker_query_pipeline(
     monkeypatch.setattr(rag, "get_chat_model", lambda: object())
 
     token_metrics = FakeTokenMetrics()
-    faithfulness_metrics = FaithfulnessMetrics()
     service = rag.get_rag_query_service(
         session=object(),
         settings=FakeSettings(rag_query_pipeline="v4"),
         token_metrics=token_metrics,
-        faithfulness_metrics=faithfulness_metrics,
     )
 
     assert isinstance(service, RagQueryServiceV4)
@@ -349,7 +343,6 @@ def test_dependency_builder_can_select_reranker_query_pipeline(
     assert service.context_trimmer.token_metrics is token_metrics
     assert service.context_trimmer.max_context_tokens == 3000
     assert service.faithfulness_evaluator is not None
-    assert service.faithfulness_evaluator.metrics is faithfulness_metrics
 
 
 def test_dependency_builder_does_not_construct_reranker_for_hyde_pipeline(
@@ -369,7 +362,6 @@ def test_dependency_builder_does_not_construct_reranker_for_hyde_pipeline(
         session=object(),
         settings=FakeSettings(rag_query_pipeline="v3"),
         token_metrics=FakeTokenMetrics(),
-        faithfulness_metrics=FaithfulnessMetrics(),
     )
 
     assert isinstance(service, RagQueryServiceV3)
@@ -384,17 +376,6 @@ def test_get_token_metrics_reads_application_state() -> None:
     )
 
     assert rag.get_token_metrics(request) is token_metrics
-
-
-def test_get_faithfulness_metrics_reads_application_state() -> None:
-    from app.api.routes import rag
-
-    faithfulness_metrics = FaithfulnessMetrics()
-    request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(faithfulness_metrics=faithfulness_metrics))
-    )
-
-    assert rag.get_faithfulness_metrics(request) is faithfulness_metrics
 
 
 @pytest.mark.parametrize(

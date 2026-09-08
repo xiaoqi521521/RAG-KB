@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from prometheus_client import CollectorRegistry
-from prometheus_client.parser import text_string_to_metric_families
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app.core.context import CurrentUser, current_user_var
 from app.services.token_metrics import TokenUsageRecorder
@@ -30,11 +30,28 @@ class FakeRedis:
         return {}
 
 
+def _build_metrics() -> tuple[MeterProvider, InMemoryMetricReader]:
+    reader = InMemoryMetricReader()
+    return MeterProvider(metric_readers=[reader]), reader
+
+
+def _usage_data_points(reader: InMemoryMetricReader) -> list[object]:
+    metrics_data = reader.get_metrics_data()
+    return [
+        data_point
+        for resource in metrics_data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "rag_token_usage"
+        for data_point in metric.data.data_points
+    ]
+
+
 @pytest.mark.asyncio
 async def test_record_chat_usage_separates_input_and_answer_output() -> None:
     redis = FakeRedis()
-    registry = CollectorRegistry()
-    recorder = TokenUsageRecorder(redis_client=redis, registry=registry)
+    provider, reader = _build_metrics()
+    recorder = TokenUsageRecorder(redis_client=redis, meter=provider.get_meter("tests"))
     user_token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="USER"))
     try:
         await recorder.record_chat_usage(
@@ -53,15 +70,13 @@ async def test_record_chat_usage_separates_input_and_answer_output() -> None:
         ("rag:token:v3:stats:7", "answerGenerationTokens", 8),
     ]
     assert "estimatedCostCny" not in redis.values
-    families = {
-        family.name: family
-        for family in text_string_to_metric_families(recorder.render_metrics())
-    }
-    samples = families["rag_token_usage"].samples
     values = {
-        (sample.labels["model"], sample.labels["token_type"], sample.labels["kb_id"]): sample.value
-        for sample in samples
-        if sample.name == "rag_token_usage_total"
+        (
+            data_point.attributes["model"],
+            data_point.attributes["token_type"],
+            data_point.attributes["kb_id"],
+        ): data_point.value
+        for data_point in _usage_data_points(reader)
     }
     assert values == {
         ("deepseek-v4-flash", "input", "2"): 120.0,
@@ -72,8 +87,8 @@ async def test_record_chat_usage_separates_input_and_answer_output() -> None:
 @pytest.mark.asyncio
 async def test_record_chat_usage_separates_input_and_intent_output() -> None:
     redis = FakeRedis()
-    registry = CollectorRegistry()
-    recorder = TokenUsageRecorder(redis_client=redis, registry=registry)
+    provider, _ = _build_metrics()
+    recorder = TokenUsageRecorder(redis_client=redis, meter=provider.get_meter("tests"))
     user_token = current_user_var.set(CurrentUser(user_id=7, department_id="eng", role="USER"))
     try:
         await recorder.record_chat_usage(
@@ -94,6 +109,7 @@ async def test_record_chat_usage_separates_input_and_intent_output() -> None:
 
 
 def test_record_chat_usage_does_not_estimate_missing_provider_usage() -> None:
-    recorder = TokenUsageRecorder(redis_client=FakeRedis(), registry=CollectorRegistry())
+    provider, _ = _build_metrics()
+    recorder = TokenUsageRecorder(redis_client=FakeRedis(), meter=provider.get_meter("tests"))
 
     assert recorder.extract_usage(SimpleNamespace()) == (None, None)

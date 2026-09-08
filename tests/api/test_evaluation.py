@@ -380,7 +380,6 @@ async def test_evaluation_executor_suppresses_personal_usage(
     executor = evaluation.SessionScopedEvaluationRagExecutor(
         settings=get_settings(),
         token_metrics=SimpleNamespace(),
-        faithfulness_metrics=SimpleNamespace(),
     )
 
     collector = EvaluationUsageCollector()

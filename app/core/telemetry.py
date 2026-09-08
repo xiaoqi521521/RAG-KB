@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from opentelemetry import metrics
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
 
@@ -16,21 +18,26 @@ class MetricsSettings(Protocol):
 
 
 def init_metrics(settings: MetricsSettings) -> MeterProvider | None:
-    """按配置初始化进程级 OpenTelemetry MeterProvider。
+    """按配置初始化进程级 OpenTelemetry MeterProvider 并注册到全局。
 
-    本阶段不配置 MetricReader 或 Exporter，控制台观察由 TokenMetrics 即时日志承担。
+    指标统一通过 OTel API 记录，PrometheusMetricReader 把全部指标
+    转写到 prometheus_client 默认 registry，由 /metrics 端点统一暴露。
+    关闭 scope_info 避免每个样本附加与业务无关的 otel_scope_* 标签。
     """
     if not settings.enable_metrics:
         return None
 
-    return MeterProvider(
+    provider = MeterProvider(
         resource=Resource.create(
             {
                 "service.name": settings.app_name,
                 "deployment.environment.name": settings.app_env,
             }
-        )
+        ),
+        metric_readers=[PrometheusMetricReader(scope_info_enabled=False)],
     )
+    metrics.set_meter_provider(provider)
+    return provider
 
 
 def shutdown_metrics(provider: MeterProvider | None) -> None:

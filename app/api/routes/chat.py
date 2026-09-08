@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_current_user
 from app.api.routes.knowledge_bases import get_permission_service
 from app.api.routes.rag import (
-    get_faithfulness_metrics,
     get_query_cache_service,
     get_token_budget_gate,
     get_rag_query_service,
@@ -26,7 +25,6 @@ from app.repositories.chat import ChatRepository
 from app.schemas.common import ApiResponse
 from app.schemas.rag import ChatIntent, ChatMessageResponse, ChatQueryResponse, ChatSessionResponse, RagQueryRequest
 from app.services.chat_sessions import ChatSessionService
-from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.permissions import PermissionService
 from app.services.rag_query_v4 import RagQueryServiceV4
 from app.services.query_cache import QueryCacheService
@@ -75,7 +73,6 @@ def get_streaming_chat_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
     token_budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
-    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
     query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> StreamingChatPipeline:
     """组装使用独立数据库会话的流式问答服务。"""
@@ -85,7 +82,6 @@ def get_streaming_chat_service(
             session=session,
             settings=settings,
             token_metrics=token_metrics,
-            faithfulness_metrics=faithfulness_metrics,
             permission_service=get_permission_service(session=session),
         )
         if not isinstance(rag_service, RagQueryServiceV4):
@@ -105,7 +101,6 @@ def get_synchronous_chat_service(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
     token_budget_gate: GlobalTokenBudgetGate = Depends(get_token_budget_gate),
-    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
     query_cache: QueryCacheService = Depends(get_query_cache_service),
 ) -> SynchronousChatPipeline:
     """组装使用独立数据库会话的同步问答服务。"""
@@ -115,7 +110,6 @@ def get_synchronous_chat_service(
             session=session,
             settings=settings,
             token_metrics=token_metrics,
-            faithfulness_metrics=faithfulness_metrics,
             permission_service=get_permission_service(session=session),
         )
         if not isinstance(rag_service, RagQueryServiceV4):

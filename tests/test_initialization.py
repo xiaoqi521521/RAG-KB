@@ -326,14 +326,21 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
 
     calls: list[str] = []
     fake_provider = object()
-    fake_meter = object()
     fake_token_metrics = object()
-    fake_faithfulness_metrics = object()
+
+    # lifespan 会用真实 BudgetGate 创建指标 instrument，meter 必须是真实 OTel meter。
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()])
+    fake_meter = meter_provider.get_meter("rag-kb.token-metrics")
+    http_meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()])
 
     class Provider:
-        def get_meter(self, name: str):
-            assert name == "rag-kb.token-metrics"
-            return fake_meter
+        def get_meter(self, name: str, *args: object, **kwargs: object):
+            if name == "rag-kb.token-metrics":
+                return fake_meter
+            return http_meter_provider.get_meter(name)
 
     provider = Provider()
 
@@ -358,10 +365,6 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
         assert "budget_gate" in kwargs
         return fake_token_metrics
 
-    def fake_faithfulness_metrics_factory(*, meter):
-        assert meter is fake_meter
-        return fake_faithfulness_metrics
-
     monkeypatch.setattr(main, "configure_logging", lambda settings: None)
     monkeypatch.setattr(main, "init_clients", fake_init_clients)
     monkeypatch.setattr(main, "close_clients", fake_close_clients)
@@ -369,13 +372,11 @@ async def test_lifespan_initializes_and_shuts_down_token_metrics(monkeypatch):
     monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
     monkeypatch.setattr(main, "get_redis", lambda: fake_provider)
     monkeypatch.setattr(main, "TokenMetrics", fake_token_metrics_factory)
-    monkeypatch.setattr(main, "FaithfulnessMetrics", fake_faithfulness_metrics_factory)
 
     app = FastAPI()
     async with main.lifespan(app):
         assert app.state.token_metrics is fake_token_metrics
         assert app.state.token_budget_gate is not None
-        assert app.state.faithfulness_metrics is fake_faithfulness_metrics
         assert app.state.meter_provider is provider
 
     assert calls == ["init_clients", "init_metrics", "shutdown_metrics", "close_clients"]
@@ -428,8 +429,15 @@ async def test_lifespan_warms_up_daily_budget_key(monkeypatch: pytest.MonkeyPatc
 
     calls: list[str] = []
     warmups: list[int] = []
+    # instrument_app 初始化时需要真实 meter 创建 HTTP 指标 instrument。
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    http_meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()])
 
     class FakeBudgetGate:
+        write_failure_counter = object()
+
         def __init__(self, **kwargs: object) -> None:
             pass
 
@@ -437,8 +445,8 @@ async def test_lifespan_warms_up_daily_budget_key(monkeypatch: pytest.MonkeyPatc
             warmups.append(1)
 
     class Provider:
-        def get_meter(self, name: str) -> object:
-            return object()
+        def get_meter(self, name: str, *args: object, **kwargs: object) -> object:
+            return http_meter_provider.get_meter("tests")
 
     async def fake_init_clients(settings: object) -> None:
         calls.append("init_clients")
@@ -460,7 +468,6 @@ async def test_lifespan_warms_up_daily_budget_key(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
     monkeypatch.setattr(main, "get_redis", lambda: object())
     monkeypatch.setattr(main, "TokenMetrics", lambda **kwargs: object())
-    monkeypatch.setattr(main, "FaithfulnessMetrics", lambda **kwargs: object())
     monkeypatch.setattr(main, "GlobalTokenBudgetGate", FakeBudgetGate)
 
     app = FastAPI()
@@ -478,7 +485,15 @@ async def test_lifespan_continues_when_budget_warmup_fails(monkeypatch: pytest.M
     from app import main
     from app.services.token_budget import TokenBudgetUnavailableError
 
+    # instrument_app 初始化时需要真实 meter 创建 HTTP 指标 instrument。
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    http_meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()])
+
     class FailingBudgetGate:
+        write_failure_counter = object()
+
         def __init__(self, **kwargs: object) -> None:
             pass
 
@@ -486,8 +501,8 @@ async def test_lifespan_continues_when_budget_warmup_fails(monkeypatch: pytest.M
             raise TokenBudgetUnavailableError("金额预算状态暂不可用")
 
     class Provider:
-        def get_meter(self, name: str) -> object:
-            return object()
+        def get_meter(self, name: str, *args: object, **kwargs: object) -> object:
+            return http_meter_provider.get_meter("tests")
 
     async def fake_init_clients(settings: object) -> None:
         return None
@@ -508,7 +523,6 @@ async def test_lifespan_continues_when_budget_warmup_fails(monkeypatch: pytest.M
     monkeypatch.setattr(main, "shutdown_metrics", fake_shutdown_metrics)
     monkeypatch.setattr(main, "get_redis", lambda: object())
     monkeypatch.setattr(main, "TokenMetrics", lambda **kwargs: object())
-    monkeypatch.setattr(main, "FaithfulnessMetrics", lambda **kwargs: object())
     monkeypatch.setattr(main, "GlobalTokenBudgetGate", FailingBudgetGate)
 
     app = FastAPI()

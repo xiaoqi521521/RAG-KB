@@ -3,8 +3,9 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import uvicorn
-from fastapi import FastAPI
-from prometheus_fastapi_instrumentator import Instrumentator
+from fastapi import FastAPI, Response
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.router import api_router
 from app.core.clients import close_clients, init_clients
@@ -14,7 +15,6 @@ from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.telemetry import init_metrics, shutdown_metrics
 from app.core.trace_id import register_trace_id_middleware
-from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.token_budget import GlobalTokenBudgetGate
 from app.services.token_metrics import TokenMetrics
 
@@ -28,14 +28,16 @@ async def lifespan(app: FastAPI):
     configure_logging(settings)
     await init_clients(settings)
     meter_provider = init_metrics(settings)
-    meter = meter_provider.get_meter("rag-kb.token-metrics") if meter_provider is not None else None
     app.state.meter_provider = meter_provider
+    # lifespan 内注册全局 provider 后再取 meter，保证指标落到 Prometheus reader。
+    meter = meter_provider.get_meter("rag-kb.token-metrics") if meter_provider is not None else None
     token_budget_gate = GlobalTokenBudgetGate(
         redis_client=cast(Any, get_redis()),
         daily_budget_cny=settings.token_budget_daily_cny,
         timezone=settings.token_budget_timezone,
         request_cost_limit_cny=settings.token_request_alert_cost_cny,
         timeout_seconds=settings.token_stats_timeout_seconds,
+        meter=meter,
     )
     app.state.token_budget_gate = token_budget_gate
     # 启动时预热当日预算 key：该 key 原本在首个预算请求时才创建，部署或重启后
@@ -47,6 +49,8 @@ async def lifespan(app: FastAPI):
         logger.warning("token budget warmup failed: error_type=%s", type(exc).__name__)
     app.state.token_metrics = TokenMetrics(
         redis_client=cast(Any, get_redis()),
+        meter=meter,
+        write_failure_counter=token_budget_gate.write_failure_counter,
         read_timeout_seconds=settings.token_stats_timeout_seconds,
         read_max_retries=settings.token_stats_max_retries,
         budget_gate=token_budget_gate,
@@ -55,10 +59,18 @@ async def lifespan(app: FastAPI):
         chat_output_price=settings.chat_output_cost_cny_per_1k_tokens,
         reranker_price=settings.reranker_cost_cny_per_1k_tokens,
     )
-    app.state.faithfulness_metrics = FaithfulnessMetrics(meter=meter)
+    if meter_provider is not None:
+        # 指标统一走 OTel HTTP 埋点；/metrics 自身不参与统计，避免抓取自增。
+        FastAPIInstrumentor.instrument_app(
+            app,
+            meter_provider=meter_provider,
+            excluded_urls="/metrics$",
+        )
     try:
         yield
     finally:
+        if meter_provider is not None:
+            FastAPIInstrumentor.uninstrument_app(app)
         shutdown_metrics(meter_provider)
         await close_clients()
 
@@ -80,7 +92,10 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     if settings.enable_metrics:
-        Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+        # 普通路由直接输出 exposition，避免 Starlette Mount 的尾斜杠 307 重定向。
+        @app.get("/metrics", include_in_schema=False)
+        def metrics() -> Response:
+            return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
     return app
 
 

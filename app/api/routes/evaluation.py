@@ -8,7 +8,6 @@ from app.api.dependencies import get_app_token_metrics
 from app.api.routes.knowledge_bases import get_permission_service
 from app.api.routes.rag import (
     build_rag_query_service,
-    get_faithfulness_metrics,
     get_token_budget_gate,
 )
 from app.core.clients import get_chat_model, get_embeddings
@@ -36,7 +35,6 @@ from app.schemas.evaluation import (
 )
 from app.services.permissions import PermissionService
 from app.services.rag_query_v4 import RagQueryServiceV4
-from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.token_metrics import (
     TokenUsageRecorder,
     evaluation_usage_capture_var,
@@ -79,11 +77,9 @@ class SessionScopedEvaluationRagExecutor:
         *,
         settings: Settings,
         token_metrics: TokenUsageRecorder,
-        faithfulness_metrics: FaithfulnessMetrics,
     ) -> None:
         self.settings = settings
         self.token_metrics = token_metrics
-        self.faithfulness_metrics = faithfulness_metrics
 
     async def execute(
         self,
@@ -104,7 +100,6 @@ class SessionScopedEvaluationRagExecutor:
                     session=session,
                     settings=self.settings,
                     token_metrics=self.token_metrics,
-                    faithfulness_metrics=self.faithfulness_metrics,
                     permission_service=get_permission_service(session),
                 )
                 if not isinstance(rag_service, RagQueryServiceV4):
@@ -126,7 +121,6 @@ class SessionScopedEvaluationRagExecutor:
 def get_evaluation_rag_executor(
     settings: Settings = Depends(get_settings),
     token_metrics: TokenUsageRecorder = Depends(get_app_token_metrics),
-    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
 ) -> EvaluationRagExecutor:
     """校验当前部署启用 V4 管道，并返回支持并发的评估执行器。"""
     if settings.rag_query_pipeline != "v4":
@@ -137,7 +131,6 @@ def get_evaluation_rag_executor(
     return SessionScopedEvaluationRagExecutor(
         settings=settings,
         token_metrics=token_metrics,
-        faithfulness_metrics=faithfulness_metrics,
     )
 
 

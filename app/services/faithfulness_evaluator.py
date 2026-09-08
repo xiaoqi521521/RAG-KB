@@ -10,8 +10,6 @@ from enum import Enum
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from opentelemetry import metrics as otel_metrics
-from opentelemetry.metrics import Counter, Histogram, Meter
 
 from app.services.token_metrics import GenerationTokenRecorder, record_generation_usage
 
@@ -44,41 +42,6 @@ class FaithfulnessResult:
     sampled: bool
 
 
-class FaithfulnessMetrics:
-    """记录忠实性评估的状态、分数和耗时指标。"""
-
-    def __init__(self, *, meter: Meter | None = None) -> None:
-        """初始化指标 Instrument；未启用监控时使用 OpenTelemetry 的空实现。"""
-        effective_meter = meter or otel_metrics.get_meter("rag-kb.faithfulness")
-        self._evaluations: Counter = effective_meter.create_counter(
-            "rag.faithfulness.evaluations",
-            description="忠实性评估次数",
-        )
-        self._scores: Histogram = effective_meter.create_histogram(
-            "rag.faithfulness.score",
-            description="忠实性评估分数",
-        )
-        self._durations: Histogram = effective_meter.create_histogram(
-            "rag.faithfulness.duration",
-            unit="ms",
-            description="忠实性评估耗时",
-        )
-
-    def record(self, result: FaithfulnessResult) -> None:
-        """写入一次评估观测；指标故障不应影响回答链路。"""
-        attributes = {
-            "status": result.status.value,
-            "sampled": str(result.sampled).lower(),
-        }
-        try:
-            self._evaluations.add(1, attributes)
-            self._durations.record(result.elapsed_ms, attributes)
-            if result.score is not None:
-                self._scores.record(result.score, attributes)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("faithfulness_metric_write_failed=true error_type=%s", type(exc).__name__)
-
-
 class FaithfulnessEvaluator:
     """对回答执行非阻断的抽样忠实性评估。"""
 
@@ -89,7 +52,6 @@ class FaithfulnessEvaluator:
         token_metrics: GenerationTokenRecorder,
         sampling_rate: float,
         timeout_seconds: float,
-        metrics: FaithfulnessMetrics | None = None,
         model_name: str = "unknown",
     ) -> None:
         """初始化复用回答模型的评估器。"""
@@ -97,7 +59,6 @@ class FaithfulnessEvaluator:
         self.token_metrics = token_metrics
         self.sampling_rate = sampling_rate
         self.timeout_seconds = timeout_seconds
-        self.metrics = metrics
         self.model_name = model_name
 
     async def evaluate(
@@ -119,7 +80,6 @@ class FaithfulnessEvaluator:
                 sampled=False,
             )
             self._log_result(result)
-            self._record_metrics(result)
             return result
 
         try:
@@ -137,7 +97,6 @@ class FaithfulnessEvaluator:
             result = self._error_result(started_at, type(exc).__name__)
 
         self._log_result(result)
-        self._record_metrics(result)
         return result
 
     def _should_sample(self) -> bool:
@@ -223,11 +182,6 @@ class FaithfulnessEvaluator:
             result.elapsed_ms,
             result.sampled,
         )
-
-    def _record_metrics(self, result: FaithfulnessResult) -> None:
-        """将评估结果交给应用级指标记录器。"""
-        if self.metrics is not None:
-            self.metrics.record(result)
 
     def _elapsed_ms(self, started_at: float) -> int:
         """返回非负的评估耗时毫秒数。"""

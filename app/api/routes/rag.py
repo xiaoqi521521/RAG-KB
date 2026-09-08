@@ -21,7 +21,6 @@ from app.services.context_trimmer import ContextTrimmer
 from app.services.embedding import EmbeddingConfig, EmbeddingService
 from app.services.enhanced_retriever import EnhancedRetriever
 from app.services.faithfulness_evaluator import FaithfulnessEvaluator
-from app.services.faithfulness_evaluator import FaithfulnessMetrics
 from app.services.hybrid_retriever import HybridRetriever
 from app.services.permissions import PermissionService
 from app.services.query_rewriter import QueryRewriter
@@ -65,11 +64,6 @@ def get_token_budget_gate(request: Request) -> GlobalTokenBudgetGate:
     return request.app.state.token_budget_gate
 
 
-def get_faithfulness_metrics(request: Request) -> FaithfulnessMetrics:
-    """从应用状态获取单例忠实性评估指标记录器。"""
-    return request.app.state.faithfulness_metrics
-
-
 def get_query_cache_service(
     settings: Settings = Depends(get_settings),
 ) -> QueryCacheService:
@@ -86,7 +80,6 @@ def build_rag_query_service(
     session: AsyncSession,
     settings: Settings,
     token_metrics: TokenMetrics,
-    faithfulness_metrics: FaithfulnessMetrics,
     permission_service: PermissionService,
 ) -> RagQueryPipeline:
     """根据配置构建 RAG 查询服务及其依赖。
@@ -192,7 +185,6 @@ def build_rag_query_service(
                 token_metrics=token_metrics,
                 sampling_rate=settings.rag_faithfulness_sample_rate,
                 timeout_seconds=settings.rag_faithfulness_timeout_seconds,
-                metrics=faithfulness_metrics,
                 model_name=settings.chat_model,
             ),
         )
@@ -204,7 +196,6 @@ def get_rag_query_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     token_metrics: TokenMetrics = Depends(get_token_metrics),
-    faithfulness_metrics: FaithfulnessMetrics = Depends(get_faithfulness_metrics),
     permission_service: PermissionService = Depends(get_permission_service),
 ) -> RagQueryPipeline:
     """根据当前请求依赖构建 RAG 查询服务。"""
@@ -212,7 +203,6 @@ def get_rag_query_service(
         session=session,
         settings=settings,
         token_metrics=token_metrics,
-        faithfulness_metrics=faithfulness_metrics,
         permission_service=permission_service,
     )
 

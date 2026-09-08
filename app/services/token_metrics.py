@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, Protocol
 
-from prometheus_client import CollectorRegistry, Counter, generate_latest
-from prometheus_client.registry import REGISTRY
+from opentelemetry import metrics
+from opentelemetry.metrics import Counter, Meter
 
 from app.core.context import current_user_var
 from app.services.token_budget import GlobalTokenBudgetGate, TOKEN_REDIS_NAMESPACE
@@ -17,20 +17,8 @@ from app.services.token_budget import GlobalTokenBudgetGate, TOKEN_REDIS_NAMESPA
 logger = logging.getLogger(__name__)
 
 
-def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> Any:
-    """应用测试/重载重复创建时复用默认 registry 的同名 collector。"""
-    try:
-        return factory(name, *args, **kwargs)
-    except ValueError:
-        registry = kwargs.get("registry")
-        if registry is not REGISTRY:
-            raise
-        existing = REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
-        if existing is None:
-            raise
-        return existing
-
 REDIS_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}stats:"
+_METER_NAME = "rag-kb.token-metrics"
 _USER_USAGE_UPDATE_SCRIPT = """
 local existing_token = redis.call('HGET', KEYS[1], ARGV[1])
 if existing_token and tonumber(existing_token) == nil then
@@ -172,7 +160,8 @@ class TokenUsageRecorder:
         self,
         *,
         redis_client: RedisTokenStore,
-        registry: CollectorRegistry | None = None,
+        meter: Meter | None = None,
+        write_failure_counter: Counter | None = None,
         read_timeout_seconds: float = 1.0,
         read_max_retries: int = 1,
         budget_gate: GlobalTokenBudgetGate | None = None,
@@ -183,7 +172,6 @@ class TokenUsageRecorder:
         reranker_price: Decimal = Decimal("0"),
     ) -> None:
         self.redis = redis_client
-        self.registry = registry or REGISTRY
         self.read_timeout_seconds = read_timeout_seconds
         self.read_max_retries = read_max_retries
         self.budget_gate = budget_gate
@@ -200,33 +188,23 @@ class TokenUsageRecorder:
             "evaluation": chat_output_price,
             "reranker": reranker_price,
         }
-        self._usage = _metric_or_existing(
-            Counter,
-            "rag_token_usage_total",
-            "Provider reported Token usage",
-            ["model", "token_type", "kb_id"],
-            registry=self.registry,
+        effective_meter = meter or metrics.get_meter(_METER_NAME)
+        self._usage = effective_meter.create_counter(
+            "rag_token_usage",
+            description="Provider reported Token usage",
         )
-        self._usage_unavailable = _metric_or_existing(
-            Counter,
-            "rag_token_usage_unavailable_total",
-            "Model calls whose provider Token usage was unavailable",
-            ["model", "token_type", "kb_id"],
-            registry=self.registry,
+        self._usage_unavailable = effective_meter.create_counter(
+            "rag_token_usage_unavailable",
+            description="Model calls whose provider Token usage was unavailable",
         )
-        self._usage_cost = _metric_or_existing(
-            Counter,
-            "rag_token_usage_cost_cny_total",
-            "Estimated CNY cost for provider reported Token usage",
-            ["model", "token_type", "kb_id"],
-            registry=self.registry,
+        self._usage_cost = effective_meter.create_counter(
+            "rag_token_usage_cost_cny",
+            description="Estimated CNY cost for provider reported Token usage",
         )
-        self._write_failure = _metric_or_existing(
-            Counter,
-            "rag_token_write_failure_total",
-            "Token usage sink write failures",
-            ["sink", "token_type"],
-            registry=self.registry,
+        # write failure 与预算闸门共享同一 instrument，避免同名指标重复导出。
+        self._write_failure = write_failure_counter or effective_meter.create_counter(
+            "rag_token_write_failure",
+            description="Token usage sink write failures",
         )
 
     async def record_chat_usage(
@@ -295,13 +273,13 @@ class TokenUsageRecorder:
         if tokens == 0:
             return
 
-        labels = {
+        attributes = {
             "model": _label_value(model, fallback="unknown"),
             "token_type": token_type,
             "kb_id": _label_value(kb_id, fallback="unknown"),
         }
         try:
-            self._usage.labels(**labels).inc(tokens)
+            self._usage.add(tokens, attributes)
         except Exception as exc:  # noqa: BLE001
             self._record_write_failure(sink="prometheus", token_type=token_type)
             logger.warning(
@@ -314,7 +292,7 @@ class TokenUsageRecorder:
             price = self._prices[token_type]
             estimated_cost = Decimal(tokens) / Decimal("1000") * price
             if estimated_cost > 0:
-                self._usage_cost.labels(**labels).inc(float(estimated_cost))
+                self._usage_cost.add(float(estimated_cost), attributes)
         except Exception as exc:  # noqa: BLE001
             self._record_write_failure(sink="prometheus", token_type=token_type)
             logger.warning(
@@ -363,13 +341,13 @@ class TokenUsageRecorder:
     ) -> None:
         """记录 provider usage 不可用的观测，不用本地估算填充 Token。"""
         self._validate_token_type(token_type)
-        labels = {
+        attributes = {
             "model": _label_value(model, fallback="unknown"),
             "token_type": token_type,
             "kb_id": _label_value(kb_id, fallback="unknown"),
         }
         try:
-            self._usage_unavailable.labels(**labels).inc()
+            self._usage_unavailable.add(1, attributes)
         except Exception as exc:  # noqa: BLE001
             self._record_write_failure(sink="prometheus", token_type=token_type)
             logger.warning(
@@ -439,10 +417,6 @@ class TokenUsageRecorder:
             return Decimal("0")
         return _derive_cost_cny(tokens, self._prices[token_type])
 
-    def render_metrics(self) -> str:
-        """渲染当前 recorder 所属 registry，主要供测试和诊断使用。"""
-        return generate_latest(self.registry).decode("utf-8")
-
     @staticmethod
     def extract_usage(response: Any) -> tuple[int | None, int | None]:
         """公开响应 usage 提取，返回输入和输出 Token。"""
@@ -505,7 +479,7 @@ class TokenUsageRecorder:
 
     def _record_write_failure(self, *, sink: str, token_type: str) -> None:
         try:
-            self._write_failure.labels(sink=sink, token_type=token_type).inc()
+            self._write_failure.add(1, {"sink": sink, "token_type": token_type})
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Token usage write failure metric unavailable: sink=%s token_type=%s",

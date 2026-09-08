@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -10,26 +11,14 @@ from decimal import Decimal
 from typing import Any, AsyncIterator, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
-from prometheus_client.registry import REGISTRY
+from opentelemetry import metrics
+from opentelemetry.metrics import CallbackOptions, Meter, Observation
 
 logger = logging.getLogger(__name__)
 
 
-def _metric_or_existing(factory: Any, name: str, *args: Any, **kwargs: Any) -> Any:
-    """应用测试/重载重复创建时复用默认 registry 的同名 collector。"""
-    try:
-        return factory(name, *args, **kwargs)  # type: ignore[operator]
-    except ValueError:
-        registry = kwargs.get("registry")
-        if registry is not REGISTRY:
-            raise
-        existing = REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
-        if existing is None:
-            raise
-        return existing
-
 TOKEN_REDIS_NAMESPACE = "rag:token:v3:"
+_METER_NAME = "rag-kb.token-metrics"
 # 金额预算使用独立子版本，避免把旧 Token 预算值解释成 CNY。
 _BUDGET_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}budget:cny:"
 _CHECK_SCRIPT = """
@@ -92,7 +81,7 @@ class GlobalTokenBudgetGate:
         timezone: str = "Asia/Shanghai",
         request_cost_limit_cny: Decimal | int | float | str = Decimal("0.01"),
         timeout_seconds: float = 1.0,
-        registry: CollectorRegistry | None = None,
+        meter: Meter | None = None,
     ) -> None:
         daily_budget = _as_decimal(daily_budget_cny)
         request_cost_limit = _as_decimal(request_cost_limit_cny)
@@ -111,48 +100,45 @@ class GlobalTokenBudgetGate:
         self.daily_budget_cny = daily_budget
         self.request_cost_limit_cny = request_cost_limit
         self.timeout_seconds = timeout_seconds
-        self.registry = registry or REGISTRY
-        self._budget_used = _metric_or_existing(
-            Gauge,
+        effective_meter = meter or metrics.get_meter(_METER_NAME)
+        # 同步 Gauge 每次采集即消费，空闲期会导致 Prometheus 序列消失；
+        # 改用 ObservableGauge，每次抓取回调重新产出当前值。
+        self._budget_used_value = 0.0
+        self._budget_used = effective_meter.create_observable_gauge(
             "rag_token_budget_used_cny",
-            "Current global daily CNY budget usage",
-            ["scope"],
-            registry=self.registry,
+            description="Current global daily CNY budget usage",
+            callbacks=[self._observe_budget_used],
         )
-        self._budget_limit = _metric_or_existing(
-            Gauge,
+        self._budget_limit_value = float(daily_budget)
+        self._budget_limit = effective_meter.create_observable_gauge(
             "rag_token_budget_limit_cny",
-            "Configured global daily CNY budget",
-            ["scope"],
-            registry=self.registry,
+            description="Configured global daily CNY budget",
+            callbacks=[self._observe_budget_limit],
         )
-        self._budget_limit.labels(scope="global").set(float(daily_budget))
-        self._rejected = _metric_or_existing(
-            Counter,
-            "rag_token_budget_rejected_total",
-            "Requests rejected by the global CNY budget",
-            ["reason"],
-            registry=self.registry,
+        self._rejected = effective_meter.create_counter(
+            "rag_token_budget_rejected",
+            description="Requests rejected by the global CNY budget",
         )
-        self._request_cost = _metric_or_existing(
-            Histogram,
+        self._request_cost = effective_meter.create_histogram(
             "rag_token_request_cost_cny",
-            "Observed CNY cost for one completed request",
-            registry=self.registry,
+            description="Observed CNY cost for one completed request",
         )
-        self._request_over_limit = _metric_or_existing(
-            Counter,
-            "rag_token_request_cost_over_limit_total",
-            "Completed requests over the configured CNY threshold",
-            registry=self.registry,
+        self._request_over_limit = effective_meter.create_counter(
+            "rag_token_request_cost_over_limit",
+            description="Completed requests over the configured CNY threshold",
         )
-        self._write_failure = _metric_or_existing(
-            Counter,
-            "rag_token_write_failure_total",
-            "Token usage sink write failures",
-            ["sink", "token_type"],
-            registry=self.registry,
+        # write failure 供 TokenUsageRecorder 共用，避免同名指标重复导出。
+        self.write_failure_counter = effective_meter.create_counter(
+            "rag_token_write_failure",
+            description="Token usage sink write failures",
         )
+        self._write_failure = self.write_failure_counter
+
+    def _observe_budget_used(self, options: CallbackOptions) -> Iterable[Observation]:
+        yield Observation(self._budget_used_value, {"scope": "global"})
+
+    def _observe_budget_limit(self, options: CallbackOptions) -> Iterable[Observation]:
+        yield Observation(self._budget_limit_value, {"scope": "global"})
 
     def current_key(self, now: datetime | None = None) -> str:
         """返回当前部署时区下的每日预算 Redis key。"""
@@ -180,9 +166,9 @@ class GlobalTokenBudgetGate:
         if current == Decimal("-2"):
             raise TokenBudgetUnavailableError("金额预算数据不可用")
         if current < Decimal("0"):
-            self._rejected.labels(reason="daily_budget_exhausted").inc()
+            self._rejected.add(1, {"reason": "daily_budget_exhausted"})
             raise TokenBudgetExhaustedError("今日金额预算已用尽")
-        self._budget_used.labels(scope="global").set(float(current))
+        self._budget_used_value = float(current)
 
     async def record_cost(self, cost_cny: Decimal | int | float | str) -> None:
         """把已完成 provider 调用的金额增量累计到当天全局计数。"""
@@ -193,7 +179,7 @@ class GlobalTokenBudgetGate:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 total = _as_decimal(await self.redis.incrbyfloat(key, str(cost)))
-            self._budget_used.labels(scope="global").set(float(total))
+            self._budget_used_value = float(total)
         except Exception as exc:  # noqa: BLE001
             # 预算统计写失败不能回滚已经完成的模型调用。
             logger.warning(
@@ -214,7 +200,7 @@ class GlobalTokenBudgetGate:
             and not accumulator.over_limit_recorded
         ):
             accumulator.over_limit_recorded = True
-            self._request_over_limit.inc()
+            self._request_over_limit.add(1)
             logger.warning("request_cost_over_limit=true")
 
     @asynccontextmanager
@@ -225,13 +211,13 @@ class GlobalTokenBudgetGate:
         try:
             yield
         finally:
-            self._request_cost.observe(float(accumulator.total))
+            self._request_cost.record(float(accumulator.total))
             _REQUEST_COST.reset(token)
 
     def _record_write_failure(self, *, sink: str, token_type: str) -> None:
         """记录预算统计出口故障，指标自身故障也不能影响业务请求。"""
         try:
-            self._write_failure.labels(sink=sink, token_type=token_type).inc()
+            self._write_failure.add(1, {"sink": sink, "token_type": token_type})
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Token budget write failure metric unavailable: sink=%s token_type=%s",

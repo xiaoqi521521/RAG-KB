@@ -7,7 +7,6 @@ import pytest
 
 from app.services.faithfulness_evaluator import (
     FaithfulnessEvaluator,
-    FaithfulnessMetrics,
     FaithfulnessStatus,
 )
 
@@ -30,14 +29,6 @@ class FakeTokenMetrics:
         self.calls.append({"tokens": tokens, "source": source})
 
 
-class FakeFaithfulnessMetrics:
-    def __init__(self) -> None:
-        self.results: list[object] = []
-
-    def record(self, result: object) -> None:
-        self.results.append(result)
-
-
 @pytest.mark.asyncio
 async def test_evaluate_returns_normalized_faithful_result_and_records_extra_tokens() -> None:
     chat_model = FakeChatModel(
@@ -47,13 +38,11 @@ async def test_evaluate_returns_normalized_faithful_result_and_records_extra_tok
         )
     )
     token_metrics = FakeTokenMetrics()
-    faithfulness_metrics = FakeFaithfulnessMetrics()
     evaluator = FaithfulnessEvaluator(
         chat_model=chat_model,
         token_metrics=token_metrics,
         sampling_rate=1,
         timeout_seconds=5,
-        metrics=faithfulness_metrics,
     )
 
     result = await evaluator.evaluate(
@@ -67,43 +56,6 @@ async def test_evaluate_returns_normalized_faithful_result_and_records_extra_tok
     assert result.sampled is True
     assert chat_model.calls == 1
     assert token_metrics.calls == [{"tokens": 12, "source": "faithfulness_evaluation"}]
-    assert faithfulness_metrics.results == [result]
-
-
-def test_faithfulness_metrics_records_status_score_duration_and_sampling() -> None:
-    from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-
-    reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader])
-    metrics = FaithfulnessMetrics(meter=provider.get_meter("tests.faithfulness"))
-
-    metrics.record(
-        SimpleNamespace(
-            status=FaithfulnessStatus.UNFAITHFUL,
-            score=0.3,
-            elapsed_ms=12,
-            sampled=True,
-        )
-    )
-
-    try:
-        metrics_data = reader.get_metrics_data()
-    finally:
-        provider.shutdown()
-
-    assert metrics_data is not None
-    metric_names = {
-        metric.name
-        for resource_metrics in metrics_data.resource_metrics
-        for scope_metrics in resource_metrics.scope_metrics
-        for metric in scope_metrics.metrics
-    }
-    assert metric_names == {
-        "rag.faithfulness.evaluations",
-        "rag.faithfulness.score",
-        "rag.faithfulness.duration",
-    }
 
 
 @pytest.mark.asyncio
@@ -128,13 +80,11 @@ async def test_evaluate_returns_unfaithful_result_with_reason() -> None:
 @pytest.mark.asyncio
 async def test_evaluate_skips_model_call_when_sampling_is_disabled() -> None:
     chat_model = FakeChatModel(SimpleNamespace(content="不应调用"))
-    faithfulness_metrics = FakeFaithfulnessMetrics()
     evaluator = FaithfulnessEvaluator(
         chat_model=chat_model,
         token_metrics=FakeTokenMetrics(),
         sampling_rate=0,
         timeout_seconds=5,
-        metrics=faithfulness_metrics,
     )
 
     result = await evaluator.evaluate(question="问题", answer="回答", context="参考内容")
@@ -143,7 +93,6 @@ async def test_evaluate_skips_model_call_when_sampling_is_disabled() -> None:
     assert result.score is None
     assert result.sampled is False
     assert chat_model.calls == 0
-    assert faithfulness_metrics.results == [result]
 
 
 @pytest.mark.asyncio

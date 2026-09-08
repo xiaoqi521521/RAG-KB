@@ -6,7 +6,8 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
-from prometheus_client import CollectorRegistry
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app.services.token_budget import (
     _CHECK_SCRIPT,
@@ -49,6 +50,23 @@ class SlowRedis(FakeRedis):
         return await super().eval(script, numkeys, *keys_and_args)
 
 
+def _build_metrics() -> tuple[MeterProvider, InMemoryMetricReader]:
+    reader = InMemoryMetricReader()
+    return MeterProvider(metric_readers=[reader]), reader
+
+
+def _data_points(reader: InMemoryMetricReader, metric_name: str) -> list[object]:
+    metrics_data = reader.get_metrics_data()
+    return [
+        data_point
+        for resource in metrics_data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == metric_name
+        for data_point in metric.data.data_points
+    ]
+
+
 def test_check_script_returns_usage_as_string_to_avoid_lua_truncation() -> None:
     """Redis 会把 Lua 数值返回截断为整数，预算金额必须以字符串读回。"""
     assert "return tostring(current)" in _CHECK_SCRIPT
@@ -60,10 +78,11 @@ def test_check_script_returns_usage_as_string_to_avoid_lua_truncation() -> None:
 @pytest.mark.asyncio
 async def test_budget_uses_asia_shanghai_daily_key_and_allows_below_limit() -> None:
     redis = FakeRedis(check_result=0)
+    provider, _ = _build_metrics()
     gate = GlobalTokenBudgetGate(
         redis_client=redis,
         daily_budget_cny=Decimal("1.00"),
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
     )
 
     assert gate.current_key(datetime(2026, 7, 22, 23, 59, tzinfo=ZoneInfo("Asia/Shanghai"))) == (
@@ -78,25 +97,21 @@ async def test_budget_uses_asia_shanghai_daily_key_and_allows_below_limit() -> N
 @pytest.mark.asyncio
 async def test_budget_preserves_decimal_usage_from_redis() -> None:
     redis = FakeRedis(check_result="0.25")
-    registry = CollectorRegistry()
-    gate = GlobalTokenBudgetGate(redis_client=redis, registry=registry)
+    provider, reader = _build_metrics()
+    gate = GlobalTokenBudgetGate(redis_client=redis, meter=provider.get_meter("tests"))
 
     await gate.ensure_available()
 
-    samples = [
-        sample
-        for family in registry.collect()
-        for sample in family.samples
-        if sample.name == "rag_token_budget_used_cny"
-    ]
+    samples = _data_points(reader, "rag_token_budget_used_cny")
     assert samples[0].value == 0.25
 
 
 @pytest.mark.asyncio
 async def test_budget_rejects_when_redis_check_reports_exhaustion() -> None:
+    provider, _ = _build_metrics()
     gate = GlobalTokenBudgetGate(
         redis_client=FakeRedis(check_result=-1),
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
     )
 
     with pytest.raises(TokenBudgetExhaustedError):
@@ -105,7 +120,8 @@ async def test_budget_rejects_when_redis_check_reports_exhaustion() -> None:
 
 @pytest.mark.asyncio
 async def test_budget_redis_failure_is_unavailable() -> None:
-    gate = GlobalTokenBudgetGate(redis_client=FakeRedis(), registry=CollectorRegistry())
+    provider, _ = _build_metrics()
+    gate = GlobalTokenBudgetGate(redis_client=FakeRedis(), meter=provider.get_meter("tests"))
     gate.redis.fail = True  # type: ignore[attr-defined]
 
     with pytest.raises(TokenBudgetUnavailableError):
@@ -114,10 +130,11 @@ async def test_budget_redis_failure_is_unavailable() -> None:
 
 @pytest.mark.asyncio
 async def test_budget_redis_timeout_is_unavailable() -> None:
+    provider, _ = _build_metrics()
     gate = GlobalTokenBudgetGate(
         redis_client=SlowRedis(),
         timeout_seconds=0.001,
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
     )
 
     with pytest.raises(TokenBudgetUnavailableError):
@@ -128,24 +145,24 @@ async def test_budget_redis_timeout_is_unavailable() -> None:
 async def test_budget_record_failure_is_non_blocking_and_observable() -> None:
     redis = FakeRedis()
     redis.fail = True
-    gate = GlobalTokenBudgetGate(redis_client=redis, registry=CollectorRegistry())
+    provider, reader = _build_metrics()
+    gate = GlobalTokenBudgetGate(redis_client=redis, meter=provider.get_meter("tests"))
 
     await gate.record_cost(Decimal("0.10"))
 
-    metrics = gate.registry.collect()
+    write_failures = _data_points(reader, "rag_token_write_failure")
     assert any(
-        sample.name == "rag_token_write_failure_total"
-        and sample.labels == {"sink": "redis", "token_type": "budget"}
-        and sample.value == 1
-        for family in metrics
-        for sample in family.samples
+        data_point.attributes == {"sink": "redis", "token_type": "budget"}
+        and data_point.value == 1
+        for data_point in write_failures
     )
 
 
 @pytest.mark.asyncio
 async def test_budget_record_stores_cost_in_parallel_budget_key() -> None:
     redis = FakeRedis()
-    gate = GlobalTokenBudgetGate(redis_client=redis, registry=CollectorRegistry())
+    provider, _ = _build_metrics()
+    gate = GlobalTokenBudgetGate(redis_client=redis, meter=provider.get_meter("tests"))
 
     await gate.record_cost(Decimal("0.25"))
 
@@ -156,60 +173,56 @@ async def test_budget_record_stores_cost_in_parallel_budget_key() -> None:
 
 @pytest.mark.asyncio
 async def test_request_scope_marks_completed_request_over_limit_without_rejecting_it() -> None:
+    provider, reader = _build_metrics()
     gate = GlobalTokenBudgetGate(
         redis_client=FakeRedis(),
         request_cost_limit_cny=Decimal("0.01"),
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
     )
 
     async with gate.request_scope():
         gate.add_request_cost(Decimal("0.0101"))
 
-    metrics = gate.registry.collect()
+    over_limit = _data_points(reader, "rag_token_request_cost_over_limit")
     assert any(
-        sample.name == "rag_token_request_cost_over_limit_total" and sample.value == 1
-        for family in metrics
-        for sample in family.samples
+        data_point.value == 1 for data_point in over_limit
     )
 
 
 @pytest.mark.asyncio
 async def test_request_scope_does_not_alert_at_the_cost_limit() -> None:
-    registry = CollectorRegistry()
+    provider, reader = _build_metrics()
     gate = GlobalTokenBudgetGate(
         redis_client=FakeRedis(),
         request_cost_limit_cny=Decimal("0.01"),
-        registry=registry,
+        meter=provider.get_meter("tests"),
     )
 
     async with gate.request_scope():
         gate.add_request_cost(Decimal("0.01"))
 
-    metrics = registry.collect()
+    over_limit = _data_points(reader, "rag_token_request_cost_over_limit")
     assert not any(
-        sample.name == "rag_token_request_cost_over_limit_total" and sample.value == 1
-        for family in metrics
-        for sample in family.samples
+        data_point.value == 1 for data_point in over_limit
     )
 
 
 @pytest.mark.asyncio
 async def test_background_token_update_shares_request_limit_observation() -> None:
+    provider, reader = _build_metrics()
     gate = GlobalTokenBudgetGate(
         redis_client=FakeRedis(),
         request_cost_limit_cny=Decimal("0.01"),
-        registry=CollectorRegistry(),
+        meter=provider.get_meter("tests"),
     )
 
     async with gate.request_scope():
         task = asyncio.create_task(_add_request_cost(gate, Decimal("0.0101")))
         await task
 
-    metrics = gate.registry.collect()
+    over_limit = _data_points(reader, "rag_token_request_cost_over_limit")
     assert any(
-        sample.name == "rag_token_request_cost_over_limit_total" and sample.value == 1
-        for family in metrics
-        for sample in family.samples
+        data_point.value == 1 for data_point in over_limit
     )
 
 
