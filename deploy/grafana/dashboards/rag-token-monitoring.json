@@ -183,7 +183,7 @@
         },
         {
           "expr": "increase(rag_token_write_failure_total[1h])",
-          "legendFormat": "sink write failure"
+          "legendFormat": "sink write failure ({{sink}})"
         }
       ]
     },
