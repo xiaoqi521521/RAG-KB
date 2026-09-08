@@ -107,7 +107,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "5 分钟 Token 速率",
+      "title": "Token 用量（所选时间范围）",
       "gridPos": {
         "x": 6,
         "y": 0,
@@ -116,7 +116,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type) (rate(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[5m]))",
+          "expr": "sum by (token_type) (increase(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[$__range]))",
           "legendFormat": "{{token_type}}"
         }
       ]
@@ -124,7 +124,7 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "估算成本速率（CNY）",
+      "title": "估算成本（所选时间范围）",
       "gridPos": {
         "x": 15,
         "y": 0,
@@ -133,7 +133,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type,model,kb_id) (rate(rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[5m]))",
+          "expr": "sum by (token_type, model, kb_id) (increase(rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[$__range]))",
           "legendFormat": "{{token_type}} / {{model}} / kb={{kb_id}}"
         }
       ],
