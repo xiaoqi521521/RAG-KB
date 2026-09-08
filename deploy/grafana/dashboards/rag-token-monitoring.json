@@ -185,12 +185,7 @@
           "expr": "increase(rag_token_write_failure_total[1h])",
           "legendFormat": "sink write failure"
         }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0
-        }
-      }
+      ]
     },
     {
       "id": 6,
