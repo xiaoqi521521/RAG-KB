@@ -101,6 +101,11 @@ async def test_daily_usage_derives_cost_and_merges_evaluation_usage() -> None:
         Decimal("0.0000"),
         Decimal("0.1975"),
     ]
+    assert [(point.retrieval_tokens, point.retrieval_cost) for point in points] == [
+        (3_500, Decimal("0.0030")),
+        (0, Decimal("0.0000")),
+        (4_000, Decimal("0.0020")),
+    ]
     assert [(point.evaluation_tokens, point.evaluation_cost) for point in points] == [
         (123, Decimal("0.0123")),
         (0, Decimal("0.0000")),
@@ -127,6 +132,8 @@ async def test_daily_usage_works_without_evaluation_repository() -> None:
             date="2026-09-08",
             tokens=25_000,
             cost=Decimal("0.0300"),
+            retrieval_tokens=25_000,
+            retrieval_cost=Decimal("0.0300"),
             evaluation_tokens=0,
             evaluation_cost=Decimal("0.0000"),
         )

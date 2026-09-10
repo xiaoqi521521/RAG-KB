@@ -102,6 +102,8 @@ async def get_daily_usage_history(
                 date=point.date,
                 tokens=point.tokens,
                 cost=f"{point.cost:.4f}",
+                retrieval_tokens=point.retrieval_tokens,
+                retrieval_cost=f"{point.retrieval_cost:.4f}",
                 evaluation_tokens=point.evaluation_tokens,
                 evaluation_cost=f"{point.evaluation_cost:.4f}",
             )

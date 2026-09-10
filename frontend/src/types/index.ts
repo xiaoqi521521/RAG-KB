@@ -188,6 +188,8 @@ export interface DailyUsagePoint {
   date: string;
   tokens: number;
   cost: string;
+  retrieval_tokens: number;
+  retrieval_cost: string;
   evaluation_tokens: number;
   evaluation_cost: string;
 }

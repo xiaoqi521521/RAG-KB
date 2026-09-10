@@ -53,6 +53,9 @@ class DailyUsagePoint:
     # Redis 非评估消耗与数据库评估 run 消耗合并后的全口径总量。
     tokens: int
     cost: Decimal
+    # 检索问答管道只包含 Redis 非评估消耗，用于与评估口径并列展示。
+    retrieval_tokens: int
+    retrieval_cost: Decimal
     # 评估字段表示完整评估 run：RAG 执行管道 + RAGAS 判定。
     evaluation_tokens: int
     evaluation_cost: Decimal
@@ -116,6 +119,7 @@ class UsageHistoryService:
                 (0, Decimal("0")),
             )
             # 评估 run 消耗只在数据库汇总一次，这里并入全口径但保留拆分字段。
+            retrieval_cost = cost.quantize(_CURRENCY_QUANTUM, rounding=ROUND_HALF_UP)
             tokens += evaluation_tokens
             cost += evaluation_cost
             points.append(
@@ -123,6 +127,8 @@ class UsageHistoryService:
                     date=day.isoformat(),
                     tokens=tokens,
                     cost=cost.quantize(_CURRENCY_QUANTUM, rounding=ROUND_HALF_UP),
+                    retrieval_tokens=tokens - evaluation_tokens,
+                    retrieval_cost=retrieval_cost,
                     evaluation_tokens=evaluation_tokens,
                     evaluation_cost=Decimal(evaluation_cost).quantize(
                         _CURRENCY_QUANTUM,
