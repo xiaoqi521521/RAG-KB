@@ -1,10 +1,12 @@
 from app.services.rag_prompt import build_v4_system_prompt
 
 
-def test_v4_prompt_requires_canonical_citations_for_each_fact() -> None:
+def test_v4_prompt_requires_canonical_citations_for_key_facts() -> None:
     prompt = build_v4_system_prompt("[参考1]\n年假为 5 天。", reference_count=1)
 
-    assert "每条事实" in prompt
+    assert "关键事实" in prompt
+    assert "只在回答的最后一个事实后标注一次来源" in prompt
+    assert "错误写法" in prompt
     assert "（来源：[参考1]）" in prompt
     assert "[参考1]\n年假为 5 天。" in prompt
 
