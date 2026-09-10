@@ -30,13 +30,13 @@ def get_token_cost_service(
 
 
 def get_usage_history_service(
+    token_metrics: TokenMetrics = Depends(get_token_metrics),
     settings: Settings = Depends(get_settings),
     session: AsyncSession = Depends(get_db),
 ) -> UsageHistoryService:
-    """构建 Prom 查询与评估 run 用量汇总服务。"""
+    """构建 Redis 每日用量与评估 run 用量汇总服务。"""
     return UsageHistoryService(
-        base_url=settings.prometheus_base_url,
-        timeout_seconds=settings.prometheus_query_timeout_seconds,
+        daily_usage_store=token_metrics,
         timezone=settings.token_budget_timezone,
         run_usage_repository=EvaluationRepository(session),
     )

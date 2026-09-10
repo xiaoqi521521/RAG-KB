@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -48,6 +49,12 @@ class SlowRedis(FakeRedis):
     async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> object:
         await asyncio.sleep(0.01)
         return await super().eval(script, numkeys, *keys_and_args)
+
+
+class SlowIncrementRedis(FakeRedis):
+    async def incrbyfloat(self, name: str, amount: str) -> str:
+        await asyncio.sleep(0.01)
+        return await super().incrbyfloat(name, amount)
 
 
 def _build_metrics() -> tuple[MeterProvider, InMemoryMetricReader]:
@@ -102,8 +109,6 @@ async def test_budget_preserves_decimal_usage_from_redis() -> None:
 
     await gate.ensure_available()
 
-    samples = _data_points(reader, "rag_token_budget_used_cny")
-    assert samples[0].value == 0.25
     ratio = _data_points(reader, "rag_token_budget_usage_ratio")
     assert ratio[0].value == 0.25
 
@@ -144,20 +149,77 @@ async def test_budget_redis_timeout_is_unavailable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_budget_record_failure_is_non_blocking_and_observable() -> None:
+async def test_budget_check_failure_is_not_recorded_as_write_failure() -> None:
+    provider, reader = _build_metrics()
+    gate = GlobalTokenBudgetGate(
+        redis_client=SlowRedis(),
+        timeout_seconds=0.001,
+        meter=provider.get_meter("tests"),
+    )
+
+    with pytest.raises(TokenBudgetUnavailableError):
+        await gate.ensure_available()
+
+    assert _data_points(reader, "rag_token_write_failure") == []
+
+
+@pytest.mark.asyncio
+async def test_budget_record_failure_is_non_blocking_and_observable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     redis = FakeRedis()
     redis.fail = True
+    redis.connection_pool = type(
+        "FakeConnectionPool",
+        (),
+        {
+            "connection_kwargs": {
+                "host": "redis-host",
+                "port": 6379,
+                "db": 2,
+                "password": "super-secret",
+                "url": "redis://:super-secret@redis-host:6379/2",
+            }
+        },
+    )()
     provider, reader = _build_metrics()
     gate = GlobalTokenBudgetGate(redis_client=redis, meter=provider.get_meter("tests"))
+
+    with caplog.at_level(logging.WARNING, logger="app.services.token_budget"):
+        await gate.record_cost(Decimal("0.10"))
+
+    assert "CNY budget usage write failed" in caplog.text
+    assert "cost_cny=0.10" in caplog.text
+    assert "timeout_seconds=1.0" in caplog.text
+    assert "redis=host=redis-host port=6379 db=2" in caplog.text
+    assert f"key={gate.current_key()}" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+    assert "redis unavailable" in caplog.text
+    assert "super-secret" not in caplog.text
+    assert "redis://:super-secret" not in caplog.text
 
     await gate.record_cost(Decimal("0.10"))
 
     write_failures = _data_points(reader, "rag_token_write_failure")
     assert any(
-        data_point.attributes == {"sink": "redis", "token_type": "budget"}
-        and data_point.value == 1
+        data_point.attributes == {"sink": "redis", "component": "budget"}
+        and data_point.value == 2
         for data_point in write_failures
     )
+
+
+@pytest.mark.asyncio
+async def test_budget_record_timeout_is_not_confirmed_write_failure() -> None:
+    provider, reader = _build_metrics()
+    gate = GlobalTokenBudgetGate(
+        redis_client=SlowIncrementRedis(),
+        timeout_seconds=0.001,
+        meter=provider.get_meter("tests"),
+    )
+
+    await gate.record_cost(Decimal("0.10"))
+
+    assert _data_points(reader, "rag_token_write_failure") == []
 
 
 @pytest.mark.asyncio

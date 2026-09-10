@@ -31,6 +31,7 @@ interface ChatState {
   openPanel: (messageKey: string, highlight?: number | null) => void;
   closePanel: () => void;
   setPanelHighlight: (index: number | null) => void;
+  resetChat: () => void;
 }
 
 function updateLastAssistant(
@@ -107,4 +108,14 @@ export const useChatStore = create<ChatState>((set) => ({
 
   closePanel: () => set({ panelMessageKey: null, panelHighlight: null }),
   setPanelHighlight: (index) => set({ panelHighlight: index }),
+  resetChat: () =>
+    set({
+      messages: [],
+      sessionId: null,
+      selectedKbIds: [],
+      isStreaming: false,
+      streamStatus: null,
+      panelMessageKey: null,
+      panelHighlight: null,
+    }),
 }));

@@ -158,9 +158,11 @@ docs/
 
 ## Token 监控约束
 
-- Token 监控类型固定为 `embedding`、`input`、`answer_generation`、`intent`、`hyde`、`reranker`、`faithfulness_check` 和 `evaluation`；`input` 仅统计聊天模型的 System Prompt、用户问题、对话历史和检索上下文输入，其他生成类型只统计对应输出（意图识别分类输出记入 `intent`，追问改写输出仍记入 `hyde`，评估 RAGAS 判定输出记入 `evaluation`）。
+- 线上 Token 监控类型固定为 `embedding`、`input`、`answer_generation`、`intent`、`hyde`、`reranker` 和 `faithfulness_check`；`input` 仅统计聊天模型的 System Prompt、用户问题、对话历史和检索上下文输入，其他生成类型只统计对应输出（意图识别分类输出记入 `intent`，追问改写输出仍记入 `hyde`）。评估专用指标中的 RAGAS 判定输入、输出和 Embedding 分别记入 `ragas_input`、`ragas_evaluation` 和 `ragas_embedding`，与评估 RAG 执行阶段的 `input`、`embedding` 区分。
 - Token 指标使用现有 Prometheus `/metrics` 出口，标签只包含 `model`、`token_type`、`kb_id`；Grafana 和 Prometheus 查询仅供系统管理员与运维人员使用。
-- 线上七类请求 Token 按类型累计到 Redis 用户统计版本，费用在读取时按当前部署单价从 Token 派生、不在 Redis 中存储金额；评估 RAGAS 判定消耗计入 `evaluation` 等桶的监控与全局预算，不写入任何用户的个人累计。不迁移旧数据，不按模型分桶，不保存请求级明细。
+- 线上七类请求 Token 按类型累计到 Redis 用户统计版本，费用在读取时按当前部署单价从 Token 派生、不在 Redis 中存储金额；评估运行消耗写入评估专用 Prometheus 指标并计入全局预算，不写入任何用户的个人累计，也不写入全局每日 Hash。不迁移旧数据，不按模型分桶，不保存请求级明细。
+- 每日全局 Token 用量按天分类型累计到 Redis `rag:token:v3:daily:{yyyy}:{mm}:{yyyy-mm-dd}`，只覆盖非评估消耗；该 Hash 不包含 `evaluationTokens`。`/stats/usage/daily` 的 `tokens` 与 `cost` 合并该 Hash 派生结果和数据库 `kb_eval_run_usage` 评估 run 汇总，评估字段单独拆分展示，不重复计数，也不使用 Prometheus 历史查询。
+- Grafana 今日 Token 与预算面板读取 `/metrics` 抓取时由 `UsageHistoryService` 聚合的 `rag_daily_usage_tokens` 和 `rag_daily_usage_cost_cny`，口径为 Redis 非评估消耗加数据库评估 run 汇总。Prometheus Counter 仍服务于分来源累计趋势图，不得通过 `increase()` 手工拼出今日预算或全口径 Token 总量。
 - 评估运行的模型调用在启动前经过全局预算闸门检查，预算耗尽时整轮评估拒绝启动。
 - provider 没有可靠 usage 时不得用本地估算冒充精确 Token；只记录 usage 不可用观测。
 - 全局每日金额预算默认 `1.00 CNY`，时区默认 `Asia/Shanghai`；达到 80% 告警，达到 100% 拒绝后续新请求，已开始请求继续完成；单次请求估算成本超过 `0.01 CNY` 告警。

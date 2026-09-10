@@ -82,7 +82,7 @@ class FakeUsageHistoryService:
     async def daily_usage(self, *, days: int) -> list[DailyUsagePoint]:
         self.requested_days.append(days)
         if self.unavailable:
-            raise UsageHistoryError("Prometheus 不可达")
+            raise UsageHistoryError("Redis 用量历史不可读")
         return [
             DailyUsagePoint(
                 date="2026-09-06",
@@ -155,7 +155,7 @@ def test_daily_usage_rejects_non_admin_users() -> None:
     assert response.json()["message"] == "仅系统管理员可查看全局用量"
 
 
-def test_daily_usage_returns_503_when_prometheus_unavailable() -> None:
+def test_daily_usage_returns_503_when_redis_store_unavailable() -> None:
     with _usage_client("ADMIN", FakeUsageHistoryService(unavailable=True)) as client:
         response = client.get("/api/v1/stats/usage/daily")
 

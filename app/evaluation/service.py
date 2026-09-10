@@ -33,7 +33,11 @@ from app.services.token_budget import (
     TokenBudgetExhaustedError,
     TokenBudgetUnavailableError,
 )
-from app.services.token_metrics import TokenUsageRecorder
+from app.services.token_metrics import (
+    TokenUsageRecorder,
+    evaluation_metrics_scope_var,
+    suppress_daily_usage_var,
+)
 from app.services.rag_query_v4 import RagExecution
 
 logger = logging.getLogger(__name__)
@@ -112,6 +116,28 @@ class EvaluationRunService:
         self.token_embedding_model_name = token_embedding_model_name
 
     async def run(
+        self,
+        *,
+        kb_id: int,
+        eval_version: int | None = None,
+        user: CurrentUser,
+        rag_executor: EvaluationRagExecutor,
+        ragas_evaluator: GenerationEvaluator,
+    ) -> EvaluationReport:
+        """标记整轮评估作用域后执行 RAG 和 RAGAS。"""
+        scope_token = evaluation_metrics_scope_var.set(True)
+        try:
+            return await self._run(
+                kb_id=kb_id,
+                eval_version=eval_version,
+                user=user,
+                rag_executor=rag_executor,
+                ragas_evaluator=ragas_evaluator,
+            )
+        finally:
+            evaluation_metrics_scope_var.reset(scope_token)
+
+    async def _run(
         self,
         *,
         kb_id: int,
@@ -242,34 +268,37 @@ class EvaluationRunService:
             Decimal("0"),
         ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
         if self.token_metrics is not None and usage.total_tokens > 0:
-            # 判定调用的输入与输出分桶计价，与在线管道口径一致；不归属任何个人。
+            # RAGAS 输入、输出和向量使用独立桶，避免混入评估 RAG 执行阶段。
             token_metrics = self.token_metrics
             await token_metrics.record_usage(
                 tokens=usage.llm_prompt_tokens,
                 model=self.token_chat_model_name,
-                token_type="input",
+                token_type="ragas_input",
                 kb_id=kb_id,
                 user_scoped=False,
+                daily_scoped=False,
             )
             await token_metrics.record_usage(
                 tokens=usage.llm_completion_tokens,
                 model=self.token_chat_model_name,
-                token_type="evaluation",
+                token_type="ragas_evaluation",
                 kb_id=kb_id,
                 user_scoped=False,
+                daily_scoped=False,
             )
             await token_metrics.record_usage(
                 tokens=usage.embedding_tokens,
                 model=self.token_embedding_model_name,
-                token_type="embedding",
+                token_type="ragas_embedding",
                 kb_id=kb_id,
                 user_scoped=False,
+                daily_scoped=False,
             )
 
         ragas_input_cost_cny = (
             self.token_metrics.estimate_cost(
                 tokens=usage.llm_prompt_tokens,
-                token_type="input",
+                token_type="ragas_input",
             ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
             if self.token_metrics is not None
             else Decimal("0")
@@ -277,7 +306,7 @@ class EvaluationRunService:
         ragas_evaluation_cost_cny = (
             self.token_metrics.estimate_cost(
                 tokens=usage.llm_completion_tokens,
-                token_type="evaluation",
+                token_type="ragas_evaluation",
             ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
             if self.token_metrics is not None
             else Decimal("0")
@@ -285,7 +314,7 @@ class EvaluationRunService:
         ragas_embedding_cost_cny = (
             self.token_metrics.estimate_cost(
                 tokens=usage.embedding_tokens,
-                token_type="embedding",
+                token_type="ragas_embedding",
             ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
             if self.token_metrics is not None
             else Decimal("0")
@@ -302,7 +331,6 @@ class EvaluationRunService:
             ragas_evaluation_cost_cny=ragas_evaluation_cost_cny,
             ragas_embedding_cost_cny=ragas_embedding_cost_cny,
         )
-
         results: list[EvalResult] = []
         for dataset in datasets:
             phase = rag_phases_by_dataset[dataset.id]
@@ -383,34 +411,39 @@ class EvaluationRunService:
     ) -> _RagPhase:
         """执行单题 RAG，并准备可并发执行的 RAGAS 输入。"""
         usage_collector = EvaluationUsageCollector()
+        # 单题 RAG 属于评估 run，跳过全局每日 Hash；完整 run 消耗后续写入数据库。
+        daily_suppress_token = suppress_daily_usage_var.set(True)
         try:
-            execution = await rag_executor.execute(
-                question=dataset.question,
-                kb_ids=[kb_id],
-                user=user,
-                usage_collector=usage_collector,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Evaluation question failed: error_type=rag_execution_failed exception_type=%s",
-                type(exc).__name__,
-            )
-            return _RagPhase(
-                eval_version=eval_version,
-                dataset=dataset,
-                execution=None,
-                result=EvalResult(
-                    dataset_id=dataset.id,
+            try:
+                execution = await rag_executor.execute(
+                    question=dataset.question,
+                    kb_ids=[kb_id],
+                    user=user,
+                    usage_collector=usage_collector,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Evaluation question failed: error_type=rag_execution_failed exception_type=%s",
+                    type(exc).__name__,
+                )
+                return _RagPhase(
                     eval_version=eval_version,
-                    hit=None,
-                    rank=None,
-                    actual_answer=None,
-                    status=EvalResultStatus.FAILED.value,
-                    error_type="rag_execution_failed",
-                    eval_at=evaluated_at,
-                ),
-                usage_collector=usage_collector,
-            )
+                    dataset=dataset,
+                    execution=None,
+                    result=EvalResult(
+                        dataset_id=dataset.id,
+                        eval_version=eval_version,
+                        hit=None,
+                        rank=None,
+                        actual_answer=None,
+                        status=EvalResultStatus.FAILED.value,
+                        error_type="rag_execution_failed",
+                        eval_at=evaluated_at,
+                    ),
+                    usage_collector=usage_collector,
+                )
+        finally:
+            suppress_daily_usage_var.reset(daily_suppress_token)
 
         if execution.reranker_degraded:
             logger.info(

@@ -5,11 +5,14 @@ import logging
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from opentelemetry import metrics
 from opentelemetry.metrics import Counter, Meter
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.context import current_user_var
 from app.services.token_budget import GlobalTokenBudgetGate, TOKEN_REDIS_NAMESPACE
@@ -18,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 REDIS_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}stats:"
+_DAILY_USAGE_KEY_PREFIX = f"{TOKEN_REDIS_NAMESPACE}daily:"
 _METER_NAME = "rag-kb.token-metrics"
 _USER_USAGE_UPDATE_SCRIPT = """
 local existing_token = redis.call('HGET', KEYS[1], ARGV[1])
@@ -35,7 +39,9 @@ TOKEN_TYPES = (
     "hyde",
     "reranker",
     "faithfulness_check",
-    "evaluation",
+    "ragas_input",
+    "ragas_evaluation",
+    "ragas_embedding",
 )
 TokenType = Literal[
     "embedding",
@@ -45,10 +51,12 @@ TokenType = Literal[
     "hyde",
     "reranker",
     "faithfulness_check",
-    "evaluation",
+    "ragas_input",
+    "ragas_evaluation",
+    "ragas_embedding",
 ]
 _OUTPUT_TOKEN_TYPES = frozenset(
-    {"answer_generation", "intent", "hyde", "faithfulness_check", "evaluation"}
+    {"answer_generation", "intent", "hyde", "faithfulness_check", "ragas_evaluation"}
 )
 _REDIS_FIELDS: dict[str, str] = {
     "embedding": "embeddingTokens",
@@ -58,12 +66,29 @@ _REDIS_FIELDS: dict[str, str] = {
     "hyde": "hydeTokens",
     "reranker": "rerankerTokens",
     "faithfulness_check": "faithfulnessTokens",
-    "evaluation": "evaluationTokens",
 }
+_DAILY_USAGE_FIELDS = dict(_REDIS_FIELDS)
+_DAILY_TOKEN_TYPES_BY_REDIS_FIELD: dict[str, TokenType] = {
+    field: cast(TokenType, token_type)
+    for token_type, field in _DAILY_USAGE_FIELDS.items()
+}
+_RAGAS_TOKEN_TYPES = frozenset(
+    {"ragas_input", "ragas_evaluation", "ragas_embedding"}
+)
 
 # 评估等系统侧调用的抑制开关：只跳过个人 Redis 累计，监控与预算照常。
 suppress_user_usage_var: ContextVar[bool] = ContextVar(
     "suppress_user_usage",
+    default=False,
+)
+# 正式评估完整 run 不进入全局每日 Hash，完整消耗由评估 run 表记账。
+suppress_daily_usage_var: ContextVar[bool] = ContextVar(
+    "suppress_daily_usage",
+    default=False,
+)
+# 正式评估整轮标记：这些调用写入评估专用指标，不混入线上通用 Token 桶。
+evaluation_metrics_scope_var: ContextVar[bool] = ContextVar(
+    "evaluation_metrics_scope",
     default=False,
 )
 
@@ -91,7 +116,6 @@ class UserTokenUsage:
     hyde_tokens: int
     reranker_tokens: int
     faithfulness_tokens: int
-    evaluation_tokens: int = 0
     estimated_cost_cny: Decimal = Decimal("0")
     embedding_cost_cny: Decimal = Decimal("0")
     input_cost_cny: Decimal = Decimal("0")
@@ -100,7 +124,6 @@ class UserTokenUsage:
     hyde_cost_cny: Decimal = Decimal("0")
     reranker_cost_cny: Decimal = Decimal("0")
     faithfulness_cost_cny: Decimal = Decimal("0")
-    evaluation_cost_cny: Decimal = Decimal("0")
 
 
 class TokenMetricsUnavailableError(RuntimeError):
@@ -154,7 +177,7 @@ def knowledge_base_scope(kb_ids: Sequence[int]) -> str:
 
 
 class TokenUsageRecorder:
-    """把可靠的 provider usage 同时写入 Prometheus 和用户 Redis v3。"""
+    """把可靠的 provider usage 写入 Prometheus、每日总量和用户 Redis v3。"""
 
     def __init__(
         self,
@@ -170,7 +193,12 @@ class TokenUsageRecorder:
         chat_input_price: Decimal = Decimal("0"),
         chat_output_price: Decimal = Decimal("0"),
         reranker_price: Decimal = Decimal("0"),
+        timezone: str = "Asia/Shanghai",
     ) -> None:
+        try:
+            self.timezone = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"unknown token metrics timezone: {timezone}") from exc
         self.redis = redis_client
         self.read_timeout_seconds = read_timeout_seconds
         self.read_max_retries = read_max_retries
@@ -185,13 +213,19 @@ class TokenUsageRecorder:
             "intent": chat_output_price,
             "hyde": chat_output_price,
             "faithfulness_check": chat_output_price,
-            "evaluation": chat_output_price,
+            "ragas_input": chat_input_price,
+            "ragas_evaluation": chat_output_price,
+            "ragas_embedding": embedding_price,
             "reranker": reranker_price,
         }
         effective_meter = meter or metrics.get_meter(_METER_NAME)
         self._usage = effective_meter.create_counter(
             "rag_token_usage",
             description="Provider reported Token usage",
+        )
+        self._evaluation_usage = effective_meter.create_counter(
+            "rag_evaluation_token_usage",
+            description="Provider reported Token usage for evaluation runs",
         )
         self._usage_unavailable = effective_meter.create_counter(
             "rag_token_usage_unavailable",
@@ -200,6 +234,10 @@ class TokenUsageRecorder:
         self._usage_cost = effective_meter.create_counter(
             "rag_token_usage_cost_cny",
             description="Estimated CNY cost for provider reported Token usage",
+        )
+        self._evaluation_usage_cost = effective_meter.create_counter(
+            "rag_evaluation_token_usage_cost_cny",
+            description="Estimated CNY cost for provider reported Token usage in evaluation runs",
         )
         # write failure 与预算闸门共享同一 instrument，避免同名指标重复导出。
         self._write_failure = write_failure_counter or effective_meter.create_counter(
@@ -264,9 +302,13 @@ class TokenUsageRecorder:
         kb_id: str | int,
         user_scoped: bool = True,
         budget_scoped: bool = True,
+        daily_scoped: bool = True,
     ) -> None:
-        """记录一个已标准化的 Token 增量，任何观测出口失败都不抛出。"""
+        """记录一个已标准化的 Token 增量；评估 run 可选择不进入每日 Hash。"""
         self._validate_token_type(token_type)
+        # RAGAS 桶只允许进入评估专用指标；阻断误归属用户或写入每日 Hash。
+        if token_type in _RAGAS_TOKEN_TYPES and (user_scoped or daily_scoped):
+            raise ValueError("ragas token types must not be user-scoped or daily-scoped")
         if tokens < 0:
             self.record_usage_unavailable(model=model, token_type=token_type, kb_id=kb_id)
             return
@@ -278,10 +320,15 @@ class TokenUsageRecorder:
             "token_type": token_type,
             "kb_id": _label_value(kb_id, fallback="unknown"),
         }
+        is_evaluation_run = evaluation_metrics_scope_var.get()
+        usage_counter = self._evaluation_usage if is_evaluation_run else self._usage
+        cost_counter = (
+            self._evaluation_usage_cost if is_evaluation_run else self._usage_cost
+        )
         try:
-            self._usage.add(tokens, attributes)
+            usage_counter.add(tokens, attributes)
         except Exception as exc:  # noqa: BLE001
-            self._record_write_failure(sink="prometheus", token_type=token_type)
+            self._record_write_failure(sink="prometheus", component=token_type)
             logger.warning(
                 "Token usage Prometheus write failed: token_type=%s error_type=%s",
                 token_type,
@@ -292,9 +339,9 @@ class TokenUsageRecorder:
             price = self._prices[token_type]
             estimated_cost = Decimal(tokens) / Decimal("1000") * price
             if estimated_cost > 0:
-                self._usage_cost.add(float(estimated_cost), attributes)
+                cost_counter.add(float(estimated_cost), attributes)
         except Exception as exc:  # noqa: BLE001
-            self._record_write_failure(sink="prometheus", token_type=token_type)
+            self._record_write_failure(sink="prometheus", component=token_type)
             logger.warning(
                 "Token usage cost metric write failed: token_type=%s error_type=%s",
                 token_type,
@@ -308,6 +355,31 @@ class TokenUsageRecorder:
         capture_sink = evaluation_usage_capture_var.get()
         if capture_sink is not None:
             capture_sink.add(tokens=tokens, cost_cny=estimated_cost)
+
+        daily_field = _DAILY_USAGE_FIELDS.get(token_type)
+        if daily_field is not None and not suppress_daily_usage_var.get():
+            try:
+                async with asyncio.timeout(self.write_timeout_seconds):
+                    await self.redis.hincrby(
+                        self._daily_usage_key(),
+                        daily_field,
+                        tokens,
+                    )
+            except (TimeoutError, RedisTimeoutError) as exc:
+                logger.warning(
+                    "Token daily usage Redis write timed out; final outcome unknown: "
+                    "token_type=%s timeout_seconds=%s error_type=%s",
+                    token_type,
+                    self.write_timeout_seconds,
+                    type(exc).__name__,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._record_write_failure(sink="redis", component=token_type)
+                logger.warning(
+                    "Token daily usage Redis write failed: token_type=%s error_type=%s",
+                    token_type,
+                    type(exc).__name__,
+                )
 
         if not user_scoped or suppress_user_usage_var.get():
             return
@@ -324,8 +396,16 @@ class TokenUsageRecorder:
                     _REDIS_FIELDS[token_type],
                     tokens,
                 )
+        except (TimeoutError, RedisTimeoutError) as exc:
+            logger.warning(
+                "Token usage Redis write timed out; final outcome unknown: "
+                "token_type=%s timeout_seconds=%s error_type=%s",
+                token_type,
+                self.write_timeout_seconds,
+                type(exc).__name__,
+            )
         except Exception as exc:  # noqa: BLE001
-            self._record_write_failure(sink="redis", token_type=token_type)
+            self._record_write_failure(sink="redis", component=token_type)
             logger.warning(
                 "Token usage Redis write failed: token_type=%s error_type=%s",
                 token_type,
@@ -349,7 +429,7 @@ class TokenUsageRecorder:
         try:
             self._usage_unavailable.add(1, attributes)
         except Exception as exc:  # noqa: BLE001
-            self._record_write_failure(sink="prometheus", token_type=token_type)
+            self._record_write_failure(sink="prometheus", component=token_type)
             logger.warning(
                 "Token usage unavailable metric write failed: token_type=%s error_type=%s",
                 token_type,
@@ -392,7 +472,6 @@ class TokenUsageRecorder:
                 hyde_tokens=token_counts["hyde"],
                 reranker_tokens=token_counts["reranker"],
                 faithfulness_tokens=token_counts["faithfulness_check"],
-                evaluation_tokens=token_counts["evaluation"],
                 estimated_cost_cny=sum(costs.values(), Decimal("0")),
                 embedding_cost_cny=costs["embedding"],
                 input_cost_cny=costs["input"],
@@ -401,7 +480,6 @@ class TokenUsageRecorder:
                 hyde_cost_cny=costs["hyde"],
                 reranker_cost_cny=costs["reranker"],
                 faithfulness_cost_cny=costs["faithfulness_check"],
-                evaluation_cost_cny=costs["evaluation"],
             )
         except (TypeError, ValueError) as exc:
             logger.warning(
@@ -416,6 +494,37 @@ class TokenUsageRecorder:
         if tokens <= 0:
             return Decimal("0")
         return _derive_cost_cny(tokens, self._prices[token_type])
+
+    async def read_daily_usage(
+        self,
+        *,
+        days: int,
+        now: datetime,
+    ) -> dict[date, dict[TokenType, int]]:
+        """读取最近自然日的非评估分类型 Token 总量，读取异常向上交给调用方。"""
+        if days <= 0:
+            raise ValueError("days must be positive")
+
+        end_day = now.astimezone(self.timezone).date()
+        usage_by_day: dict[date, dict[TokenType, int]] = {}
+        for offset in range(days - 1, -1, -1):
+            day = end_day - timedelta(days=offset)
+            raw_values = await self._read_hash(
+                self._daily_usage_key(
+                    datetime.combine(day, datetime.min.time(), tzinfo=self.timezone)
+                )
+            )
+            if not isinstance(raw_values, Mapping):
+                raise TypeError("Daily token usage must be a mapping")
+
+            token_counts: dict[TokenType, int] = {}
+            for raw_key, raw_value in raw_values.items():
+                key = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else str(raw_key)
+                token_type = _DAILY_TOKEN_TYPES_BY_REDIS_FIELD.get(key)
+                if token_type is not None:
+                    token_counts[token_type] = _parse_stored_token(raw_value)
+            usage_by_day[day] = token_counts
+        return usage_by_day
 
     @staticmethod
     def extract_usage(response: Any) -> tuple[int | None, int | None]:
@@ -477,15 +586,20 @@ class TokenUsageRecorder:
                     raise
         raise RuntimeError("Token stats read failed") from last_error
 
-    def _record_write_failure(self, *, sink: str, token_type: str) -> None:
+    def _record_write_failure(self, *, sink: str, component: str) -> None:
         try:
-            self._write_failure.add(1, {"sink": sink, "token_type": token_type})
+            self._write_failure.add(1, {"sink": sink, "component": component})
         except Exception:  # noqa: BLE001
             logger.warning(
-                "Token usage write failure metric unavailable: sink=%s token_type=%s",
+                "Token usage write failure metric unavailable: sink=%s component=%s",
                 sink,
-                token_type,
+                component,
             )
+
+    def _daily_usage_key(self, now: datetime | None = None) -> str:
+        """返回部署时区下的每日 Token 总量 Redis key，与预算 key 保持同一风格。"""
+        effective_now = now.astimezone(self.timezone) if now else datetime.now(self.timezone)
+        return f"{_DAILY_USAGE_KEY_PREFIX}{effective_now:%Y:%m:%Y-%m-%d}"
 
     @staticmethod
     def _validate_token_type(token_type: str) -> None:

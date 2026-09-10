@@ -32,6 +32,10 @@ from app.schemas.rag import RagQueryResponse
 from app.services.rag_query import RAG_REFUSAL_ANSWER
 from app.services.rag_query_v4 import RagExecution
 from app.services.token_budget import TokenBudgetExhaustedError
+from app.services.token_metrics import (
+    evaluation_metrics_scope_var,
+    suppress_daily_usage_var,
+)
 
 
 def _user() -> CurrentUser:
@@ -664,7 +668,8 @@ async def test_run_keeps_valid_scores_when_one_ragas_metric_fails(caplog) -> Non
 
 class RecordingTokenMetrics:
     def __init__(self) -> None:
-        self.calls: list[tuple[int, str, str, int, bool]] = []
+        self.calls: list[tuple[int, str, str, int, bool, bool]] = []
+        self.metric_scopes: list[bool] = []
 
     async def record_usage(
         self,
@@ -674,14 +679,20 @@ class RecordingTokenMetrics:
         token_type: str,
         kb_id: int,
         user_scoped: bool = True,
+        daily_scoped: bool = True,
     ) -> None:
-        self.calls.append((tokens, model, token_type, kb_id, user_scoped))
+        self.metric_scopes.append(evaluation_metrics_scope_var.get())
+        self.calls.append(
+            (tokens, model, token_type, kb_id, user_scoped, daily_scoped)
+        )
 
     def estimate_cost(self, *, tokens: int, token_type: str) -> Decimal:
         prices = {
             "input": Decimal("0.001"),
-            "evaluation": Decimal("0.002"),
+            "ragas_input": Decimal("0.001"),
+            "ragas_evaluation": Decimal("0.002"),
             "embedding": Decimal("0.0005"),
+            "ragas_embedding": Decimal("0.0005"),
         }
         if tokens <= 0:
             return Decimal("0")
@@ -720,10 +731,11 @@ async def test_run_records_ragas_usage_without_personal_attribution() -> None:
     )
 
     assert recorder.calls == [
-        (100, "chat-x", "input", 3, False),
-        (40, "chat-x", "evaluation", 3, False),
-        (25, "embed-x", "embedding", 3, False),
+        (100, "chat-x", "ragas_input", 3, False, False),
+        (40, "chat-x", "ragas_evaluation", 3, False, False),
+        (25, "embed-x", "ragas_embedding", 3, False, False),
     ]
+    assert recorder.metric_scopes == [True, True, True]
     run_usage = repository.saved_run_usages[0]
     assert run_usage.generation_usage_tokens == 500
     assert run_usage.generation_estimated_cost_cny == Decimal("0.0005")
@@ -736,6 +748,63 @@ async def test_run_records_ragas_usage_without_personal_attribution() -> None:
     assert report.usage_tokens == 665
     # 报告费用 = 生成消耗 0.0005 + 判定输入 0.000100 + 判定输出 0.000080 + 判定向量 0.000013。
     assert report.estimated_cost_cny == Decimal("0.000693")
+
+
+@pytest.mark.asyncio
+async def test_run_keeps_evaluation_usage_out_of_global_daily_hash() -> None:
+    repository = FakeEvaluationRepository(
+        datasets=[_dataset(1, [10], expected_answer="期望答案")]
+    )
+
+    class DailyScopeExecutor:
+        def __init__(self) -> None:
+            self.suppressed: list[bool] = []
+
+        async def execute(
+            self,
+            *,
+            question: str,
+            kb_ids: list[int],
+            user: CurrentUser,
+            usage_collector: EvaluationUsageCollector,
+        ):
+            self.suppressed.append(suppress_daily_usage_var.get())
+            usage_collector.add(tokens=500, cost_cny=Decimal("0.0005"))
+            return _execution([10])
+
+    executor = DailyScopeExecutor()
+    recorder = RecordingTokenMetrics()
+    service = EvaluationRunService(
+        repository=repository,
+        token_metrics=recorder,  # type: ignore[arg-type]
+        token_chat_model_name="chat-x",
+        token_embedding_model_name="embed-x",
+    )
+
+    await service.run(
+        kb_id=3,
+        user=_user(),
+        rag_executor=executor,  # type: ignore[arg-type]
+        ragas_evaluator=FakeRagasEvaluator(
+            [
+                RagasEvaluationResult(
+                    faithfulness=1.0,
+                    answer_relevancy=1.0,
+                    context_recall=1.0,
+                    context_precision=1.0,
+                    errors=(),
+                )
+            ],
+            usage=RagasUsage(
+                llm_prompt_tokens=100,
+                llm_completion_tokens=40,
+                embedding_tokens=25,
+            ),
+        ),
+    )
+
+    assert executor.suppressed == [True]
+    assert all(call[-1] is False for call in recorder.calls)
 
 
 class ExhaustedBudgetGate:

@@ -2,7 +2,7 @@
   "uid": "rag-token-monitoring",
   "title": "RAG-KB Token 监控",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 5,
   "refresh": "30s",
   "time": {
     "from": "now-24h",
@@ -18,10 +18,15 @@
           "type": "prometheus",
           "uid": "rag-prometheus"
         },
-        "query": "label_values(rag_token_usage_total, model)",
+        "query": "label_values({__name__=~\"rag_token_usage_total|rag_evaluation_token_usage_total\"}, model)",
         "includeAll": true,
         "allValue": ".*",
-        "multi": true
+        "multi": true,
+        "current": {
+          "selected": false,
+          "text": ["All"],
+          "value": ["$__all"]
+        }
       },
       {
         "name": "token_type",
@@ -31,10 +36,30 @@
           "type": "prometheus",
           "uid": "rag-prometheus"
         },
-        "query": "label_values(rag_token_usage_total, token_type)",
+        "query": "label_values({__name__=~\"rag_token_usage_total|rag_evaluation_token_usage_total\"}, token_type)",
         "includeAll": true,
         "allValue": ".*",
-        "multi": true
+        "multi": true,
+        "regex": "/^(answer_generation|embedding|faithfulness_check|hyde|input|intent|ragas_embedding|ragas_evaluation|ragas_input|reranker)$/",
+        "current": {
+          "selected": false,
+          "text": ["All"],
+          "value": ["$__all"]
+        }
+      },
+      {
+        "name": "component",
+        "label": "失败组件",
+        "type": "custom",
+        "query": "embedding,input,answer_generation,intent,hyde,reranker,faithfulness_check,ragas_input,ragas_evaluation,ragas_embedding,budget",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": false,
+          "text": ["All"],
+          "value": ["$__all"]
+        }
       },
       {
         "name": "kb_id",
@@ -44,10 +69,15 @@
           "type": "prometheus",
           "uid": "rag-prometheus"
         },
-        "query": "label_values(rag_token_usage_total, kb_id)",
+        "query": "label_values({__name__=~\"rag_token_usage_total|rag_evaluation_token_usage_total\"}, kb_id)",
         "includeAll": true,
         "allValue": ".*",
-        "multi": true
+        "multi": true,
+        "current": {
+          "selected": false,
+          "text": ["All"],
+          "value": ["$__all"]
+        }
       }
     ]
   },
@@ -59,18 +89,28 @@
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 6,
+        "w": 3,
         "h": 8
       },
       "targets": [
         {
-          "expr": "rag_token_budget_used_cny{scope=\"global\"}",
-          "legendFormat": "used"
+          "refId": "A",
+          "expr": "rag_daily_usage_cost_cny{scope=\"global\"}",
+          "legendFormat": "预算"
         }
       ],
+      "description": "当日预算/估算成本由后端全局用量服务聚合 Redis 非评估消耗与评估 run 数据库汇总。",
+      "time": {
+        "from": "now/d",
+        "to": "now"
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyCNY",
+          "unit": "none",
+          "decimals": 5,
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -88,12 +128,72 @@
               }
             ]
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "none",
-        "justifyMode": "auto",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "今日 Token 用量",
+      "gridPos": {
+        "x": 3,
+        "y": 0,
+        "w": 3,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "B",
+          "expr": "rag_daily_usage_tokens{scope=\"global\"}",
+          "legendFormat": "Token",
+          "instant": true
+        }
+      ],
+      "description": "当日 Token 总量由后端全局用量服务聚合 Redis 非评估消耗与评估 run 数据库汇总。",
+      "time": {
+        "from": "now/d",
+        "to": "now"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#5794F2"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -107,7 +207,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Token 累计用量",
+      "title": "检索问答 Token 累计用量",
       "gridPos": {
         "x": 6,
         "y": 0,
@@ -116,16 +216,16 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type) (rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"})",
+          "expr": "sum by (token_type) (rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",token_type!=\"evaluation\",kb_id=~\"$kb_id\"})",
           "legendFormat": "{{token_type}}"
         }
       ],
-      "description": "计数器自后端进程启动起累加，进程重启后清零。"
+      "description": "仅检索问答管道七类消耗；评估运行写入 rag_evaluation_token_usage_total。历史旧样本不回溯改写，计数器重启后清零。"
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "累计估算成本（CNY）",
+      "title": "检索问答累计估算成本（CNY）",
       "gridPos": {
         "x": 15,
         "y": 0,
@@ -134,7 +234,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type, model, kb_id) (rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"})",
+          "expr": "sum by (token_type, model, kb_id) (rag_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",token_type!=\"evaluation\",kb_id=~\"$kb_id\"})",
           "legendFormat": "{{token_type}} / {{model}} / kb={{kb_id}}"
         }
       ],
@@ -143,12 +243,12 @@
           "unit": "currencyCNY"
         }
       },
-      "description": "计数器自后端进程启动起累加，进程重启后清零。"
+      "description": "仅检索问答管道七类消耗；评估运行成本由 rag_evaluation_token_usage_cost_cny_total 单独承载。历史旧样本不回溯改写，计数器重启后清零。"
     },
     {
-      "id": 4,
+      "id": 5,
       "type": "timeseries",
-      "title": "近 24 小时 Token 增量",
+      "title": "监控异常计数",
       "gridPos": {
         "x": 0,
         "y": 8,
@@ -157,15 +257,25 @@
       },
       "targets": [
         {
-          "expr": "sum by (token_type) (increase(rag_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[24h]))",
-          "legendFormat": "{{token_type}}"
+          "expr": "sum by (token_type, model, kb_id) (increase(rag_token_usage_unavailable_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"}[1h]))",
+          "legendFormat": "usage unavailable ({{token_type}})"
+        },
+        {
+          "expr": "increase(rag_token_request_cost_over_limit_total[1h])",
+          "legendFormat": "request cost over limit"
+        },
+        {
+          "expr": "sum by (sink, component) (increase(rag_token_write_failure_total{component=~\"$component\"}[1h]))",
+          "legendFormat": "sink write failure ({{sink}} / {{component}})"
         }
       ]
+      ,
+      "description": "usage unavailable 按模型、Token 类型和知识库范围过滤；写入失败按失败组件过滤，All 时包含 budget。单次请求成本超限是全局观测，不受过滤器影响。"
     },
     {
-      "id": 5,
+      "id": 9,
       "type": "timeseries",
-      "title": "监控异常计数",
+      "title": "评估运行 Token 累计用量",
       "gridPos": {
         "x": 8,
         "y": 8,
@@ -174,23 +284,16 @@
       },
       "targets": [
         {
-          "expr": "increase(rag_token_usage_unavailable_total[1h])",
-          "legendFormat": "usage unavailable"
-        },
-        {
-          "expr": "increase(rag_token_request_cost_over_limit_total[1h])",
-          "legendFormat": "request cost over limit"
-        },
-        {
-          "expr": "increase(rag_token_write_failure_total[1h])",
-          "legendFormat": "sink write failure ({{sink}})"
+          "expr": "sum by (token_type) (rag_evaluation_token_usage_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"})",
+          "legendFormat": "{{token_type}}"
         }
-      ]
+      ],
+      "description": "完整评估运行的模型消耗。input/embedding 表示评估 RAG 执行，ragas_input/ragas_evaluation/ragas_embedding 表示 RAGAS 判定；计数器自部署起累加，进程重启后清零。"
     },
     {
       "id": 6,
       "type": "timeseries",
-      "title": "评估判定累计成本（CNY）",
+      "title": "评估运行累计估算成本（CNY）",
       "gridPos": {
         "x": 16,
         "y": 8,
@@ -199,8 +302,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (model, kb_id) (rag_token_usage_cost_cny_total{token_type=\"evaluation\",model=~\"$model\",kb_id=~\"$kb_id\"})",
-          "legendFormat": "{{model}} / kb={{kb_id}}"
+          "expr": "sum by (token_type, model, kb_id) (rag_evaluation_token_usage_cost_cny_total{model=~\"$model\",token_type=~\"$token_type\",kb_id=~\"$kb_id\"})",
+          "legendFormat": "{{token_type}} / {{model}} / kb={{kb_id}}"
         }
       ],
       "fieldConfig": {
@@ -208,7 +311,7 @@
           "unit": "currencyCNY"
         }
       },
-      "description": "计数器自后端进程启动起累加，进程重启后清零。"
+      "description": "完整评估运行分阶段成本（RAG 执行 + RAGAS 判定）；计数器自后端进程启动起累加，进程重启后清零。"
     },
     {
       "id": 7,
@@ -222,28 +325,13 @@
       },
       "targets": [
         {
-          "expr": "ALERTS{alertstate=\"firing\",alertname=~\"RagTokenBudgetWarning|RagTokenBudgetExhausted|RagSingleRequestCostLimit|RagTokenSinkWriteFailure\"}",
+          "expr": "ALERTS{alertstate=\"firing\",alertname=~\"RagTokenBudgetWarning|RagTokenBudgetExhausted\"}",
           "legendFormat": "{{alertname}} / {{severity}}"
         }
       ],
       "fieldConfig": {
         "defaults": {},
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RagSingleRequestCostLimit / critical"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#F2495C"
-                }
-              }
-            ]
-          },
           {
             "matcher": {
               "id": "byName",
@@ -274,21 +362,6 @@
               }
             ]
           },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RagTokenSinkWriteFailure / warning"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#FADE2A"
-                }
-              }
-            ]
-          }
         ]
       }
     }

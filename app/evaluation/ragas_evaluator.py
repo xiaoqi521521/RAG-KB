@@ -11,8 +11,6 @@ from typing import Any, Protocol
 import httpx
 import openai
 from instructor.core.exceptions import IncompleteOutputException, InstructorRetryException
-from opentelemetry import metrics as otel_metrics
-from opentelemetry.metrics import Counter, Histogram, Meter
 from ragas.embeddings.base import BaseRagasEmbedding
 from ragas.llms import llm_factory
 from ragas.llms.base import InstructorBaseRagasLLM
@@ -213,24 +211,7 @@ class _MetricOutcome:
 
 
 class RagasEvaluationMetrics:
-    """记录不含业务正文和标识的 RAGAS 指标观测。"""
-
-    def __init__(self, *, meter: Meter | None = None) -> None:
-        """初始化结果、重试次数和耗时指标。"""
-        effective_meter = meter or otel_metrics.get_meter("rag-kb.ragas_evaluation")
-        self._results: Counter = effective_meter.create_counter(
-            "rag.evaluation.ragas.results",
-            description="RAGAS 单项评估结果数",
-        )
-        self._retries: Counter = effective_meter.create_counter(
-            "rag.evaluation.ragas.retries",
-            description="RAGAS 单项外层重试数",
-        )
-        self._durations: Histogram = effective_meter.create_histogram(
-            "rag.evaluation.ragas.duration",
-            unit="ms",
-            description="RAGAS 单项评估总耗时",
-        )
+    """记录不含业务正文和标识的 RAGAS 结构化日志。"""
 
     def record_retry(
         self,
@@ -239,16 +220,11 @@ class RagasEvaluationMetrics:
         error_type: RagasErrorType,
     ) -> None:
         """记录一次低基数重试原因。"""
-        attributes = {"metric": metric.value, "error_type": error_type.value}
         logger.info(
             "ragas_metric_retry=true metric=%s error_type=%s",
             metric.value,
             error_type.value,
         )
-        try:
-            self._retries.add(1, attributes)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ragas_retry_metric_write_failed=true error_type=%s", type(exc).__name__)
 
     def record_result(
         self,
@@ -260,7 +236,6 @@ class RagasEvaluationMetrics:
         """记录一次单项最终结果和总耗时。"""
         result = "success" if error_type is None else "error"
         error = error_type.value if error_type is not None else "none"
-        attributes = {"metric": metric.value, "result": result, "error_type": error}
         logger.info(
             "ragas_metric_completed=true metric=%s result=%s error_type=%s elapsed_ms=%s",
             metric.value,
@@ -268,11 +243,6 @@ class RagasEvaluationMetrics:
             error,
             elapsed_ms,
         )
-        try:
-            self._results.add(1, attributes)
-            self._durations.record(elapsed_ms, attributes)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ragas_result_metric_write_failed=true error_type=%s", type(exc).__name__)
 
 
 @dataclass(frozen=True)

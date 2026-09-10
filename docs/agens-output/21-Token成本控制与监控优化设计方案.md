@@ -2,7 +2,7 @@
 
 状态：设计已收敛，尚未实施。
 
-> 更新说明：本方案的 Token 指标出口决策已被 ADR 0011 取代——全量指标统一通过 OpenTelemetry API 记录，经 `opentelemetry-exporter-prometheus` 由 `/metrics` 暴露，指标名与标签保持不变，`prometheus_client` 仅作为 exposition 层保留。下文保留原始设计供追溯。
+> 更新说明：本方案的 Token 指标出口决策已被 ADR 0011 取代——全量指标统一通过 OpenTelemetry API 记录，经 `opentelemetry-exporter-prometheus` 由 `/metrics` 暴露，指标名与标签保持不变，`prometheus_client` 仅作为 exposition 层保留。每日全局用量也已改为 Redis 分类型日累计，`/stats/usage/daily` 不再查询 Prometheus；最新口径排除正式评估完整 run，每日 Hash 不含 `evaluationTokens`，评估总量从 `kb_eval_run_usage` 读取。后续指标精简已移除无消费方的预算绝对值和 RAGAS 单项观测指标，当前决策见 ADR 0011。下文保留原始设计供追溯。
 
 本文基于当前代码、`CONTEXT.md`、ADR-0006、项目 `.env` 和用户确认的设计决策，目标是把现有三类 Token 统计扩展为可导出、可查看、可告警的六类 Token 监控，同时保留当前用户累计用量接口。
 
@@ -86,7 +86,7 @@ rag_token_budget_limit_cny{scope="global"}
 rag_token_request_cost_cny
 rag_token_request_cost_over_limit_total
 rag_token_budget_rejected_total{reason}
-rag_token_write_failure_total{sink,token_type}
+rag_token_write_failure_total{sink,component}
 ```
 
 其中：
@@ -97,7 +97,7 @@ rag_token_write_failure_total{sink,token_type}
 - `rag_token_request_cost_cny` 使用 Histogram 观察一次请求的 CNY 成本分布，不带请求 ID或 `model` 标签，因为一次请求可能调用多个模型。
 - `rag_token_request_cost_over_limit_total` 在一次请求成本超过 `0.01 CNY` 时递增，作为告警触发依据，不带 `model` 标签。
 - `rag_token_budget_rejected_total` 记录全局金额预算拦截次数。
-- `rag_token_write_failure_total` 记录 Redis 或 Prometheus 写入失败，标签只使用固定的 `sink` 和 `token_type`。
+- `rag_token_write_failure_total` 记录 Redis 或 Prometheus 确认写入失败，标签只使用固定的 `sink` 和 `component`；`component` 是具体 Token 桶或 `budget`。Redis 写超时只记录日志，不计入该指标。
 
 所有 Token 指标都不包含用户、部门、请求、问题、回答、文档或对象路径标签。`model` 只使用当前配置的 Embedding、聊天和 Reranker 模型名。`kb_id` 当前 4 个值，多个知识库统一为 `multi`。
 

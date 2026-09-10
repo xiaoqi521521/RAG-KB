@@ -101,7 +101,7 @@ export default function UsageTrendPage() {
               </div>
             </div>
             <div className="mt-5 pt-4 border-t border-line text-[12.5px] text-soft leading-relaxed">
-              Token 总量与预估成本来自 Prometheus 每日聚合；评估 Token 与评估成本包含评估 run 的 RAG 执行和 RAGAS 判定。按部署时区自然日统计，成本为配置单价下的估算值，不是账单。
+              Token 总量与预估成本为 Redis 非评估消耗加数据库评估 run 消耗；评估 Token 与评估成本包含评估 run 的 RAG 执行和 RAGAS 判定。按部署时区自然日统计，成本为配置单价下的估算值，不是账单。
             </div>
           </section>
 

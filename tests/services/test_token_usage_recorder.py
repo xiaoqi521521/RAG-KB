@@ -13,6 +13,7 @@ from app.services.token_metrics import TokenUsageRecorder
 class FakeRedis:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
+        self.daily_calls: list[tuple[str, str, int]] = []
         self.values: dict[str, str] = {}
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> list[object]:
@@ -23,7 +24,7 @@ class FakeRedis:
         return [self.values[str(token_field)]]
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
-        self.calls.append((name, key, amount))
+        self.daily_calls.append((name, key, amount))
         return amount
 
     async def hgetall(self, name: str) -> dict[str, str]:
@@ -69,6 +70,10 @@ async def test_record_chat_usage_separates_input_and_answer_output() -> None:
         ("rag:token:v3:stats:7", "inputTokens", 120),
         ("rag:token:v3:stats:7", "answerGenerationTokens", 8),
     ]
+    assert redis.daily_calls == [
+        (recorder._daily_usage_key(), "inputTokens", 120),
+        (recorder._daily_usage_key(), "answerGenerationTokens", 8),
+    ]
     assert "estimatedCostCny" not in redis.values
     values = {
         (
@@ -105,6 +110,10 @@ async def test_record_chat_usage_separates_input_and_intent_output() -> None:
     assert redis.calls == [
         ("rag:token:v3:stats:7", "inputTokens", 60),
         ("rag:token:v3:stats:7", "intentTokens", 4),
+    ]
+    assert redis.daily_calls == [
+        (recorder._daily_usage_key(), "inputTokens", 60),
+        (recorder._daily_usage_key(), "intentTokens", 4),
     ]
 
 

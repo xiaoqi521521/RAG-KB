@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import logging
 import time
 
 from fastapi import HTTPException, status
@@ -10,7 +11,8 @@ from app.core.context import CurrentUser
 from app.models import KbPermissionLevel, KnowledgeBase, PermissionSubjectType
 from app.repositories.knowledge_bases import KnowledgeBaseRepository
 from app.repositories.permissions import KbPermissionRepository
-from app.services.permission_metrics import PermissionMetrics
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionService:
@@ -27,11 +29,9 @@ class PermissionService:
         *,
         knowledge_base_repository: KnowledgeBaseRepository,
         permission_repository: KbPermissionRepository,
-        metrics: PermissionMetrics | None = None,
     ) -> None:
         self.knowledge_base_repository = knowledge_base_repository
         self.permission_repository = permission_repository
-        self.metrics = metrics or PermissionMetrics()
 
     async def require_read(self, kb_id: int, user: CurrentUser) -> None:
         """校验当前用户是否具备知识库读权限。"""
@@ -128,7 +128,7 @@ class PermissionService:
             raise self._service_unavailable() from exc
 
     async def _require(self, *, kb_id: int, user: CurrentUser, action: str) -> None:
-        """执行读写权限检查并记录不含敏感标识的观测结果。"""
+        """执行读写权限检查并记录不含敏感标识的结构化日志。"""
         started_at = time.perf_counter()
         result = "denied"
         source = "none"
@@ -170,7 +170,13 @@ class PermissionService:
             raise
         finally:
             elapsed_ms = max(0, int((time.perf_counter() - started_at) * 1000))
-            self.metrics.record(action=action, result=result, source=source, elapsed_ms=elapsed_ms)
+            logger.info(
+                "permission_check_completed=true action=%s result=%s source=%s elapsed_ms=%s",
+                action,
+                result,
+                source,
+                elapsed_ms,
+            )
 
     def _has_required_permission(self, permission: str | None, action: str) -> bool:
         """判断有效权限能否完成当前读写操作。"""

@@ -219,6 +219,7 @@ async def test_init_clients_uses_separate_chat_and_embedding_openai_configs(monk
     assert chat_kwargs["base_url"] == "https://llm.example.test/v1"
     assert chat_kwargs["timeout"] == 60.0
     assert chat_kwargs["max_retries"] == 0
+    assert chat_kwargs["stream_usage"] is True
     assert embedding_kwargs["api_key"] == "embedding-key"
     assert embedding_kwargs["base_url"] == "https://embedding.example.test/v1"
     assert embedding_kwargs["max_retries"] == 0

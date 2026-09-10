@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from opentelemetry import metrics
 from opentelemetry.metrics import CallbackOptions, Meter, Observation
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,18 @@ return tostring(current)
 def _as_decimal(value: Decimal | int | float | str) -> Decimal:
     """把配置或调用方传入的金额统一为 Decimal，避免二进制浮点误差。"""
     return Decimal(str(value))
+
+
+def _safe_redis_target(redis_client: object) -> str:
+    """提取无凭据的 Redis 目标，便于定位是哪套 Redis 写入失败。"""
+    pool = getattr(redis_client, "connection_pool", None)
+    kwargs = getattr(pool, "connection_kwargs", None)
+    if not isinstance(kwargs, Mapping):
+        return "unknown"
+    host = kwargs.get("host") or "unknown"
+    port = kwargs.get("port") or "unknown"
+    db = kwargs.get("db", "unknown")
+    return f"host={host} port={port} db={db}"
 
 
 @dataclass
@@ -101,14 +114,9 @@ class GlobalTokenBudgetGate:
         self.request_cost_limit_cny = request_cost_limit
         self.timeout_seconds = timeout_seconds
         effective_meter = meter or metrics.get_meter(_METER_NAME)
-        # 同步 Gauge 每次采集即消费，空闲期会导致 Prometheus 序列消失；
-        # 改用 ObservableGauge，每次抓取回调重新产出当前值。
+        # 同步 Gauge 采集即消费会让告警序列在空闲期消失；
+        # 比例 Gauge 改用 ObservableGauge，每次抓取回调重新产出当前值。
         self._budget_used_value = 0.0
-        self._budget_used = effective_meter.create_observable_gauge(
-            "rag_token_budget_used_cny",
-            description="Current global daily CNY budget usage",
-            callbacks=[self._observe_budget_used],
-        )
         self._budget_limit_value = float(daily_budget)
         # 比例在应用内计算，预算上限作为静态配置不再单独导出指标。
         self._budget_ratio = effective_meter.create_observable_gauge(
@@ -126,9 +134,6 @@ class GlobalTokenBudgetGate:
             description="Token usage sink write failures",
         )
         self._write_failure = self.write_failure_counter
-
-    def _observe_budget_used(self, options: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(self._budget_used_value, {"scope": "global"})
 
     def _observe_budget_ratio(self, options: CallbackOptions) -> Iterable[Observation]:
         if self._budget_limit_value <= 0:
@@ -174,13 +179,36 @@ class GlobalTokenBudgetGate:
             async with asyncio.timeout(self.timeout_seconds):
                 total = _as_decimal(await self.redis.incrbyfloat(key, str(cost)))
             self._budget_used_value = float(total)
-        except Exception as exc:  # noqa: BLE001
-            # 预算统计写失败不能回滚已经完成的模型调用。
+        except (TimeoutError, RedisTimeoutError) as exc:
+            # Redis 收到命令后可能仍执行成功；超时只代表本次调用的结果未知。
             logger.warning(
-                "CNY budget usage write failed: error_type=%s",
+                (
+                    "CNY budget usage write timed out; final outcome unknown: "
+                    "cost_cny=%s timeout_seconds=%s redis=%s key=%s error_type=%s"
+                ),
+                str(cost),
+                self.timeout_seconds,
+                _safe_redis_target(self.redis),
+                key,
                 type(exc).__name__,
             )
-            self._record_write_failure(sink="redis", token_type="budget")
+        except Exception as exc:  # noqa: BLE001
+            # 预算统计写失败不能回滚已经完成的模型调用。
+            # Redis URL 可能包含凭据，这里只拆出 host/port/db，不输出完整连接串。
+            logger.warning(
+                (
+                    "CNY budget usage write failed: cost_cny=%s timeout_seconds=%s "
+                    "redis=%s key=%s error_type=%s error=%s"
+                ),
+                str(cost),
+                self.timeout_seconds,
+                _safe_redis_target(self.redis),
+                key,
+                type(exc).__name__,
+                repr(exc),
+                exc_info=True,
+            )
+            self._record_write_failure(sink="redis", component="budget")
 
     def add_request_cost(self, cost_cny: Decimal | int | float | str) -> None:
         """累加当前业务请求的内存金额，不保存请求级明细。"""
@@ -207,13 +235,13 @@ class GlobalTokenBudgetGate:
         finally:
             _REQUEST_COST.reset(token)
 
-    def _record_write_failure(self, *, sink: str, token_type: str) -> None:
+    def _record_write_failure(self, *, sink: str, component: str) -> None:
         """记录预算统计出口故障，指标自身故障也不能影响业务请求。"""
         try:
-            self._write_failure.add(1, {"sink": sink, "token_type": token_type})
+            self._write_failure.add(1, {"sink": sink, "component": component})
         except Exception:  # noqa: BLE001
             logger.warning(
-                "Token budget write failure metric unavailable: sink=%s token_type=%s",
+                "Token budget write failure metric unavailable: sink=%s component=%s",
                 sink,
-                token_type,
+                component,
             )

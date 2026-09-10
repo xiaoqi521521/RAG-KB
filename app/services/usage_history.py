@@ -3,18 +3,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.repositories.evaluations import EvaluationRunUsageDailySummary
+from app.services.token_metrics import TokenType
 
-import httpx
 
 _CURRENCY_QUANTUM = Decimal("0.0001")
-_SCRAPE_STEP_SECONDS = 15
-_NEW_SERIES_GAP_SECONDS = 30
-_TOKENS_SERIES_QUERY = "rag_token_usage_total"
-_COST_SERIES_QUERY = "rag_token_usage_cost_cny_total"
+
+
+class DailyUsageStore(Protocol):
+    """读取 Redis 每日非评估 Token 总量并按当前单价派生成本的最小接口。"""
+
+    async def read_daily_usage(
+        self,
+        *,
+        days: int,
+        now: datetime,
+    ) -> dict[date, dict[TokenType, int]]:
+        """返回最近 days 个自然日（含当天）的非评估分类型 Token 数。"""
+        ...
+
+    def estimate_cost(self, *, tokens: int, token_type: TokenType) -> Decimal:
+        """按当前部署单价估算一笔 Token 消耗的费用。"""
+        ...
 
 
 class RunUsageSummaryReader(Protocol):
@@ -29,7 +42,7 @@ class RunUsageSummaryReader(Protocol):
 
 
 class UsageHistoryError(RuntimeError):
-    """Prometheus 用量历史不可读取时抛出，由路由层转换为 503。"""
+    """Redis 用量历史不可读取时抛出，由路由层转换为 503。"""
 
 
 @dataclass(frozen=True)
@@ -37,6 +50,7 @@ class DailyUsagePoint:
     """单个自然日的全系统 Token 总量与估算成本。"""
 
     date: str
+    # Redis 非评估消耗与数据库评估 run 消耗合并后的全口径总量。
     tokens: int
     cost: Decimal
     # 评估字段表示完整评估 run：RAG 执行管道 + RAGAS 判定。
@@ -45,24 +59,20 @@ class DailyUsagePoint:
 
 
 class UsageHistoryService:
-    """从 Prometheus 读取总量，并从 run 用量事实表读取评估 run 总消耗。"""
+    """从 Redis 读取每日 Token 总量，并从 run 用量事实表读取评估 run 总消耗。"""
 
     def __init__(
         self,
         *,
-        base_url: str,
-        timeout_seconds: float,
+        daily_usage_store: DailyUsageStore,
         timezone: str,
         run_usage_repository: RunUsageSummaryReader | None = None,
     ) -> None:
-        if timeout_seconds <= 0:
-            raise ValueError("prometheus_query_timeout_seconds must be positive")
         try:
             self.timezone = ZoneInfo(timezone)
         except ZoneInfoNotFoundError as exc:
-            raise ValueError(f"unknown prometheus query timezone: {timezone}") from exc
-        self.base_url = base_url.rstrip("/")
-        self.timeout_seconds = timeout_seconds
+            raise ValueError(f"unknown usage history timezone: {timezone}") from exc
+        self.daily_usage_store = daily_usage_store
         self.run_usage_repository = run_usage_repository
 
     async def daily_usage(
@@ -72,59 +82,55 @@ class UsageHistoryService:
         now: datetime | None = None,
     ) -> list[DailyUsagePoint]:
         """返回最近 days 个自然日（含当天）的每日用量，历史缺口记 0。"""
+        if days <= 0:
+            raise ValueError("days must be positive")
         effective_now = now.astimezone(self.timezone) if now else datetime.now(self.timezone)
         dates = self._range_dates(days=days, now=effective_now)
-        history_dates = dates[:-1]
-        current_time = _epoch(effective_now)
-        today_start = _epoch(_midnight(dates[-1], self.timezone))
         evaluation_usage_by_date = await self._load_run_usage_by_date(dates=dates)
 
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=self.timeout_seconds
-        ) as client:
-            tokens_by_day: dict[date, float] = {}
-            cost_by_day: dict[date, float] = {}
-            if history_dates:
-                # 每个历史日单独分片查询：15s 步长能看到进程重启的 counter 重置，
-                # 且单日 5760 点始终低于 Prometheus 单序列 11000 点的查询上限。
-                for day in history_dates:
-                    day_start = _epoch(_midnight(day, self.timezone))
-                    day_end = _epoch(_next_midnight(day, self.timezone)) - 1
-                    tokens_by_day[day] = await self._sum_series_increase(
-                        client,
-                        _TOKENS_SERIES_QUERY,
-                        start=day_start,
-                        end=day_end,
-                    )
-                    cost_by_day[day] = await self._sum_series_increase(
-                        client,
-                        _COST_SERIES_QUERY,
-                        start=day_start,
-                        end=day_end,
-                    )
-
-            # 当天尚未到达次日零点，不能再用次日 increase 采样；改用原始 counter 增量。
-            today_tokens = await self._sum_series_increase(
-                client,
-                _TOKENS_SERIES_QUERY,
-                start=today_start,
-                end=current_time,
+        try:
+            token_usage_by_day = await self.daily_usage_store.read_daily_usage(
+                days=days,
+                now=effective_now,
             )
-            today_cost = await self._sum_series_increase(
-                client,
-                _COST_SERIES_QUERY,
-                start=today_start,
-                end=current_time,
-            )
+        except Exception as exc:  # noqa: BLE001
+            raise UsageHistoryError("Redis 用量历史不可读") from exc
 
-        return _build_points(
-            dates,
-            tokens_by_day,
-            cost_by_day,
-            evaluation_usage_by_date,
-            today_tokens,
-            today_cost,
-        )
+        points: list[DailyUsagePoint] = []
+        for day in dates:
+            token_counts = token_usage_by_day.get(day, {})
+            tokens = sum(token_counts.values(), 0)
+            # 金额不在 Redis 存储，展示时按当前部署单价从 Token 派生。
+            cost = sum(
+                (
+                    self.daily_usage_store.estimate_cost(
+                        tokens=count,
+                        token_type=token_type,
+                    )
+                    for token_type, count in token_counts.items()
+                ),
+                Decimal("0"),
+            )
+            evaluation_tokens, evaluation_cost = evaluation_usage_by_date.get(
+                day,
+                (0, Decimal("0")),
+            )
+            # 评估 run 消耗只在数据库汇总一次，这里并入全口径但保留拆分字段。
+            tokens += evaluation_tokens
+            cost += evaluation_cost
+            points.append(
+                DailyUsagePoint(
+                    date=day.isoformat(),
+                    tokens=tokens,
+                    cost=cost.quantize(_CURRENCY_QUANTUM, rounding=ROUND_HALF_UP),
+                    evaluation_tokens=evaluation_tokens,
+                    evaluation_cost=Decimal(evaluation_cost).quantize(
+                        _CURRENCY_QUANTUM,
+                        rounding=ROUND_HALF_UP,
+                    ),
+                )
+            )
+        return points
 
     async def _load_run_usage_by_date(
         self,
@@ -147,116 +153,3 @@ class UsageHistoryService:
         effective_now = now.astimezone(self.timezone) if now else datetime.now(self.timezone)
         today = effective_now.date()
         return [today - timedelta(offset) for offset in range(days - 1, -1, -1)]
-
-    async def _query_range_series(
-        self,
-        client: httpx.AsyncClient,
-        query: str,
-        *,
-        start: int,
-        end: int,
-        step: int,
-    ) -> list[list[tuple[int, float]]]:
-        try:
-            response = await client.get(
-                "/api/v1/query_range",
-                params={
-                    "query": query,
-                    "start": start,
-                    "end": end,
-                    "step": step,
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise UsageHistoryError("Prometheus 不可达") from exc
-        if response.status_code != 200:
-            raise UsageHistoryError(f"Prometheus 查询失败: status={response.status_code}")
-        try:
-            payload = response.json()
-            results = payload["data"]["result"]
-            return [
-                [
-                    (int(timestamp), float(value))
-                    for timestamp, value in sorted(series["values"], key=lambda item: item[0])
-                ]
-                for series in results
-            ]
-        except (IndexError, KeyError, TypeError, ValueError) as exc:
-            raise UsageHistoryError("Prometheus 响应格式异常") from exc
-
-    async def _sum_series_increase(
-        self,
-        client: httpx.AsyncClient,
-        query: str,
-        *,
-        start: int,
-        end: int,
-    ) -> float:
-        series_values = await self._query_range_series(
-            client,
-            query,
-            start=start,
-            end=end,
-            step=_SCRAPE_STEP_SECONDS,
-        )
-        return sum(_counter_increase(values, start) for values in series_values)
-
-
-def _midnight(day: date, timezone: ZoneInfo) -> datetime:
-    return datetime.combine(day, time.min, tzinfo=timezone)
-
-
-def _next_midnight(day: date, timezone: ZoneInfo) -> datetime:
-    return datetime.combine(day + timedelta(days=1), time.min, tzinfo=timezone)
-
-
-def _epoch(moment: datetime) -> int:
-    return int(moment.timestamp())
-
-
-def _counter_increase(samples: list[tuple[int, float]], range_start: int) -> float:
-    """累计单条 counter 序列增量；进程重启导致的回退视为重置后的新值。"""
-    if not samples:
-        return 0.0
-
-    first_time, first_value = samples[0]
-    # 当天中途新建的 Prometheus 序列没有零点样本，若首样本明显晚于起点则计入其首值。
-    total = first_value if first_time > range_start + _NEW_SERIES_GAP_SECONDS else 0.0
-    previous = first_value
-    for _, value in samples[1:]:
-        delta = value - previous
-        total += value if delta < 0 else delta
-        previous = value
-    return total
-
-
-def _build_points(
-    dates: list[date],
-    tokens_by_day: dict[date, float],
-    cost_by_day: dict[date, float],
-    evaluation_usage_by_date: dict[date, tuple[int, Decimal]],
-    today_tokens: float,
-    today_cost: float,
-) -> list[DailyUsagePoint]:
-    """历史日与当天均按原始 counter 序列增量精确累计，确保包含当前时间。"""
-    points: list[DailyUsagePoint] = []
-    for day in dates:
-        if day == dates[-1]:
-            tokens = today_tokens
-            cost = today_cost
-        else:
-            tokens = tokens_by_day.get(day, 0.0)
-            cost = cost_by_day.get(day, 0.0)
-        evaluation_tokens, evaluation_cost = evaluation_usage_by_date.get(day, (0, Decimal("0")))
-        points.append(
-            DailyUsagePoint(
-                date=day.isoformat(),
-                tokens=int(tokens),
-                cost=Decimal(str(cost)).quantize(_CURRENCY_QUANTUM, rounding=ROUND_HALF_UP),
-                evaluation_tokens=int(evaluation_tokens),
-                evaluation_cost=Decimal(str(evaluation_cost)).quantize(
-                    _CURRENCY_QUANTUM, rounding=ROUND_HALF_UP
-                ),
-            )
-        )
-    return points

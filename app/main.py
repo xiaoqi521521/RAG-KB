@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.router import api_router
@@ -14,8 +14,13 @@ from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.telemetry import init_metrics, shutdown_metrics
 from app.core.trace_id import register_trace_id_middleware
+from app.core.database import get_db
+from app.repositories.evaluations import EvaluationRepository
 from app.services.token_budget import GlobalTokenBudgetGate
+from app.services.daily_usage_metrics import DailyUsageMetrics
 from app.services.token_metrics import TokenMetrics
+from app.services.usage_history import UsageHistoryService
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,10 @@ async def lifespan(app: FastAPI):
         chat_input_price=settings.chat_input_cost_cny_per_1k_tokens,
         chat_output_price=settings.chat_output_cost_cny_per_1k_tokens,
         reranker_price=settings.reranker_cost_cny_per_1k_tokens,
+        timezone=settings.token_budget_timezone,
+    )
+    app.state.daily_usage_metrics = (
+        DailyUsageMetrics(meter=meter) if meter_provider is not None else None
     )
     try:
         yield
@@ -84,7 +93,25 @@ def create_app() -> FastAPI:
     if settings.enable_metrics:
         # 普通路由直接输出 exposition，避免 Starlette Mount 的尾斜杠 307 重定向。
         @app.get("/metrics", include_in_schema=False)
-        def metrics() -> Response:
+        async def metrics(
+            session: AsyncSession = Depends(get_db),
+        ) -> Response:
+            usage_history = UsageHistoryService(
+                daily_usage_store=app.state.token_metrics,
+                timezone=settings.token_budget_timezone,
+                run_usage_repository=EvaluationRepository(session),
+            )
+            try:
+                point = (await usage_history.daily_usage(days=1))[0]
+                app.state.daily_usage_metrics.update(
+                    tokens=point.tokens,
+                    cost_cny=point.cost,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "daily usage metric refresh failed: error_type=%s",
+                    type(exc).__name__,
+                )
             return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
     return app
 

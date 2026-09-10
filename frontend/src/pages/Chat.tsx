@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Popconfirm, Select, Tooltip } from 'antd';
 import {
   ArrowUpOutlined,
@@ -90,6 +90,7 @@ export default function ChatPage() {
     openPanel,
     closePanel,
     setPanelHighlight,
+    resetChat,
   } = useChatStore();
 
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -100,6 +101,15 @@ export default function ChatPage() {
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(() => new Set());
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // 在绘制前清空全局聊天状态，避免切换账号后短暂渲染上一个账号的内存数据。
+  useLayoutEffect(() => {
+    resetChat();
+  }, [resetChat, token]);
+
+  useEffect(() => () => {
+    abortRef.current?.abort();
+  }, []);
 
   const selectedPanelMessage = useMemo(
     () => messages.find((item) => item.id === panelMessageKey) || null,

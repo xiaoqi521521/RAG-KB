@@ -164,17 +164,9 @@ add_turn_for_user(session_id, user_id, ...)
 | 身份提供者、权限查询或其数据库不可用 | `503` | 拒绝式失败，不调用下游。 |
 | 其他未预期异常 | `500` | 由统一异常处理器返回通用错误，不泄露内部实现。 |
 
-检索层权限过滤的专用审计日志可记录当前 `user_id`、被过滤的 `denied_kb_ids`、操作类型、过滤结果、`permission_source=permission_service`、数量、耗时和错误类型；逐库授权的系统管理员、公开、用户或部门来源仍由无标识的通用权限观测记录。其他权限与认证日志不得记录用户 ID 或知识库 ID。所有日志仍不得记录 JWT、完整问题、chunk 正文、文件内容、完整会话消息、文档 ID、对象路径或授权密钥。上述标识不得作为 Prometheus/Grafana 指标标签。
+检索层权限过滤的专用审计日志可记录当前 `user_id`、被过滤的 `denied_kb_ids`、操作类型、过滤结果、`permission_source=permission_service`、数量、耗时和错误类型；`PermissionService` 自身保留无用户 ID 或知识库 ID 的结构化日志，记录操作类型、结果、来源和耗时。其他权限与认证日志不得记录用户 ID 或知识库 ID。所有日志仍不得记录 JWT、完整问题、chunk 正文、文件内容、完整会话消息、文档 ID、对象路径或授权密钥。上述标识不得作为 Prometheus/Grafana 指标标签。
 
-建议新增计数与耗时指标：
-
-```plain
-rag_permission_checks_total{action,result,source}
-rag_permission_check_duration_seconds{action}
-rag_permission_denials_total{action,reason}
-```
-
-指标标签不得包含 `user_id`、`kb_id` 或文档 ID，避免高基数和敏感标识泄露。
+权限检查不新增 Prometheus/Grafana 指标，避免保留没有看板和告警消费的观测面。
 
 ## 6. 实施影响
 

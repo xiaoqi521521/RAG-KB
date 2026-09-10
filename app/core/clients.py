@@ -29,6 +29,8 @@ async def init_clients(settings: Settings) -> None:
             base_url=settings.openai_base_url,
             temperature=settings.chat_temperature,
             max_tokens=settings.chat_max_tokens,
+            # 兼容网关流式响应默认可能省略 usage；显式开启才能可靠记录生成 Token。
+            stream_usage=True,
             timeout=settings.chat_stream_timeout_seconds,
             # 重试由各业务服务统一控制，避免模型 SDK 重试叠加放大请求耗时。
             max_retries=0,

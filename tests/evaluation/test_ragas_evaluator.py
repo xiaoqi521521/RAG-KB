@@ -639,56 +639,22 @@ async def test_evaluate_rejects_only_metrics_with_invalid_inputs_without_calling
     assert context_precision.calls == []
 
 
-@pytest.mark.asyncio
-async def test_evaluate_records_low_cardinality_result_retry_and_duration_metrics() -> None:
-    from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-
-    class TimeoutOnceMetric(FakeMetric):
-        async def ascore(self, **kwargs: Any) -> SimpleNamespace:
-            self.calls.append(kwargs)
-            if len(self.calls) == 1:
-                await asyncio.sleep(1)
-            return SimpleNamespace(value=self.score)
-
-    reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader])
-    evaluator = RagasEvaluator(
-        metrics=RagasMetrics(
-            faithfulness=TimeoutOnceMetric(0.9),
-            answer_relevancy=FakeMetric(0.8),
-            context_recall=FakeMetric(0.7),
-            context_precision=FakeMetric(0.6),
-        ),
-        timeout_seconds=0.01,
-        observability=RagasEvaluationMetrics(
-            meter=provider.get_meter("tests.ragas_evaluation")
-        ),
-    )
-
-    await evaluator.evaluate(
-        RagasEvaluationSample(
-            question="敏感问题",
-            actual_answer="敏感回答",
-            expected_answer="敏感期望答案",
-            reference_contexts=["敏感参考内容"],
+def test_ragas_metrics_keep_low_cardinality_structured_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("INFO", logger="app.evaluation.ragas_evaluator"):
+        RagasEvaluationMetrics().record_retry(
+            metric=RagasMetricName.FAITHFULNESS,
+            error_type=RagasErrorType.TIMEOUT,
         )
+        RagasEvaluationMetrics().record_result(
+            metric=RagasMetricName.FAITHFULNESS,
+            error_type=None,
+            elapsed_ms=12,
+        )
+
+    assert "ragas_metric_retry=true metric=faithfulness error_type=timeout" in caplog.text
+    assert (
+        "ragas_metric_completed=true metric=faithfulness result=success"
+        " error_type=none elapsed_ms=12" in caplog.text
     )
-
-    try:
-        metrics_data = reader.get_metrics_data()
-    finally:
-        provider.shutdown()
-
-    assert metrics_data is not None
-    metric_names = {
-        metric.name
-        for resource_metrics in metrics_data.resource_metrics
-        for scope_metrics in resource_metrics.scope_metrics
-        for metric in scope_metrics.metrics
-    }
-    assert metric_names == {
-        "rag.evaluation.ragas.results",
-        "rag.evaluation.ragas.retries",
-        "rag.evaluation.ragas.duration",
-    }
