@@ -8,7 +8,7 @@
 
 - [ ] 后端依赖已安装：`uv sync`
 - [ ] `.env` 已配置数据库、Redis、MinIO、百炼 API Key、RERANKER_ENDPOINT
-- [ ] PostgreSQL 已执行 `app/db/schema.sql` 及 `app/db/migrations/` 下迁移
+- [ ] PostgreSQL 已按当前结构基线完成初始化
 - [ ] 后端已启动：`uv run uvicorn app.main:app --reload --port 8000`
 - [ ] 健康检查通过：`curl http://localhost:8000/api/v1/health`
 - [ ] 前端已启动：`cd frontend && npm install && npm run dev`（默认 `http://localhost:3000`）

@@ -107,7 +107,7 @@ async def main() -> None:
         print(f"错误: kb_id 必须是整数，得到: {sys.argv[1]}")
         sys.exit(1)
 
-    print(f"=== 评估功能调试 ===")
+    print("=== 评估功能调试 ===")
     print(f"检查知识库 ID: {kb_id}")
     print()
 

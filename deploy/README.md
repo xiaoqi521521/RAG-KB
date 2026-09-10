@@ -9,7 +9,7 @@ cp .env.production.example .env
 docker compose up -d --build
 ```
 
-首次创建 PostgreSQL 数据卷时，Compose 会依次执行 `00-bootstrap.sql`、由 `01-ragkb-full-dump.sql` 引入的 `app/db/ragkb_full_dump.sql`、`01b-eval-dataset-updated-at.sql`、`01c-reorder-eval-dataset-columns.sql`、`01d-reorder-eval-result-columns.sql`、`01e-answer-feedback-updated-at.sql`、`01f-convert-eval-version-to-int.sql`、`01f-reorder-chat-message-columns.sql`、`02-column-comments.sql` 和 `99-sequence-sync.sql`。其中 `01b-eval-dataset-updated-at.sql` 为评估数据集增加自动维护的更新时间，`01c-reorder-eval-dataset-columns.sql` 调整评估数据集字段顺序，`01d-reorder-eval-result-columns.sql` 将评估结果的 `actual_answer` 放到 `eval_version` 与 `hit` 之间并将 `eval_at` 放到末尾，`01e-answer-feedback-updated-at.sql` 为用户回答反馈增加自动维护的更新时间，`01f-convert-eval-version-to-int.sql` 将旧的 `vN_*` 评估版本转换为与文档 `version` 一致的整数，`01f-reorder-chat-message-columns.sql` 将用户消息表的 `created_at` 调整到最后，`02-column-comments.sql` 为所有业务字段补充 PostgreSQL 注释；原始 dump 挂载在 `/tmp`，不放入 PostgreSQL initdb 目录，确保只导入一次。该导出文件包含历史结构和数据；后续数据库变更需要同步维护导入脚本。
+首次创建 PostgreSQL 数据卷时，Compose 会自动执行 `app/db/ragkb_init.sql`，导入 PGVector 扩展、业务表、索引、触发器和当前演示数据。该脚本只适用于首次初始化；重复执行会因对象已存在而报错。
 
 前端通过 Nginx 暴露在 80 端口，API 请求和 SSE 请求代理到 backend。Prometheus 和 Grafana 端口仅绑定到服务器本机，可通过 SSH 隧道访问：
 

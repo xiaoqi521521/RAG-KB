@@ -10,7 +10,7 @@
 - PostgreSQL：`kb_chat_session`、`kb_chat_message`、`kb_answer_feedback`、`kb_eval_result`、`kb_eval_run_usage`
 - Redis：`rag:token:v3:` 下的 stats / daily / budget 三组键（保留 `rag:emb:*`、`rag:query:*`、`rag:rewrite:*` 缓存）
 - 本地监控数据：`.scratch/runtime/grafana-data`、`.scratch/runtime/prometheus-data`、`D:\Code\tools\prometheus-local-data`
-- `app/db/ragkb_full_dump.sql`：清除其中的历史测试数据，数据库清理完成后重新导出干净基线
+- `app/db/`：旧全量 dump 已删除，数据库清理完成后重新生成干净结构基线
 
 明确不清理：文档与索引（`kb_document`、`kb_doc_chunk`、`kb_index_task`）、MinIO 对象、知识库与权限、`kb_eval_dataset` 及其 `expected_chunk_ids`。下文其余章节作为未来全量重置的参考保留。
 
@@ -98,7 +98,6 @@ mc rm --recursive --force local/rag-documents/kb/
 
 ## 5. 仓库内基线文件
 
-- [ ] `app/db/ragkb_full_dump.sql`：2026-08-29 的全量 dump，内含 7 月测试会话、反馈、文档、chunk 与评估数据，Compose 首次启动会导入。重置后应重新导出干净基线，或改为 `schema.sql` + `data.sql` 引导，否则容器环境又会带回旧数据。
 - [ ] `app/db/data.sql`：保持现状，作为重置后的种子数据。
 
 ## 6. 前端本地状态（可选）

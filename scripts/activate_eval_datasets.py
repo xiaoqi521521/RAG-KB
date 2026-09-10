@@ -83,7 +83,7 @@ async def main() -> None:
 
     dry_run = "--execute" not in sys.argv
 
-    print(f"=== 批量激活评估数据集 ===")
+    print("=== 批量激活评估数据集 ===")
     print(f"知识库 ID: {kb_id}")
     print(f"模式: {'试运行' if dry_run else '执行'}")
     print()

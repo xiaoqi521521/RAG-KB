@@ -1,106 +1,5 @@
-from pathlib import Path
 from datetime import datetime
-import re
 from zoneinfo import ZoneInfo
-
-
-def test_schema_sql_exists_with_expected_tables_and_pgvector_extension():
-    schema_path = Path("app/db/schema.sql")
-
-    assert schema_path.exists()
-
-    schema_sql = schema_path.read_text(encoding="utf-8")
-
-    assert "CREATE EXTENSION IF NOT EXISTS vector;" in schema_sql
-    for table_name in (
-        "kb_knowledge_base",
-        "kb_permission",
-        "kb_document",
-        "kb_doc_chunk",
-        "kb_index_task",
-        "kb_chat_session",
-        "kb_chat_message",
-        "kb_answer_feedback",
-        "kb_eval_dataset",
-        "kb_eval_result",
-        "kb_eval_run_usage",
-    ):
-        assert f"CREATE TABLE {table_name}" in schema_sql
-
-
-def test_schema_sql_uses_shanghai_timestamp_defaults():
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-
-    assert "DEFAULT NOW()" not in schema_sql
-    assert "DEFAULT timezone('Asia/Shanghai', now())" in schema_sql
-
-
-def test_all_database_columns_have_comments_in_schema_and_migration():
-    """数据库元数据注释应覆盖 ORM 映射的全部业务字段。"""
-    from app.core.database import Base
-    import app.models  # noqa: F401
-
-    expected_columns = {
-        (table.name, column.name)
-        for table in Base.metadata.tables.values()
-        for column in table.columns
-        if table.name.startswith("kb_")
-    }
-
-    commented_columns = set()
-    for sql_path in (
-        Path("app/db/schema.sql"),
-        Path("app/db/migrations/20260903_add_column_comments.sql"),
-        Path("app/db/migrations/20260908_move_eval_usage_to_run.sql"),
-    ):
-        commented_columns.update(
-            re.findall(
-                r"COMMENT ON COLUMN (kb_[a-z_]+)\.([a-z_]+) IS",
-                sql_path.read_text(encoding="utf-8"),
-            )
-        )
-    assert expected_columns <= commented_columns
-
-
-def test_status_column_comments_explain_each_enum_value():
-    """多枚举状态注释必须同时给出每个值的业务含义。"""
-    expected_comments = {
-        "kb_document.status": (
-            "PENDING=待处理",
-            "PROCESSING=处理中",
-            "DONE=索引完成",
-            "FAILED=索引失败",
-        ),
-        "kb_index_task.status": (
-            "PENDING=待执行",
-            "RUNNING=执行中",
-            "DONE=执行完成",
-            "FAILED=执行失败",
-        ),
-        "kb_eval_dataset.status": (
-            "CANDIDATE=候选待审核",
-            "ACTIVE=有效并纳入评估",
-            "NEEDS_REVIEW=关联内容变更后待复核",
-            "ARCHIVED=已归档且不纳入默认评估",
-        ),
-        "kb_eval_result.status": (
-            "SUCCESS=评估成功",
-            "PARTIAL=部分完成或发生降级",
-            "FAILED=评估失败",
-        ),
-    }
-
-    for sql_path in (
-        Path("app/db/schema.sql"),
-        Path("app/db/migrations/20260903_add_column_comments.sql"),
-    ):
-        sql = sql_path.read_text(encoding="utf-8")
-        for column, meanings in expected_comments.items():
-            table, column_name = column.split(".")
-            marker = f"COMMENT ON COLUMN {table}.{column_name} IS '"
-            start = sql.index(marker) + len(marker)
-            comment = sql[start : sql.index("';", start)]
-            assert all(meaning in comment for meaning in meanings)
 
 
 def test_database_models_are_registered_on_base_metadata():
@@ -161,7 +60,6 @@ def test_timestamp_columns_use_shanghai_application_defaults():
         (EvalDataset, "updated_at"),
         (EvalResult, "eval_at"),
         (EvalRunUsage, "created_at"),
-        (EvalRunUsage, "created_at"),
     ]
 
     for model, column_name in timestamp_columns:
@@ -188,7 +86,7 @@ def test_index_task_can_retry_only_failed_tasks_under_limit():
     assert pending_task.can_retry() is False
 
 
-def test_eval_dataset_model_and_sql_define_lifecycle_constraints():
+def test_eval_dataset_model_defines_lifecycle_constraints():
     from app.models import EvalDataset, EvalDatasetStatus
 
     assert {status.value for status in EvalDatasetStatus} == {
@@ -205,16 +103,10 @@ def test_eval_dataset_model_and_sql_define_lifecycle_constraints():
     assert columns["source_feedback_id"].unique is True
     assert columns["updated_at"].nullable is False
     assert columns["updated_at"].onupdate.arg.__name__ == "shanghai_now_naive"
-    assert {index.name for index in EvalDataset.__table__.indexes} >= {"idx_eval_dataset_kb_status"}
-
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-    assert "status              VARCHAR(20)     NOT NULL DEFAULT 'ACTIVE'" in schema_sql
-    assert "review_reason       VARCHAR(50)" in schema_sql
-    assert "source_feedback_id  BIGINT UNIQUE" in schema_sql
-    assert "updated_at      TIMESTAMP       NOT NULL" in schema_sql
-    assert "trigger_eval_dataset_updated_at" in schema_sql
-    assert "idx_eval_dataset_kb_status" in schema_sql
-    assert [column.name for column in EvalDataset.__table__.columns] == [
+    assert {index.name for index in EvalDataset.__table__.indexes} >= {
+        "idx_eval_dataset_kb_status"
+    }
+    assert [column.name for column in columns] == [
         "id",
         "kb_id",
         "question",
@@ -228,29 +120,8 @@ def test_eval_dataset_model_and_sql_define_lifecycle_constraints():
         "updated_at",
     ]
 
-    migration_sql = Path("app/db/migrations/20260715_extend_eval_dataset.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "ADD COLUMN IF NOT EXISTS status" in migration_sql
-    assert "UPDATE kb_eval_dataset" in migration_sql
-    assert "SET status = 'ACTIVE'" in migration_sql
 
-    updated_at_migration_sql = Path(
-        "app/db/migrations/20260903_add_eval_dataset_updated_at.sql"
-    ).read_text(encoding="utf-8")
-    assert "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP" in updated_at_migration_sql
-    assert "SET updated_at = COALESCE(updated_at, created_at" in updated_at_migration_sql
-    assert "CREATE TRIGGER trigger_eval_dataset_updated_at" in updated_at_migration_sql
-    reorder_migration_sql = Path(
-        "app/db/migrations/20260903_reorder_eval_dataset_columns.sql"
-    ).read_text(encoding="utf-8")
-    assert "source_feedback_id, created_at, updated_at" in reorder_migration_sql
-    assert (
-        "ALTER TABLE kb_eval_dataset_reordered RENAME TO kb_eval_dataset" in reorder_migration_sql
-    )
-
-
-def test_eval_result_model_and_sql_define_metric_constraints():
+def test_eval_result_model_defines_metric_constraints():
     from sqlalchemy.dialects import postgresql
 
     from app.models import EvalResult, EvalResultStatus
@@ -293,53 +164,8 @@ def test_eval_result_model_and_sql_define_metric_constraints():
         "ck_eval_result_duration",
     }
 
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-    assert "hit             BOOLEAN" in schema_sql
-    assert "context_recall  FLOAT" in schema_sql
-    assert "context_precision FLOAT" in schema_sql
-    assert "status              VARCHAR(20)     NOT NULL" in schema_sql
-    assert "error_type          VARCHAR(100)" in schema_sql
-    assert "duration_ms         INTEGER" in schema_sql
-    assert "uq_eval_result_dataset_version" in schema_sql
-    assert "usage_tokens        INTEGER         NOT NULL DEFAULT 0" not in schema_sql
-    assert "estimated_cost_cny  NUMERIC(12, 6)  NOT NULL DEFAULT 0" not in schema_sql
-    assert "ck_eval_result_usage" not in schema_sql
-    assert schema_sql.index("eval_version") < schema_sql.index("actual_answer")
-    assert schema_sql.index("actual_answer") < schema_sql.index("hit")
-    assert schema_sql.index("error_type") < schema_sql.index("eval_at")
 
-    duration_migration_sql = Path("app/db/migrations/20260907_add_eval_duration.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "ADD COLUMN IF NOT EXISTS duration_ms INTEGER" in duration_migration_sql
-    assert "ck_eval_result_duration" in duration_migration_sql
-
-    migration_sql = Path("app/db/migrations/20260715_extend_eval_result.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "ALTER COLUMN hit DROP NOT NULL" in migration_sql
-    assert "ADD COLUMN IF NOT EXISTS context_recall" in migration_sql
-    assert "uq_eval_result_dataset_version" in migration_sql
-
-    reorder_migration_sql = Path(
-        "app/db/migrations/20260903_reorder_eval_result_columns.sql"
-    ).read_text(encoding="utf-8")
-    assert "eval_version', 'actual_answer', 'hit'" in reorder_migration_sql
-    assert "'error_type', 'eval_at'" in reorder_migration_sql
-    assert "ALTER TABLE kb_eval_result_reordered RENAME TO kb_eval_result" in reorder_migration_sql
-
-    dump_sql = Path("app/db/ragkb_full_dump.sql").read_text(encoding="utf-8")
-    assert '"eval_version" int4 NOT NULL' in dump_sql
-    assert dump_sql.index('"eval_version" int4 NOT NULL') < dump_sql.index('"actual_answer" text')
-    assert dump_sql.index('"actual_answer" text') < dump_sql.index('"hit" bool')
-    assert dump_sql.index('"error_type" varchar(100)') < dump_sql.index('"eval_at" timestamp')
-    assert (
-        'INSERT INTO "public"."kb_eval_result" (id, dataset_id, eval_version, hit, rank, actual_answer'
-        in dump_sql
-    )
-
-
-def test_eval_run_usage_model_and_sql_define_run_level_totals():
+def test_eval_run_usage_model_defines_run_level_totals():
     from sqlalchemy.dialects import postgresql
 
     from app.models import EvalRunUsage
@@ -369,23 +195,8 @@ def test_eval_run_usage_model_and_sql_define_run_level_totals():
         "ck_eval_run_usage_values",
     }
 
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-    assert "CREATE TABLE kb_eval_run_usage" in schema_sql
-    assert "usage_tokens                INTEGER GENERATED ALWAYS AS" in schema_sql
-    assert "estimated_cost_cny          NUMERIC(12, 6) GENERATED ALWAYS AS" in schema_sql
-    assert "uq_eval_run_usage_kb_version" in schema_sql
-    assert "ck_eval_run_usage_values" in schema_sql
 
-    migration_sql = Path("app/db/migrations/20260908_move_eval_usage_to_run.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "CREATE TABLE IF NOT EXISTS kb_eval_run_usage" in migration_sql
-    assert "SUM(result.usage_tokens)" in migration_sql
-    assert "DROP COLUMN IF EXISTS usage_tokens" in migration_sql
-    assert "DROP COLUMN IF EXISTS estimated_cost_cny" in migration_sql
-
-
-def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
+def test_feedback_models_define_scope_and_integrity_constraints():
     from sqlalchemy.dialects import postgresql
 
     from app.models import AnswerFeedback, ChatMessage
@@ -403,47 +214,7 @@ def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
         "uq_answer_feedback_message_user",
         "ck_answer_feedback_value",
     }
-
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-    assert "kb_ids          BIGINT[]" in schema_sql
-    assert "uq_answer_feedback_message_user" in schema_sql
-    assert "feedback        SMALLINT        NOT NULL" in schema_sql
-    assert "feedback IN (-1, 0, 1)" in schema_sql
-    assert "updated_at      TIMESTAMP       NOT NULL" in schema_sql
-    assert "trigger_answer_feedback_updated_at" in schema_sql
-
-    dump_sql = Path("app/db/ragkb_full_dump.sql").read_text(encoding="utf-8")
-    assert '"feedback" int2 NOT NULL' in dump_sql
-    assert "feedback = ANY (ARRAY['-1'::integer, 0, 1])" in dump_sql
-
-    migration_sql = Path("app/db/migrations/20260715_extend_answer_feedback.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "ADD COLUMN IF NOT EXISTS kb_ids BIGINT[]" in migration_sql
-    assert "ck_answer_feedback_value" in migration_sql
-
-    cancellation_migration_sql = Path(
-        "app/db/migrations/20260901_allow_feedback_cancellation.sql"
-    ).read_text(encoding="utf-8")
-    assert "ALTER COLUMN feedback DROP NOT NULL" in cancellation_migration_sql
-    assert "feedback IS NULL OR feedback IN (-1, 1)" in cancellation_migration_sql
-
-    zero_state_migration_sql = Path(
-        "app/db/migrations/20260902_store_cancelled_feedback_as_zero.sql"
-    ).read_text(encoding="utf-8")
-    assert "DROP CONSTRAINT IF EXISTS ck_answer_feedback_value" in zero_state_migration_sql
-    assert "SET feedback = 0" in zero_state_migration_sql
-    assert "ALTER COLUMN feedback SET NOT NULL" in zero_state_migration_sql
-    assert "feedback IN (-1, 0, 1)" in zero_state_migration_sql
-
-    updated_at_migration_sql = Path(
-        "app/db/migrations/20260903_add_answer_feedback_updated_at.sql"
-    ).read_text(encoding="utf-8")
-    assert "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP" in updated_at_migration_sql
-    assert "SET updated_at = COALESCE(updated_at, created_at" in updated_at_migration_sql
-    assert "CREATE TRIGGER trigger_answer_feedback_updated_at" in updated_at_migration_sql
-
-    assert [column.name for column in AnswerFeedback.__table__.columns] == [
+    assert [column.name for column in feedback_columns] == [
         "id",
         "message_id",
         "user_id",
@@ -454,27 +225,15 @@ def test_feedback_models_and_sql_define_scope_and_integrity_constraints():
     ]
 
 
-def test_chat_intent_metadata_is_present_in_schema_and_migration():
-    """意图路由依赖的消息元数据必须同时存在于模型快照和增量迁移。"""
+def test_chat_intent_metadata_is_present_in_model():
     from app.models import ChatMessage
 
     columns = ChatMessage.__table__.columns
     assert columns["answer_mode"].nullable is False
     assert columns["knowledge_base_searched"].nullable is False
 
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-    assert "answer_mode     VARCHAR(30) NOT NULL DEFAULT 'knowledge_base'" in schema_sql
-    assert "knowledge_base_searched BOOLEAN NOT NULL DEFAULT TRUE" in schema_sql
 
-    migration_sql = Path("app/db/migrations/20260902_add_chat_intent_metadata.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "ADD COLUMN IF NOT EXISTS answer_mode" in migration_sql
-    assert "ADD COLUMN IF NOT EXISTS knowledge_base_searched" in migration_sql
-
-
-def test_chat_message_columns_keep_created_at_last_across_schema_dump_and_migration():
-    """用户消息表的创建时间字段应在消息业务字段之后。"""
+def test_chat_message_columns_keep_created_at_last():
     from app.models import ChatMessage
 
     expected_columns = [
@@ -492,32 +251,3 @@ def test_chat_message_columns_keep_created_at_last_across_schema_dump_and_migrat
         "created_at",
     ]
     assert [column.name for column in ChatMessage.__table__.columns] == expected_columns
-
-    schema_sql = Path("app/db/schema.sql").read_text(encoding="utf-8")
-    schema_start = schema_sql.index("CREATE TABLE kb_chat_message")
-    schema_end = schema_sql.index("\n);", schema_start)
-    schema_table = schema_sql[schema_start:schema_end]
-    assert schema_table.index("knowledge_base_searched") < schema_table.index("created_at")
-
-    dump_sql = Path("app/db/ragkb_full_dump.sql").read_text(encoding="utf-8")
-    dump_start = dump_sql.index('CREATE TABLE "public"."kb_chat_message"')
-    dump_end = dump_sql.index("\n;", dump_start)
-    dump_table = dump_sql[dump_start:dump_end]
-    assert dump_table.index('"knowledge_base_searched"') < dump_table.index('"created_at"')
-    assert (
-        'INSERT INTO "public"."kb_chat_message" (id, session_id, role, content, sources, token_count, latency_ms, feedback, created_at, kb_ids)'
-        in dump_sql
-    )
-    assert 'INSERT INTO "public"."kb_chat_message" VALUES' not in dump_sql
-
-    migration_sql = Path("app/db/migrations/20260903_reorder_chat_message_columns.sql").read_text(
-        encoding="utf-8"
-    )
-    assert "ADD COLUMN IF NOT EXISTS answer_mode" in migration_sql
-    assert "ADD COLUMN IF NOT EXISTS knowledge_base_searched" in migration_sql
-    assert "'knowledge_base_searched', 'created_at'" in migration_sql
-    assert "ALTER TABLE kb_chat_message_reordered RENAME TO kb_chat_message" in migration_sql
-    assert (
-        "CREATE INDEX idx_message_session ON kb_chat_message(session_id, created_at)"
-        in migration_sql
-    )

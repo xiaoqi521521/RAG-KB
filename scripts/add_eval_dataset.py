@@ -42,7 +42,7 @@ async def view_existing_eval_data():
             WHERE id IN (1, 2)
         """))
         rows = result.fetchall()
-        print(f"\n=== 现有评估数据集 (id=1,2) ===")
+        print("\n=== 现有评估数据集 (id=1,2) ===")
         for row in rows:
             print(f"ID: {row.id}, kb_id: {row.kb_id}, status: {row.status}")
             print(f"  问题: {row.question}")

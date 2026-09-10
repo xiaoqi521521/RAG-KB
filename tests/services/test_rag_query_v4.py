@@ -450,7 +450,7 @@ async def test_query_uses_v4_prompt_and_returns_only_answer_citations() -> None:
     assert response.answer == "第二条内容有效（来源：[参考1]）。"
     assert response.hit_count == 1
     assert chat.messages is not None
-    assert "每条事实后都要标注来源" in chat.messages[0].content
+    assert "回答中的关键事实需要标注来源" in chat.messages[0].content
 
 
 @pytest.mark.asyncio

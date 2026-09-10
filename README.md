@@ -23,7 +23,7 @@
 | API | FastAPI、Uvicorn、Pydantic Settings |
 | AI 编排 | LangChain、RAGAS 0.4.3 |
 | 模型 | 阿里云百炼 OpenAI-compatible API、DeepSeek/Qwen、text-embedding-v3 |
-| 数据库 | PostgreSQL、PGVector、SQLAlchemy 2、Alembic |
+| 数据库 | PostgreSQL、PGVector、SQLAlchemy 2 |
 | 基础设施 | Redis 7、MinIO |
 | 观测 | OpenTelemetry、Prometheus instrumentation |
 | 测试 | pytest、pytest-asyncio、Ruff、Mypy |
@@ -58,7 +58,7 @@ Copy-Item .env.example .env
 
 ### 初始化数据库
 
-执行 `app/db/schema.sql`，再按部署版本依次执行 `app/db/migrations/` 中的迁移脚本。确保 PostgreSQL 已启用 PGVector 扩展。
+数据库结构基线保存在 `app/db/ragkb_init.sql`，包含 PGVector 扩展、业务表、索引、触发器和当前演示数据。
 
 ### 启动服务
 
@@ -80,7 +80,7 @@ curl http://localhost:8000/api/v1/health
 docker compose up -d --build
 ```
 
-首次初始化数据库时会自动导入 `app/db/ragkb_full_dump.sql`。详细的监控访问和数据库初始化说明见 `deploy/README.md`。
+首次创建 PostgreSQL 数据卷时会自动导入 `app/db/ragkb_init.sql`。详细的监控访问说明见 `deploy/README.md`。
 
 ## 常用接口
 

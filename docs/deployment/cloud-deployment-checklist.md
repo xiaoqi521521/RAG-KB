@@ -38,10 +38,7 @@
 
 - **证据**：当前只有手工 SQL 和零散迁移文件，没有 Alembic 执行入口。
 - **改造**：使用版本化迁移；发布前执行迁移；每日 `pg_dump`；MinIO 开启版本保护或同步备份；至少演练一次恢复。生产数据库不要使用 root，限制网络只允许应用内网访问。
-- **⚠ 已决策（2026-08-29）**：用户决定**不引入 Alembic**，改用 `app/db/ragkb_full_dump.sql`（原 `kb_answer_feedback.sql`，Navicat 全库导出）在云服务器上直接创建数据库结构并导入数据。该文件已改名以反映其完整内容。
-- **📋 核对结论（2026-08-30）**：该文件确为全库导出，包含项目全部 10 张表的结构与数据（知识库、权限、文档、分块、索引任务、会话、消息、反馈、评估数据集、评估结果），且分块表含 embedding 向量数据。导出文件本身确实没有 `CREATE EXTENSION vector`、`CREATE SEQUENCE` 或 `update_chunk_tsv` 函数定义，但表默认值和触发器分别引用了这些对象；直接执行原始 dump 在新库上会因对象不存在而失败，或导入后首次写入时因序列未同步而产生主键冲突。
-- **✅ 当前处理**：`deploy/postgres/00-bootstrap.sql` 先创建扩展、9 个序列和触发器函数，`01-ragkb-full-dump.sql` 再单次导入原始 dump，`01b-eval-dataset-updated-at.sql` 为评估数据集增加自动维护的更新时间，`01c-reorder-eval-dataset-columns.sql` 调整评估数据集字段顺序，`01d-reorder-eval-result-columns.sql` 将评估结果的 `actual_answer` 放到 `eval_version` 与 `hit` 之间并将 `eval_at` 放到末尾，`01e-answer-feedback-updated-at.sql` 为用户回答反馈增加自动维护的更新时间，`01f-convert-eval-version-to-int.sql` 将旧的 `vN_*` 评估版本转换为与文档 `version` 一致的整数，`01f-reorder-chat-message-columns.sql` 将用户消息表的 `created_at` 调整到最后，`02-column-comments.sql` 为业务字段补充 PostgreSQL 注释，`99-sequence-sync.sql` 最后将序列定位到现有最大 ID 之后。原始 dump 挂载到 initdb 目录之外，避免被 PostgreSQL entrypoint 自动重复执行。不要把“先执行 `schema.sql` 再导入该 dump”作为通用修复：dump 会 `DROP TABLE` 后重建表，可能连带删除由 `BIGSERIAL` 创建的序列，仍不能替代前置脚本。
-- **⚠ 手工导入要求**：目标 PostgreSQL 服务端必须安装并可加载 `pgvector`；使用 `psql -v ON_ERROR_STOP=1` 执行前置脚本、dump 和序列同步，避免 SQL 报错后继续执行造成半初始化数据库。Compose 已使用固定版本的 `pgvector/pgvector:0.8.0-pg16` 并自动按上述顺序执行。
+- **⚠ 状态（2026-09-11）**：旧的手工 schema、全量 dump、零散迁移和 PostgreSQL 引导脚本已删除。数据库结构基线将在后续重新生成；当前版本完成基线初始化前不用于全新部署。
 
 ### 6. 保护监控端点并补健康检查
 
