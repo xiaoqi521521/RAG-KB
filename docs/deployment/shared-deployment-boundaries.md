@@ -1,6 +1,6 @@
 # 共享部署平台边界与项目接入规则
 
-> 当前已接入项目：Sales Agent、Resume Agent（`resume.shaoji.site`）；新项目必须按本文流程登记后接入。  
+> 当前已接入项目：Sales Agent、Resume Agent（`resume.shaoji.site`）；RAG-KB 私有服务已部署到 `/opt/rag-kb`，待 DNS/HTTPS 后接入。新项目必须按本文流程登记后接入。
 > 当前服务器：`47.238.194.79`  
 > 当前部署目录：`/opt/sales-agent`  
 > 更新日期：2026-08-27
@@ -57,7 +57,10 @@
 | --- | --- | --- | --- | --- | --- |
 | Sales Agent | `shuhang.shaoji.site` | `shaoji.site`, `www.shaoji.site` | `backend:8000` | `mysql_data` | 项目维护者 |
 | Resume Agent | `resume.shaoji.site` | 无 | `resume-agent:8001` | `resume-agent-metrics` | 项目维护者 |
+| RAG-KB | `zhimai.shaoji.site` | 无 | `rag-kb-backend:8000` | `rag-kb_db-data`, `rag-kb_redis-data`, `rag-kb_minio-data` | 项目维护者 |
 | 新项目 | 接入前分配 | 接入前分配 | 接入前分配 | 接入前分配 | 必须填写 |
+
+RAG-KB 使用独立 Compose 项目 `/opt/rag-kb`，私有服务为 PostgreSQL、Redis、MinIO 和 `rag-kb-backend`；只有 `rag-kb-backend` 加入 `sales-agent_app`。`compose.rag-kb.yaml` 只挂载 Nginx 配置和静态前端目录，DNS 与证书就绪前不启用。
 
 当前使用的是 Docker Compose 方案。仓库中的 `deploy/resume-agent.service` 是备用的主机级 systemd 方案，不能与当前 Docker 版 Resume Agent 同时启动，也不能让两套方案同时监听 `8001`。
 
