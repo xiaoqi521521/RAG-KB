@@ -141,6 +141,8 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
+    networks:
+      - app
     depends_on:
       rag-kb-backend:
         condition: service_healthy
@@ -163,6 +165,8 @@ services:
       - grafana-data:/var/lib/grafana
     ports:
       - "127.0.0.1:3000:3000"
+    networks:
+      - app
     depends_on:
       - prometheus
     mem_limit: 192m
