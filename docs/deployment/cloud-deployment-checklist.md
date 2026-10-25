@@ -57,6 +57,7 @@
 
 - **改造**：登录、上传、聊天、评估接口增加 Nginx 限流；评估接口限制管理员和调用频率。设置请求超时、模型调用超时、最大并发数。SSE 代理关闭 buffering，并配置合理的读超时。
 - **✅ 状态（2026-08-30）**：已完成。`frontend/nginx.conf` 对登录、上传、同步/流式聊天和评估入口按客户端 IP 分别限流，评估接口仍由应用层 `require_admin` 强制管理员权限；反向代理补充连接、发送、读取、请求体和 SSE 超时，并关闭 SSE buffering。后端 ChatOpenAI、Embedding 和 Reranker 使用显式 provider 超时；Uvicorn 通过 `SERVER_LIMIT_CONCURRENCY`、`SERVER_TIMEOUT_KEEP_ALIVE_SECONDS` 和 `SERVER_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS` 控制并发与连接生命周期。
+- **⚠️ 修正（2026-09-12）**：评估限流只作用于会触发模型调用的 `POST /api/v1/eval/{kb_id}/run`。评估页打开时会并发读取 history、dataset、chunks，这三个 GET 接口不限流；早期按 `^/api/v1/eval/` 前缀限流 `1r/m` 会导致页面第三个请求直接 429。
 
 ### 3. 修复前端 XSS 风险
 

@@ -14,13 +14,15 @@ docker compose up -d --build
 前端通过 Nginx 暴露在 80 端口，API 请求和 SSE 请求代理到 backend。Prometheus 和 Grafana 端口仅绑定到服务器本机，可通过 SSH 隧道访问：
 
 ```bash
-ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 user@server
+ssh -C -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 user@server
 ```
+
+必须保留 `-C` 压缩：服务器出方向带宽约 1Mbps，客户端到服务器链路存在丢包，单条 SSH 连接实际只有 ~50KB/s；Grafana 静态资源不做 gzip，首屏要下载十几 MB，不压缩会长时间卡在加载动画。压缩后首屏约 1 分钟，之后浏览器按 `Cache-Control: max-age=31536000` 命中本地缓存，刷新很快。
 
 本目录提供 Token 监控的 Prometheus 抓取配置、告警规则和 Grafana Dashboard provisioning。共享服务器低资源部署使用 `compose.prod.yaml` 启动 Prometheus 和 Grafana；两者只绑定 `127.0.0.1`，Prometheus 数据保留 7 天或 256MB，访问时通过 SSH 隧道：
 
 ```bash
-ssh -N -L 3000:127.0.0.1:3000 root@47.238.194.79
+ssh -C -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 root@47.238.194.79
 ```
 
 然后在本地浏览器打开 `http://localhost:3000`。Grafana 管理账号读取服务器 `/opt/rag-kb/.env` 中的 `GRAFANA_ADMIN_USER` 和 `GRAFANA_ADMIN_PASSWORD`。
