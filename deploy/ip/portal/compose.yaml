@@ -1,0 +1,10 @@
+services:
+  portal:
+    image: nginx:1.27.5-alpine
+    container_name: shaoji-portal
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web:/usr/share/nginx/html:ro
+    restart: unless-stopped

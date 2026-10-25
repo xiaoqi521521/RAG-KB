@@ -1,4 +1,8 @@
-# 云服务器上线运行手册
+# 云服务器上线运行手册（域名共享部署，历史方案）
+
+> 历史说明：2026-10-26 起，生产站点已迁移到新服务器 `123.206.117.213`，改为仅 IP 部署。
+> 当前生产拓扑与操作步骤以 `docs/deployment/ip-single-server.md` 和 `deploy/ip/README.md` 为准。
+> 本文保留旧服务器 `47.238.194.79` 的域名共享部署记录，仅用于历史排查和回滚，不要按本文操作当前生产环境。
 
 本文整理当前项目已验证过的上线流程，适用于单台 Linux 云服务器、Docker Compose、PostgreSQL/PGVector、Redis、MinIO、Nginx 和 Let’s Encrypt。
 

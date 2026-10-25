@@ -1,4 +1,9 @@
-# 共享部署平台边界与项目接入规则
+# 共享部署平台边界与项目接入规则（历史方案）
+
+> 历史说明：2026-10-26 起，生产站点已迁移到新服务器 `123.206.117.213`，改为仅 IP 部署。
+> 当前生产拓扑和接入规则以 `docs/deployment/ip-single-server.md` 与 `deploy/ip/README.md` 为准。
+> 本文描述旧服务器 `47.238.194.79` 的域名共享网关，保留作历史参考。
+
 
 > 当前已接入项目：Portal（`shaoji.site`）、Resume Agent（`resume.shaoji.site`）、RAG-KB（`zhimai.shaoji.site`）。原数航 Agent（`shuhang.shaoji.site`）已于 2026-10-25 下线，域名保留 `410` 响应。新项目必须按本文流程登记后接入。
 > 当前服务器：`47.238.194.79`
