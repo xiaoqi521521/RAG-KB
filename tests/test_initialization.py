@@ -44,8 +44,9 @@ def test_settings_loads_required_rag_defaults():
 
     assert settings.app_name == "rag-kb"
     assert settings.api_v1_prefix == "/api/v1"
-    assert settings.chat_model == "qwen-plus"
+    assert settings.chat_model == "deepseek-flash"
     assert settings.embedding_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert settings.openai_base_url == "https://api.deepseek.com"
     assert settings.embedding_model == "text-embedding-v3"
     assert settings.rag_vector_top_k == 20
     assert settings.reranker_model == "qwen3-rerank"

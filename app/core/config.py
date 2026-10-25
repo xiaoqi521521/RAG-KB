@@ -48,8 +48,8 @@ class Settings(BaseSettings):
 
     dashscope_api_key: str = Field(default="", repr=False)
     openai_api_key: str = Field(default="", repr=False)
-    openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    chat_model: str = "qwen-plus"
+    openai_base_url: str = "https://api.deepseek.com"
+    chat_model: str = "deepseek-flash"
     embedding_api_key: str = Field(default="", repr=False)
     embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_model: str = "text-embedding-v3"

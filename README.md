@@ -22,7 +22,7 @@
 | Runtime | Python 3.12、uv |
 | API | FastAPI、Uvicorn、Pydantic Settings |
 | AI 编排 | LangChain、RAGAS 0.4.3 |
-| 模型 | 阿里云百炼 OpenAI-compatible API、DeepSeek/Qwen、text-embedding-v3 |
+| 模型 | DeepSeek API（聊天）、阿里云百炼（text-embedding-v3 / Reranker） |
 | 数据库 | PostgreSQL、PGVector、SQLAlchemy 2 |
 | 基础设施 | Redis 7、MinIO |
 | 观测 | OpenTelemetry、Prometheus instrumentation |
@@ -36,7 +36,8 @@
 - PostgreSQL（启用 `vector` 扩展）
 - Redis 7+
 - MinIO
-- 阿里云百炼 API Key
+- DeepSeek API Key（聊天）
+- 阿里云百炼 API Key（Embedding 与 Reranker）
 - 可用的 Reranker 服务地址
 
 ### 安装
