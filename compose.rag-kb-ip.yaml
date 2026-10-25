@@ -65,7 +65,7 @@ services:
   rag-kb-backend:
     image: ${BACKEND_IMAGE:-rag-kb-backend:shared}
     env_file:
-      - .env
+      - /opt/shaoji-ip/.env
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
@@ -105,9 +105,9 @@ services:
     ports:
       - "8081:80"
     volumes:
-      - ./frontend/dist:/usr/share/nginx/html:ro
-      - ./deploy/ip/rag-kb/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./deploy/ip/rag-kb/nginx/proxy-params.conf:/etc/nginx/snippets/proxy-params.conf:ro
+      - /opt/shaoji-ip/frontend/dist:/usr/share/nginx/html:ro
+      - ./nginx/rag-kb-ip.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/proxy-params.conf:/etc/nginx/snippets/proxy-params.conf:ro
     restart: unless-stopped
 
   prometheus:
